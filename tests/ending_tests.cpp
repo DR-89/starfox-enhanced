@@ -1,6 +1,7 @@
 #include "starfox/assets/rom.hpp"
 #include "starfox/audio/spc700_audio.hpp"
 #include "starfox/input/buttons.hpp"
+#include "starfox/render/background_renderer.hpp"
 #include "starfox/simulation/game_simulation.hpp"
 
 #include <array>
@@ -307,6 +308,74 @@ void run_ending(const starfox::assets::RomImage& rom,
         require(game->flow_state() == GameFlowState::intro,
             "Start after THE END did not hand off to the front end");
         require(!game->final_score_active(), "credits score state survived restart");
+        // #68: reaching the front end is insufficient; stale ending scroll
+        // state can turn title graphics into repeated tile fragments.
+        for (unsigned tick=0; tick<120 && game->flow_state()!=GameFlowState::title; ++tick) {
+            static_cast<void>(game->tick({starfox::input::start,0U,0U}));
+        }
+        require(game->flow_state()==GameFlowState::title,
+            "restarted intro did not reach the title");
+        auto fresh_title=std::make_unique<GameSimulation>(rom,symbols,"TITLEMAP");
+        fresh_title->set_timing_mode(game->timing_mode());
+        fresh_title->set_presentation_fps(20U);
+        for(unsigned tick=0;tick<200;++tick) {
+            static_cast<void>(game->tick({}));
+            static_cast<void>(fresh_title->tick({}));
+        }
+        const auto& restarted_ppu=map.ppu_state();
+        const auto& fresh_ppu=fresh_title->map().ppu_state();
+        require(restarted_ppu.bg2_scroll_y==fresh_ppu.bg2_scroll_y,
+            "ending restart retained a different title BG2 scroll: "
+                +std::to_string(restarted_ppu.bg2_scroll_y)+" vs "
+                +std::to_string(fresh_ppu.bg2_scroll_y));
+        require(restarted_ppu.bg2_scanline_scroll_enabled==fresh_ppu.bg2_scanline_scroll_enabled,
+            "ending scanline scroll leaked into title");
+        // #67 is specifically Space Armada after an ending, not Colony.
+        // Launch both histories through the same public level-select path and
+        // require that the authored Armada route actually enters a tunnel.
+        for(auto* replay:{game.get(),fresh_title.get()}) {
+            replay->set_god_mode(true);
+            replay->set_selected_level(13);
+            require(replay->launch_selected_level(),"Armada replay launch failed");
+        }
+        unsigned tunnel_samples{};
+        for(unsigned tick=0;tick<5000;++tick) {
+            const starfox::input::ButtonMask boost=tick%100<40?starfox::input::x:0;
+            static_cast<void>(game->tick({boost,static_cast<starfox::input::ButtonMask>(tick%100==0?boost:0),0}));
+            static_cast<void>(fresh_title->tick({boost,static_cast<starfox::input::ButtonMask>(tick%100==0?boost:0),0}));
+            const bool tunnel=map.read_native_byte(address("INATUNNEL"))!=0;
+            const bool fresh_tunnel=fresh_title->map().read_native_byte(address("INATUNNEL"))!=0;
+            require(tunnel==fresh_tunnel,"ending history changed Armada tunnel entry");
+            if(!tunnel) continue;
+            ++tunnel_samples;
+            const auto& replay_bg=map.ppu_state();
+            const auto& clean_bg=fresh_title->map().ppu_state();
+            require(map.background_scroll_override()==fresh_title->map().background_scroll_override(),
+                "ending scroll override leaked into Armada tunnel");
+            require(replay_bg.bg2_scroll_x==clean_bg.bg2_scroll_x
+                && replay_bg.bg2_scroll_y==clean_bg.bg2_scroll_y
+                && replay_bg.bg2_horizontal_offsets_enabled==clean_bg.bg2_horizontal_offsets_enabled
+                && replay_bg.bg2_horizontal_offsets==clean_bg.bg2_horizontal_offsets
+                && replay_bg.bg2_scanline_scroll_enabled==clean_bg.bg2_scanline_scroll_enabled
+                && replay_bg.bg2_scanline_scroll_y==clean_bg.bg2_scanline_scroll_y,
+                "post-ending Armada tunnel scroll differs from clean launch at tick "+std::to_string(tick));
+            if(tunnel_samples==1 || tunnel_samples==60 || tunnel_samples==120) {
+                for(const auto width:{256U,400U,800U}) {
+                    starfox::render::Framebuffer replay_image(width,224),clean_image(width,224);
+                    starfox::render::BackgroundRenderer renderer;
+                    const auto origin=static_cast<std::int32_t>((width-256)/2);
+                    renderer.draw_bg2(replay_bg,replay_bg.bg2_scroll_x,replay_bg.bg2_scroll_y,
+                        replay_image,starfox::render::TilePriorityPass::all,origin);
+                    renderer.draw_bg2(clean_bg,clean_bg.bg2_scroll_x,clean_bg.bg2_scroll_y,
+                        clean_image,starfox::render::TilePriorityPass::all,origin);
+                    require(std::equal(replay_image.pixels().begin(),replay_image.pixels().end(),clean_image.pixels().begin()),
+                        "ending history changed Armada background pixels at width "+std::to_string(width));
+                }
+            }
+            if(tunnel_samples==120) break;
+        }
+        require(tunnel_samples==120,"Armada replay fixture did not cover 120 tunnel ticks");
+        std::cout<<"Post-ending Armada: 120 tunnel scroll samples match clean launch\n";
     }
     std::cout << (ex ? "EX" : "Original") << (original_pace ? " original/20Hz" : " unlocked/20Hz")
         << (special_route ? " special-route" : " route-1") << ": escape=" << ending_start

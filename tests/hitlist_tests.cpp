@@ -102,6 +102,29 @@ void check_reticle_identity() {
     starfox::render::anchor_player_overlay(old_flash,flash,older,newer,1);
     require(old_flash.transform.x==flash.transform.x && old_flash.rotation_matrix==flash.rotation_matrix,
         "upgrade overlay interpolated through a recycled player slot");
+    // These are source discontinuities even when the object slot survives.
+    for (unsigned change=0;change<4;++change) {
+        auto changed=older;
+        if(change==0) ++changed[1].shape;
+        if(change==1) ++changed[1].type;
+        if(change==2) ++changed[1].strategy_address;
+        if(change==3) changed.clear();
+        newer[1].generation=3;
+        require(starfox::render::anchor_player_overlay(old_flash,flash,changed,newer,1)
+            && old_flash.transform.x==flash.transform.x
+            && old_flash.rotation_matrix==flash.rotation_matrix,
+            "upgrade overlay retained motion across an owner history cut");
+        require(old_flash.shape==0 && flash.shape==123,
+            "owner history cut altered the upgrade blink state");
+    }
+    const auto retained_before=old_flash;
+    const auto retained_now=flash;
+    require(!starfox::render::anchor_player_overlay(old_flash,flash,older,{},1)
+        && old_flash.transform.x==retained_before.transform.x
+        && flash.transform.x==retained_now.transform.x
+        && old_flash.rotation_matrix==retained_before.rotation_matrix
+        && flash.rotation_matrix==retained_now.rotation_matrix,
+        "missing upgrade owner fabricated a presentation pose");
 }
 
 void check_escape_explosions(const starfox::assets::RomImage& rom,
@@ -358,13 +381,11 @@ void check_tunnel(const starfox::assets::RomImage& rom,
         starfox::render::Framebuffer frame{width, 224};
         starfox::render::BackgroundRenderer{}.draw_bg2(*ppu, 0, 91, frame,
             starfox::render::TilePriorityPass::all, (width - 256) / 2, true);
-        const auto left = (width - 256U) / 2U;
         for (unsigned y = 16; y < 224; ++y)
             for (unsigned x = 0; x < width; ++x) {
-                const auto expected_pixel = x >= left && x < left + 256U
-                    ? (y % 2 ? 2U : 1U) : 1U; // Center-height wall is tile 1.
+                const auto expected_pixel = y % 2 ? 2U : 1U;
                 require(frame.get(x, y) == expected_pixel,
-                    "tunnel must retain native pages with solid outer margins");
+                    "tunnel must extend each edge row without repeating sections");
             }
     }
     // Scanline scrolling alone must not classify outdoor/animated backgrounds
@@ -714,6 +735,12 @@ int main(int argc, char** argv) {
         for (const unsigned fps : {20U, 30U, 60U, 90U, 120U, 240U, 360U, 480U}) {
             for (unsigned phase = 0; phase <= fps; ++phase) {
                 const auto alpha = static_cast<double>(phase) / fps;
+                const auto fractional=starfox::timing::interpolate_fractional_scroll(171,172,alpha,65535);
+                require(std::abs(fractional-(171+alpha))<1e-9,
+                    "Fractional menu scroll was rounded or changed speed");
+                const auto wrapped=starfox::timing::interpolate_fractional_scroll(511,0,alpha,511);
+                require(std::abs(std::remainder(wrapped-(511+alpha),512.0))<1e-9,
+                    "Fractional menu scroll crossed the atlas at wrap");
                 const auto up = starfox::timing::interpolate_wrapped_scroll(511, 0, alpha, 511);
                 const auto down = starfox::timing::interpolate_wrapped_scroll(0, 511, alpha, 511);
                 require((up == 511 || up == 0) && (down == 0 || down == 511),
