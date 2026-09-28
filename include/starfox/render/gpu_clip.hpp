@@ -73,7 +73,9 @@ public:
     void* enqueue_spans(void* command,void* materials,bool winding_independent=false,std::uint32_t render_scale=1,
         const GpuSpanOrder* order=nullptr,std::uint32_t line_thickness=1,
         void* source_texels=nullptr,std::uint32_t source_texel_bytes=0,void** masked_texels=nullptr,
-        std::array<std::uint32_t,2> raster_size={},bool reuse_span_scratch=false);
+        // MSAA adds only the selected 2/4/8 sample bitplanes after each native mask.
+        // Off/default leaves the original storage and native raster unchanged.
+        std::array<std::uint32_t,2> raster_size={},bool reuse_span_scratch=false,unsigned msaa_samples=0);
     void release_device() noexcept;
     const std::string& status() const noexcept;
 private:

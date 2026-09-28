@@ -15,7 +15,7 @@ class BackdropCatalogTests(unittest.TestCase):
         self.expected = {200 + i: path for i, path in enumerate(self.paths)}
 
     def test_unique_complete_assets(self):
-        self.assertEqual(len(self.paths), 37)
+        self.assertEqual(len(self.paths), 38)
         self.assertEqual(len(set(self.paths)), len(self.paths))
         for path in self.paths:
             self.assertTrue((ROOT / path).is_file(), path)

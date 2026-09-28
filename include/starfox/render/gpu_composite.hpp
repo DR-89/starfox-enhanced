@@ -1,6 +1,7 @@
 #pragma once
 #include "starfox/render/gpu_raster.hpp"
 #include "starfox/render/palette.hpp"
+#include "starfox/render/motion_blur.hpp"
 namespace starfox::render {
 // All handles are borrowed and share one SDL GPU device. Output is valid until
 // the next composition or release. packed uses GpuRasterOutput's byte layout.
@@ -59,6 +60,9 @@ public:
     // Palette bytes submitted on the most recent successful composition.
     std::size_t last_palette_upload_bytes() const noexcept;
     bool readback(Framebuffer&,std::vector<std::uint8_t>& rgba,SurfaceBuffer* = nullptr);
+    // Diagnostic/reference bridge only; the production blur should consume
+    // resident buffers without synchronizing or downloading them each frame.
+    bool readback_motion_guides(bool history_valid,std::vector<MotionBlurGuide>&);
     void release_device() noexcept;
     const std::string& status() const;
 private:

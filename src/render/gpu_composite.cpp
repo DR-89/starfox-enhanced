@@ -18,7 +18,7 @@ struct GpuComposite::Impl {
     SDL_GPUDevice* device{};SDL_GPUComputePipeline* pipeline{};
     SDL_GPUBuffer* buffers[8]{};Uint32 capacities[8]{};
     SDL_GPUTransferBuffer *upload{},*download{};Uint32 uploadSize{},downloadSize{};
-    SDL_GPUTexture* rgba{};SDL_GPUCommandBuffer* command{};SDL_GPUFence* fence{};
+    SDL_GPUTexture* rgba{},*empty_msaa{};SDL_GPUCommandBuffer* command{};SDL_GPUFence* fence{};
     Uint32 width{},height{};bool valid{},has_depth{},has_motion{};
     std::vector<Uint32> packed;
     std::vector<std::pair<Uint32,Uint32>> dirtySpans;
@@ -31,6 +31,7 @@ struct GpuComposite::Impl {
         if(command) SDL_CancelGPUCommandBuffer(command);
         if(fence) {SDL_WaitForGPUFences(device,true,&fence,1);SDL_ReleaseGPUFence(device,fence);}
         if(rgba) SDL_ReleaseGPUTexture(device,rgba);
+        if(empty_msaa) SDL_ReleaseGPUTexture(device,empty_msaa);
         for(auto* b:buffers) if(b) SDL_ReleaseGPUBuffer(device,b);
         if(upload) SDL_ReleaseGPUTransferBuffer(device,upload);
         if(download) SDL_ReleaseGPUTransferBuffer(device,download);
@@ -50,9 +51,13 @@ struct GpuComposite::Impl {
             info.code_size=sizeof(composite_shader::dxil);info.entrypoint="main";
         } else throw std::runtime_error("GPU composition requires Vulkan, Metal or D3D12");
         info.num_readonly_storage_buffers=8;info.num_readwrite_storage_buffers=5;
+        info.num_readonly_storage_textures=3;
         info.num_readwrite_storage_textures=1;info.num_uniform_buffers=1;
         info.threadcount_x=info.threadcount_y=8;info.threadcount_z=1;
         pipeline=SDL_CreateGPUComputePipeline(d,&info);checked(pipeline);
+        SDL_GPUTextureCreateInfo t{};t.type=SDL_GPU_TEXTURETYPE_2D;t.width=t.height=t.layer_count_or_depth=t.num_levels=1;
+        t.format=SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;t.usage=SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ;
+        empty_msaa=SDL_CreateGPUTexture(d,&t);checked(empty_msaa);
         status=std::string("GPU composition: ")+SDL_GetGPUDeviceDriver(d);
     }
     void buffer(unsigned i,Uint32 bytes) {
@@ -318,7 +323,8 @@ struct GpuComposite::Impl {
             background?Sint32(background->raster.width):0,background?Sint32(background->raster.height):0,
             gpuUniform?1:0,std::bit_cast<Sint32>(uniformValue),gpuStriped?1:0,
             std::bit_cast<Sint32>(stripeValue),Sint32(stripes[0].first),Sint32(stripes[0].second),
-            Sint32(stripes[1].first),Sint32(stripes[1].second)};
+            Sint32(stripes[1].first),Sint32(stripes[1].second),source.msaa_color?1:0,
+            late && late->msaa_color?1:0,background && background->raster.msaa_color?1:0,0};
         SDL_GPUStorageTextureReadWriteBinding texture{};texture.texture=rgba;
         SDL_GPUStorageBufferReadWriteBinding outputs[5]{};outputs[0].buffer=buffers[2];outputs[1].buffer=buffers[3];outputs[2].buffer=buffers[5];outputs[3].buffer=buffers[6];outputs[4].buffer=buffers[7];
         SDL_GPUBuffer* inputs[]{buffers[0],static_cast<SDL_GPUBuffer*>(source.pixels),
@@ -331,6 +337,10 @@ struct GpuComposite::Impl {
             constants[18]=Sint32(phase);SDL_PushGPUComputeUniformData(command,0,constants,sizeof(constants));
             auto* pass=SDL_BeginGPUComputePass(command,&texture,1,outputs,5);checked(pass);
             SDL_BindGPUComputePipeline(pass,pipeline);SDL_BindGPUComputeStorageBuffers(pass,0,inputs,8);
+            SDL_GPUTexture* aa_inputs[]{source.msaa_color?static_cast<SDL_GPUTexture*>(source.msaa_color):empty_msaa,
+                late && late->msaa_color?static_cast<SDL_GPUTexture*>(late->msaa_color):empty_msaa,
+                background && background->raster.msaa_color?static_cast<SDL_GPUTexture*>(background->raster.msaa_color):empty_msaa};
+            SDL_BindGPUComputeStorageTextures(pass,0,aa_inputs,3);
             SDL_DispatchGPUCompute(pass,phase?(width+7)/8:1,phase?(height+7)/8:1,1);SDL_EndGPUComputePass(pass);
         }
         fence=SDL_SubmitGPUCommandBufferAndAcquireFence(command);command=nullptr;checked(fence);valid=true;
@@ -339,6 +349,31 @@ struct GpuComposite::Impl {
         cachedUniformValue=uniformValue;cachedUniformBytes=bytes;
         lastCpuUploadBytes=cpuUploadBytes;
         lastPaletteUploadBytes=paletteChanged?1024U:0U;
+    }
+    void read_motion(bool history_valid,std::vector<MotionBlurGuide>& result) {
+        if(!valid||!has_depth||!has_motion||!buffers[2]||!buffers[6]||!buffers[7])
+            throw std::runtime_error("Native motion/depth is not available");
+        const auto count=std::size_t(width)*height;
+        if(count>UINT32_MAX/24) throw std::runtime_error("Motion guide readback is too large");
+        finish();const Uint32 bytes=Uint32(count*4);
+        transfer(download,downloadSize,bytes*6,SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD);
+        command=SDL_AcquireGPUCommandBuffer(device);checked(command);
+        auto* pass=SDL_BeginGPUCopyPass(command);checked(pass);
+        const unsigned indices[]{2,6,7};
+        for(unsigned i=0;i<3;++i) {
+            SDL_GPUBufferRegion source{buffers[indices[i]],0,i==2?bytes*4:bytes};
+            SDL_GPUTransferBufferLocation target{download,i*bytes};
+            SDL_DownloadFromGPUBuffer(pass,&source,&target);
+        }
+        SDL_EndGPUCopyPass(pass);fence=SDL_SubmitGPUCommandBufferAndAcquireFence(command);command=nullptr;checked(fence);finish();
+        const auto* mapped=static_cast<const Uint8*>(SDL_MapGPUTransferBuffer(device,download,false));checked(mapped);
+        try {
+            const bool ok=motion_blur_guides({reinterpret_cast<const Uint32*>(mapped),count},
+                {reinterpret_cast<const float*>(mapped+bytes),count},
+                {reinterpret_cast<const std::array<float,4>*>(mapped+bytes*2),count},history_valid,result);
+            if(!ok) throw std::runtime_error("Invalid native motion guide payload");
+        } catch(...) {SDL_UnmapGPUTransferBuffer(device,download);throw;}
+        SDL_UnmapGPUTransferBuffer(device,download);
     }
     void read(Framebuffer& target,std::vector<Uint8>& colours,SurfaceBuffer* surfaces) {
         if(!device || !rgba || !buffers[2] || (surfaces && !buffers[3]))
@@ -411,6 +446,18 @@ bool GpuComposite::compose(const GpuRasterOutput& source,std::uint32_t scale,con
         impl_->status=e.what();return false;}
 #else
     (void)source;(void)scale;(void)cpu;(void)foreground;(void)settings;(void)palette;(void)late;(void)background;(void)afterLate;(void)worldOnly;(void)mapping;return false;
+#endif
+}
+bool GpuComposite::readback_motion_guides(bool history_valid,std::vector<MotionBlurGuide>& guides) {
+#if defined(STARFOX_SDL_GPU_EFFECTS)
+    if(!impl_||!impl_->valid) return false;
+    try {impl_->read_motion(history_valid,guides);return true;}
+    catch(const std::exception& e) {
+        if(impl_->command) {SDL_CancelGPUCommandBuffer(impl_->command);impl_->command=nullptr;}
+        impl_->status=e.what();return false;
+    }
+#else
+    (void)history_valid;(void)guides;return false;
 #endif
 }
 bool GpuComposite::readback(Framebuffer& target,std::vector<std::uint8_t>& rgba,SurfaceBuffer* surfaces) {

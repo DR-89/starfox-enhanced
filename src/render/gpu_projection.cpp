@@ -244,7 +244,7 @@ void* GpuProjection::enqueue_text(void* device,void* command,const ScaledTextRen
     try {
         const bool custom=logical_viewport[0] || logical_viewport[1];
         if(!device || !command || !width || !height || width>8192 || height>8192
-            || !scale || scale>4 || (!custom && (width%scale || height%scale))
+            || !scale || scale>10 || (!custom && (width%scale || height%scale))
             || (custom && (!logical_viewport[0] || !logical_viewport[1]
                 || logical_viewport[0]>2048 || logical_viewport[1]>2048)) || frame.glyphs.size()>256
             || frame.character_size< -1 || frame.character_size>254

@@ -256,6 +256,41 @@ void check_scene(SDL_GPUDevice* device) {
             "RGBA reflection was exposed as a shadow mask");
         require(resident_shadows.readback(actual_reflections)
             && actual_reflections==expected_reflections,"SDL geometry reflection transport mismatch");
+        {
+            // Independent producer: keep the foreground reflection alive while
+            // the exposed plane is rendered using the same resident geometry.
+            shadows::SdlDxrShadows underlay;
+            shadows::RayWater water;water.material=1;water.reflection_strength=1;
+            shadows::DxrShadows::ReflectionInput input{rays.materials,reflection_palette,0xff345678U};
+            input.ground=ground;input.water=&water;input.ground_only=true;
+            std::vector<std::uint8_t> expected_ground,actual_ground;
+            require(reference_shadows.render_resident(reference,camera,light,{},nullptr,nullptr,false,false,&input)
+                && reference_shadows.readback_resident(expected_ground),"CPU geometry underlay reflection failed");
+            require(underlay.render_reflections(device,camera,rays,reflection_palette,0xff345678U,0,0,{},0,
+                {1,0,0,0,1,0,0,0,1},nullptr,ground,0,&water,true),underlay.status().c_str());
+            require(underlay.readback(actual_ground) && actual_ground==expected_ground,"Resident underlay reflection transport mismatch");
+            require(resident_shadows.readback(actual_reflections) && actual_reflections==expected_reflections,
+                "Underlay trace overwrote foreground reflection");
+            // Stereo callers submit both projections before either is consumed.
+            // A second producer must preserve the first eye's bytes and handle.
+            shadows::SdlDxrShadows other_eye;
+            auto other_camera=camera;other_camera.center_x+=11;
+            const auto first_output=underlay.reflection_output();
+            std::vector<std::uint8_t> expected_other,actual_other;
+            require(reference_shadows.render_resident(reference,other_camera,light,{},nullptr,nullptr,false,false,&input)
+                && reference_shadows.readback_resident(expected_other),"Other-eye underlay reference failed");
+            require(other_eye.render_reflections(device,other_camera,rays,reflection_palette,0xff345678U,0,0,{},0,
+                {1,0,0,0,1,0,0,0,1},nullptr,ground,0,&water,true),other_eye.status().c_str());
+            require(other_eye.reflection_output().buffer!=first_output.buffer,"Eye underlays alias");
+            require(other_eye.readback(actual_other) && actual_other==expected_other,"Other-eye underlay projection mismatch");
+            require(underlay.reflection_output().buffer==first_output.buffer
+                && underlay.readback(actual_ground) && actual_ground==expected_ground,"Other-eye trace overwrote first underlay");
+            require(!underlay.render_reflections(device,camera,rays,reflection_palette,0xff345678U,0,0,{},0,
+                {1,0,0,0,1,0,0,0,1},nullptr,{},0,&water,true) && !underlay.reflection_output().buffer,
+                "Invalid underlay retained previous output");
+            require(other_eye.readback(actual_other) && actual_other==expected_other,"First-eye rejection invalidated second eye");
+            std::cout<<"Resident reflective underlays match independent projections; both eyes and foreground retained\n";
+        }
         Framebuffer reflection_frame(camera.width,camera.height+4);
         reflection_frame.enable_layer_tags(true);
         SurfaceBuffer reflection_surfaces(camera.width,camera.height+4);
@@ -264,22 +299,31 @@ void check_scene(SDL_GPUDevice* device) {
             if(y%3) reflection_surfaces.set(x,y,{},1);
         }
         SdlGpuEffects reflection_effects;
-        for(unsigned intensity:{0U,37U,100U}) for(int offset:{-2,2}) {
+        for(unsigned material:{0U,1U}) for(unsigned intensity:{0U,37U,100U}) for(int offset:{-2,2}) {
             GpuEffectSettings settings;
             settings.surfaces=&reflection_surfaces;settings.resident_reflection=reflected;
             settings.reflection_intensity=intensity;settings.reflection_offset_y=offset;
+            settings.reflection_material=material;
             std::vector<std::uint8_t> pixels(reflection_frame.pixels().size()*4,80),wanted=pixels;
             for(unsigned y=0;y<reflection_frame.height();++y) for(unsigned x=0;x<camera.width;++x) {
                 const int sy=int(y)-offset;
                 if((x%5!=0 && x%5!=4) || y%3==0 || sy<0 || sy>=int(camera.height)) continue;
                 const auto source=(std::size_t(sy)*camera.width+x)*4;
-                const unsigned alpha=expected_reflections[source+3]*intensity/100;
+                unsigned alpha=expected_reflections[source+3]*intensity/100;
+                // Default SurfaceSample faces the camera (normal_z=1), so
+                // dielectric Fresnel is .08; mirrors retain full intensity.
+                if(!material) alpha=std::min(unsigned(std::lround(float(alpha)*.08f)),77U);
                 for(unsigned channel=0;channel<3;++channel)
                     wanted[(std::size_t(y)*camera.width+x)*4+channel]=
                         (expected_reflections[source+channel]*alpha+80*(255-alpha)+127)/255;
             }
             if(intensity) require(wanted!=pixels,"reflection composition fixture contains no visible reflected pixels");
             require(reflection_effects.apply(device,reflection_frame,pixels,settings),reflection_effects.status().c_str());
+            if(pixels!=wanted) {
+                const auto mismatch=std::mismatch(pixels.begin(),pixels.end(),wanted.begin()).first-pixels.begin();
+                std::cerr<<"Reflection mismatch material="<<material<<" intensity="<<intensity<<" offset="<<offset
+                    <<" byte="<<mismatch<<" actual="<<unsigned(pixels[mismatch])<<" expected="<<unsigned(wanted[mismatch])<<'\n';
+            }
             require(pixels==wanted,"reflection composition intensity/offset/layer isolation mismatch");
         }
         reflection_effects.release_device();

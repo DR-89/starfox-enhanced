@@ -24,7 +24,7 @@ struct GpuModel::Impl {
     // Reuse capacity across models instead of allocating twice per draw.
     std::vector<std::array<float,4>> near_scratch;
     std::vector<std::array<std::int32_t,4>> normal_scratch;
-    GpuProjection projection;GpuBsp bsp;GpuClip clip;GpuRaster raster;GpuColourWarp warp,reflection_warp;
+    GpuProjection projection;GpuBsp bsp;GpuClip clip;GpuRaster raster;GpuColourWarp warp,reflection_warp;GpuMsaa msaa;
     GpuProjection axis_ray_projection;
 #if defined(STARFOX_SDL_GPU_EFFECTS)
     SDL_GPUDevice* device{};
@@ -42,6 +42,7 @@ struct GpuModel::Impl {
         projection.release_device();bsp.release_device();clip.release_device();raster.release_device();
         warp.release_device();
         reflection_warp.release_device();
+        msaa.release_device();
         axis_ray_projection.release_device();
         for(auto* buffer:axis_ray_buffers) if(buffer) SDL_ReleaseGPUBuffer(device,buffer);
         if(axis_ray_upload) SDL_ReleaseGPUTransferBuffer(device,axis_ray_upload);
@@ -311,7 +312,8 @@ void GpuModel::release_device()noexcept {
 #endif
 }
 GpuRasterOutput GpuModel::enqueue(void* device,void* command,const assets::Shape& shape,const RenderPose& unjittered_pose,
-    const RenderSettings& settings,std::uint32_t width,std::uint32_t height,bool surface_metadata,const GpuRasterOutput* background,GpuModelDiagnostics* diagnostics,bool geometry_depth,GpuModelRaySource* ray_source,const RenderPose* previous_pose,std::array<float,2> raster_jitter,std::array<std::uint32_t,2> raster_size) {
+    const RenderSettings& settings,std::uint32_t width,std::uint32_t height,bool surface_metadata,const GpuRasterOutput* background,GpuModelDiagnostics* diagnostics,bool geometry_depth,GpuModelRaySource* ray_source,const RenderPose* previous_pose,std::array<float,2> raster_jitter,std::array<std::uint32_t,2> raster_size,GpuMsaaFaces* msaa_faces,unsigned msaa_samples) {
+    if(msaa_faces) *msaa_faces={};
     auto pose=unjittered_pose;
     if(diagnostics) *diagnostics={};
     if(ray_source) {const bool requested=ray_source->request_materials,reference=ray_source->reference_materials;
@@ -322,7 +324,7 @@ GpuRasterOutput GpuModel::enqueue(void* device,void* command,const assets::Shape
 #if defined(STARFOX_SDL_GPU_EFFECTS)
     try {
         if(SDL_getenv("STARFOX_TRACE_GPU_MODEL_DISPATCH")) std::cerr<<"model-enqueue: "<<shape.name<<'\n';
-        if(!device || !command || !width || !height || width>32767 || height>32767 || settings.render_scale<1 || settings.render_scale>4)
+        if(!device || !command || !width || !height || width>32767 || height>32767 || settings.render_scale<1 || settings.render_scale>10)
             throw std::runtime_error("Invalid GPU model input");
         if(previous_pose && background)
             throw std::runtime_error("Temporal model draws must be merged after motion generation");
@@ -571,12 +573,24 @@ GpuRasterOutput GpuModel::enqueue(void* device,void* command,const assets::Shape
         auto* clipped=impl_->clip.enqueue(device,command,projected,clip_corners,clip_polygons,visible,cs,vertices.continuous,
             vertices.continuous?b[10]:camera,vertices.continuous?cs.polygon_count:vertex_count,point_residuals,point_residuals?cs.point_count:0);
         if(!clipped) throw std::runtime_error(impl_->clip.status());
+        // Consumers retain per-sample color across draws and resolve after
+        // painter composition. Colour-warp output is already expanded into
+        // ordered occurrence slots: applying the source BSP order again would
+        // substitute the wrong randomized material on repeated faces.
         void* masked_texels=nullptr;
         const bool repeated_rows=(pose.wobble_mode&1U)!=0;
         auto* spans=impl_->clip.enqueue_spans(command,materials,custom_raster || settings.render_scale>1,settings.render_scale,colour_warp?nullptr:&order,settings.wireframe_thickness,
             repeated_rows?b[9]:nullptr,repeated_rows?std::uint32_t(faces.texels.size()):0,repeated_rows?&masked_texels:nullptr,raster_size,
-            diagnostics==nullptr);
+            diagnostics==nullptr,repeated_rows && msaa_faces!=nullptr?msaa_samples:0);
         if(!spans) throw std::runtime_error(impl_->clip.status());
+        if(msaa_faces) {
+            const std::array<unsigned,4> masks=repeated_rows?std::array<unsigned,4>{std::uint32_t(faces.texels.size()),((raster_width+31)/32)*4,raster_height,msaa_samples}:std::array<unsigned,4>{};
+            *msaa_faces=impl_->msaa.pack_faces(device,command,clipped,materials,nullptr,slots,cs.polygon_count,
+                vertices.continuous,{float(scale_x),float(scale_y)},colour_warp?nullptr:&order,settings.wireframe_thickness,masks);
+            if(!msaa_faces->triangles) throw std::runtime_error(impl_->msaa.status());
+            msaa_faces->texels=repeated_rows?masked_texels:b[9];
+            msaa_faces->texel_bytes=repeated_rows?impl_->clip.mask_buffer_bytes():std::uint32_t(faces.texels.size());
+        }
         const GpuGeometryDepthInput depth_input{impl_->geometry_planes,polygons,
             float(settings.focal_length*scale_x),float(settings.focal_length*scale_y),
             float((vertices.continuous?pose.vanish_x:vertices.native_pose.vanish[0])*scale_x),

@@ -234,14 +234,21 @@ add_library(starfox_core
     src/render/gpu_effects.cpp
     src/render/sdl_gpu_effects.cpp
     src/render/portable_shadows.cpp
+    src/render/gpu_volumetric_fog.cpp
+    src/render/gpu_motion_blur.cpp
+    src/render/gpu_scene_shutter.cpp
     src/render/sdl_dxr_shadows.cpp
     src/render/vulkan_ray_support.cpp
     src/render/vulkan_hardware_rt.cpp
     src/render/gpu_raster.cpp
     src/render/gpu_composite.cpp
     src/render/gpu_temporal_inputs.cpp
+    src/render/gpu_temporal_aa.cpp
+    src/render/gpu_smaa.cpp
+    src/render/gpu_msaa.cpp
     src/render/gpu_scalefx.cpp
     src/render/gpu_fsr1.cpp
+    src/render/d3d11_fsr1.cpp
     src/render/scalefx.cpp
     src/render/framebuffer.cpp
     src/render/palette.cpp
@@ -284,7 +291,7 @@ if(STARFOX_ENABLE_XBRZ)
 endif()
 
 # Ordinary effects use SM5 compute, not RT cores. Compile DXBC at build time.
-if(WIN32 AND NOT WINDOWS_STORE)
+if(WIN32)
     file(GLOB STARFOX_SDK_FXC "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe")
     list(SORT STARFOX_SDK_FXC COMPARE NATURAL ORDER DESCENDING)
     find_program(STARFOX_FXC NAMES fxc)
@@ -293,18 +300,33 @@ if(WIN32 AND NOT WINDOWS_STORE)
     endif()
     if(STARFOX_FXC)
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/fsr1_d3d11_shader.hpp"
+            COMMAND "${STARFOX_FXC}" /nologo /T cs_5_0 /E main /O3 /D STARFOX_FSR1_D3D11=1
+                /Fh "${CMAKE_CURRENT_BINARY_DIR}/generated/fsr1_d3d11_shader.hpp" /Vn fsr1_d3d11_shader
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/fsr1_portable.hlsl"
+            DEPENDS src/render/shaders/fsr1_portable.hlsl third_party/fsr1/ffx_a.h third_party/fsr1/ffx_fsr1.h VERBATIM)
+        target_sources(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/fsr1_d3d11_shader.hpp")
+        target_include_directories(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+        target_compile_definitions(starfox_core PUBLIC STARFOX_D3D11_FSR1)
+        if(STARFOX_BUILD_TOOLS AND NOT WINDOWS_STORE)
+            add_executable(starfox_d3d11_fsr1_check tools/check_d3d11_fsr1.cpp)
+            target_link_libraries(starfox_d3d11_fsr1_check PRIVATE starfox_core d3d11)
+        endif()
+        if(NOT WINDOWS_STORE)
         add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/effects_compute_shader.hpp"
             COMMAND "${STARFOX_FXC}" /nologo /T cs_5_0 /E main /O3
                 /D "STARFOX_ENABLE_XBRZ=$<BOOL:${STARFOX_ENABLE_XBRZ}>"
                 /Fh "${CMAKE_CURRENT_BINARY_DIR}/generated/effects_compute_shader.hpp"
                 /Vn effects_compute_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/effects_compute.hlsl"
-            DEPENDS src/render/shaders/effects_compute.hlsl src/render/shaders/xbrz_compute.hlsli src/render/shaders/environment_material.hlsli
+            DEPENDS src/render/shaders/effects_compute.hlsl include/starfox/render/special_fx.inc include/starfox/render/global_enhancements.inc include/starfox/render/scene_enhancements.inc include/starfox/render/depth_enhancements.inc include/starfox/render/ambient_occlusion.inc src/render/shaders/xbrz_compute.hlsli src/render/shaders/environment_material.hlsli
                 src/render/shaders/backdrop_sample.hlsli
+                include/starfox/render/lava_surface.inc
                 include/starfox/render/ex_face_planet_regions.inc include/starfox/render/ex_city_moons.inc
                 src/render/shaders/xbrz_weights.hlsli src/render/shaders/edge_corners.hlsli VERBATIM)
         target_sources(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/effects_compute_shader.hpp")
         target_include_directories(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
         target_compile_definitions(starfox_core PRIVATE STARFOX_GPU_EFFECTS)
+        endif()
     endif()
 endif()
 
@@ -324,7 +346,7 @@ if(WIN32 AND NOT WINDOWS_STORE AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND STARFOX_BUILD
             COMMAND "${STARFOX_DXC}" -T cs_6_5 -E main -O3
                 -Fh "${CMAKE_CURRENT_BINARY_DIR}/generated/shadow_dxr_shader.hpp"
                 -Vn shadow_dxr_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/shadow_dxr.hlsl"
-            DEPENDS src/render/shaders/shadow_dxr.hlsl src/render/shaders/environment_material.hlsli src/render/shaders/backdrop_sample.hlsli include/starfox/render/ex_face_planet_regions.inc include/starfox/render/ex_city_moons.inc VERBATIM)
+            DEPENDS src/render/shaders/shadow_dxr.hlsl src/render/shaders/environment_material.hlsli src/render/shaders/backdrop_sample.hlsli include/starfox/render/ex_face_planet_regions.inc include/starfox/render/ex_city_moons.inc include/starfox/render/lava_surface.inc include/starfox/render/water_transmission.inc include/starfox/render/water_caustics.inc VERBATIM)
         target_sources(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/shadow_dxr_shader.hpp")
         target_include_directories(starfox_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
         target_compile_definitions(starfox_core PRIVATE STARFOX_DXR)
@@ -662,7 +684,7 @@ if(STARFOX_BUILD_RUNTIME)
         if(NOT SWITCH AND NOT VITA AND NOT WINDOWS_STORE)
             # Checked-in portable shaders must match their shared source.
             set(STARFOX_EFFECT_SOURCE_TEXT "")
-            foreach(shader effects_compute.hlsl xbrz_compute.hlsli xbrz_weights.hlsli edge_corners.hlsli environment_material.hlsli backdrop_sample.hlsli ../../../include/starfox/render/ex_face_planet_regions.inc ../../../include/starfox/render/ex_city_moons.inc)
+            foreach(shader effects_compute.hlsl xbrz_compute.hlsli xbrz_weights.hlsli edge_corners.hlsli environment_material.hlsli backdrop_sample.hlsli ../../../include/starfox/render/ex_face_planet_regions.inc ../../../include/starfox/render/ex_city_moons.inc ../../../include/starfox/render/lava_surface.inc ../../../include/starfox/render/special_fx.inc ../../../include/starfox/render/global_enhancements.inc ../../../include/starfox/render/scene_enhancements.inc ../../../include/starfox/render/depth_enhancements.inc ../../../include/starfox/render/ambient_occlusion.inc)
                 get_filename_component(shader_source "${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/${shader}" ABSOLUTE)
                 file(READ "${shader_source}" shader_text)
                 string(REPLACE "\r\n" "\n" shader_text "${shader_text}")
@@ -723,6 +745,8 @@ if(STARFOX_BUILD_RUNTIME)
                     target_link_options(starfox_present_check PRIVATE -static -static-libgcc -static-libstdc++)
                 endif()
                 add_executable(starfox_gpu_fsr1_check tools/check_gpu_fsr1.cpp)
+                add_executable(starfox_gpu_volumetric_check tools/check_gpu_volumetric.cpp)
+                target_link_libraries(starfox_gpu_volumetric_check PRIVATE starfox_core SDL3::SDL3)
                 target_link_libraries(starfox_gpu_fsr1_check PRIVATE starfox_core SDL3::SDL3)
                 target_compile_definitions(starfox_gpu_effects_check PRIVATE STARFOX_TEST_PORTABLE_GPU)
                 target_link_libraries(starfox_gpu_effects_check PRIVATE starfox_core SDL3::SDL3)
@@ -763,6 +787,8 @@ if(STARFOX_BUILD_RUNTIME)
                 add_executable(starfox_gpu_clip_check tools/check_gpu_clip.cpp)
                 target_link_libraries(starfox_gpu_clip_check PRIVATE starfox_core SDL3::SDL3)
                 add_executable(starfox_gpu_composite_check tools/check_gpu_composite.cpp)
+                add_executable(starfox_gpu_temporal_aa_check tools/check_gpu_temporal_aa.cpp)
+                target_link_libraries(starfox_gpu_temporal_aa_check PRIVATE starfox_core SDL3::SDL3)
                 add_executable(starfox_gpu_stereo_check tools/check_gpu_stereo.cpp)
                 target_link_libraries(starfox_gpu_stereo_check PRIVATE starfox_core SDL3::SDL3)
                 target_link_libraries(starfox_gpu_composite_check PRIVATE starfox_core SDL3::SDL3)
@@ -773,6 +799,14 @@ if(STARFOX_BUILD_RUNTIME)
     endif()
     if(APPLE)
         enable_language(OBJCXX)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/include/starfox/render/water_caustics.inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include/starfox/render/water_transmission.inc")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/starfox/render/water_caustics.inc" STARFOX_WATER_CAUSTICS_SOURCE)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/starfox/render/water_transmission.inc" STARFOX_WATER_TRANSMISSION_SOURCE)
+        configure_file(src/render/shaders/metal_water_shared.hpp.in
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/metal_water_shared.hpp" @ONLY)
+        target_include_directories(starfox_pc PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
         target_sources(starfox_pc PRIVATE src/render/metal_hardware_rt.mm)
         set_source_files_properties(src/render/metal_hardware_rt.mm
             PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -956,6 +990,7 @@ if(STARFOX_BUILD_RUNTIME)
                 --resource "234=${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/deep-space-v1.bmp"
                 --resource "235=${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-ocean-surface-v1.bmp"
                 --resource "236=${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-lava-surface-v1.bmp"
+                --resource "237=${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/kazaru-volcanic-hills-v1.bmp"
             DEPENDS
                 "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_runtime_assets.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/alpine-day-v2.bmp"
@@ -995,6 +1030,7 @@ if(STARFOX_BUILD_RUNTIME)
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/deep-space-v1.bmp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-ocean-surface-v1.bmp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-lava-surface-v1.bmp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/kazaru-volcanic-hills-v1.bmp"
                 "${STARFOX_ORIGINAL_PATCH_FILE}"
                 "${STARFOX_SYMBOLS_FILE}"
                 "${STARFOX_EX_PATCH_FILE}"
@@ -1117,7 +1153,8 @@ if(STARFOX_BUILD_RUNTIME)
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/face-moon-v1.bmp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/deep-space-v1.bmp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-ocean-surface-v1.bmp"
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-lava-surface-v1.bmp")
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/orbital-lava-surface-v1.bmp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/kazaru-volcanic-hills-v1.bmp")
             target_compile_definitions(starfox_pc PRIVATE
                 STARFOX_HAS_EMBEDDED_ASSETS=1)
             set(STARFOX_RUNTIME_ASSETS_EMBEDDED TRUE)
@@ -1228,6 +1265,8 @@ if(STARFOX_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/${backdrop}.bmp")
     endforeach()
     add_executable(starfox_frame_persistence_tests tests/frame_persistence_tests.cpp)
+    add_test(NAME starfox_kazaru_volcanic_hills_tests COMMAND starfox_backdrop_image_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/enhanced-backdrops/kazaru-volcanic-hills-v1.bmp")
     target_link_libraries(starfox_frame_persistence_tests PRIVATE starfox_core)
     add_test(NAME starfox_frame_persistence_tests COMMAND starfox_frame_persistence_tests)
     target_link_libraries(starfox_pixel_filter_tests PRIVATE starfox_core)
@@ -1301,6 +1340,17 @@ if(STARFOX_BUILD_TESTS)
     target_link_libraries(starfox_state_tests PRIVATE starfox_core)
     add_test(NAME starfox_state_tests COMMAND starfox_state_tests)
     add_executable(starfox_shadow_geometry_tests tests/shadow_geometry_tests.cpp)
+    add_executable(starfox_camera_response_tests tests/camera_response_tests.cpp)
+    add_executable(starfox_volumetric_fog_tests tests/volumetric_fog_tests.cpp)
+    add_executable(starfox_motion_blur_tests tests/motion_blur_tests.cpp)
+    target_link_libraries(starfox_motion_blur_tests PRIVATE starfox_core)
+    add_test(NAME starfox_motion_blur_tests COMMAND starfox_motion_blur_tests)
+    target_link_libraries(starfox_volumetric_fog_tests PRIVATE starfox_core)
+    add_test(NAME starfox_volumetric_fog_tests COMMAND starfox_volumetric_fog_tests)
+    target_include_directories(starfox_camera_response_tests PRIVATE include)
+    target_compile_features(starfox_camera_response_tests PRIVATE cxx_std_20)
+    target_link_libraries(starfox_camera_response_tests PRIVATE starfox_core)
+    add_test(NAME starfox_camera_response_tests COMMAND starfox_camera_response_tests)
     target_include_directories(starfox_shadow_geometry_tests PRIVATE include)
     target_compile_features(starfox_shadow_geometry_tests PRIVATE cxx_std_20)
     target_link_libraries(starfox_shadow_geometry_tests PRIVATE starfox_core)
@@ -1381,6 +1431,12 @@ if(STARFOX_BUILD_TESTS)
     endif()
 
     add_executable(starfox_stereo_output_tests tests/stereo_output_tests.cpp)
+    add_executable(starfox_temporal_aa_tests tests/temporal_aa_tests.cpp)
+    add_executable(starfox_msaa_tests tests/msaa_tests.cpp)
+    target_link_libraries(starfox_msaa_tests PRIVATE starfox_core)
+    add_test(NAME starfox_msaa_tests COMMAND starfox_msaa_tests)
+    target_link_libraries(starfox_temporal_aa_tests PRIVATE starfox_core)
+    add_test(NAME starfox_temporal_aa_tests COMMAND starfox_temporal_aa_tests)
     target_link_libraries(starfox_stereo_output_tests PRIVATE starfox_core)
     add_test(NAME starfox_stereo_output_tests COMMAND starfox_stereo_output_tests)
     add_executable(starfox_hitlist_tests tests/hitlist_tests.cpp)

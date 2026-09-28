@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #if defined(STARFOX_SDL_GPU_EFFECTS)
@@ -77,7 +78,8 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
     const bool custom=s.logical_viewport[0] || s.logical_viewport[1];
     const auto logical_width=custom?s.logical_viewport[0]:width/(scale?scale:1);
     const auto logical_height=custom?s.logical_viewport[1]:height/(scale?scale:1);
-    if(!valid_raster_jitter(s.raster_jitter) || !device || !command || !width || !height || width>4096 || height>4096 || !scale || scale>4
+    if(!valid_raster_jitter(s.raster_jitter) || !std::isfinite(s.stereo_sky_source_x) || std::abs(s.stereo_sky_source_x)>65536
+        || !device || !command || !width || !height || width>4096 || height>4096 || !scale || scale>10
         || (!custom && (width%scale || height%scale)) || !logical_width || !logical_height || logical_width>4096 || logical_height>4096 || s.layer<1 || s.layer>3
         || unsigned(s.priority)>2 || unsigned(s.tag)>4 || s.horizontal_origin < -65536 || s.horizontal_origin>65536
         || s.scroll_x < -1000000 || s.scroll_x>1000000 || s.scroll_y < -1000000 || s.scroll_y>1000000 || s.unique_regions.size()>64) {
@@ -132,7 +134,7 @@ GpuRasterOutput GpuBackground::enqueue(void* device,void* command,const simulati
                 int(s.tag),(ppu.main_screen&2)?1:0,s.transparent_cgram_black?1:0,int(flags),
                 std::bit_cast<std::int32_t>(s.single_occurrence_top_rows),int(s.unique_regions.size()),ppu.bg2_scroll_x,ppu.bg2_scroll_y,
                 int(s.terrain_source_rows[0]),int(s.terrain_source_rows[1]),int(logical_width),int(logical_height),
-                std::bit_cast<std::int32_t>(s.raster_jitter[0]),std::bit_cast<std::int32_t>(s.raster_jitter[1]),int(s.sky_source_min),0};
+                std::bit_cast<std::int32_t>(s.raster_jitter[0]),std::bit_cast<std::int32_t>(s.raster_jitter[1]),int(s.sky_source_min),std::bit_cast<std::int32_t>(s.stereo_sky_source_x)};
             for(unsigned phase=0;phase<2;++phase) {
                 data[3]=int(phase);SDL_PushGPUComputeUniformData(cmd,0,data.data(),sizeof(data));
                 SDL_GPUStorageBufferReadWriteBinding outputs[2]{};

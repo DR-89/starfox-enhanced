@@ -1,10 +1,12 @@
 #include "starfox/render/gpu_effects.hpp"
 #include "starfox/render/effects.hpp"
+#include "starfox/render/global_enhancements.hpp"
 #include "starfox/render/hdr_effect.hpp"
 #include "starfox/render/chromatic_aberration.hpp"
 #include "starfox/render/model_smoothing.hpp"
 #include "starfox/render/bloom.hpp"
 #include "starfox/render/frame_persistence.hpp"
+#include "starfox/render/adaptive_exposure.hpp"
 #include "starfox/render/pixel_filter.hpp"
 #if defined(STARFOX_TEST_PORTABLE_GPU)
 #include "starfox/render/sdl_gpu_effects.hpp"
@@ -290,6 +292,117 @@ int main() {
         }
     }
     std::cout<<"Temporal persistence: CPU/GPU trails and long exposure agree at 60/120/240 Hz, including HUD, scene reset and eye isolation\n";
+    for(unsigned quality:{1U,2U,3U}) for(unsigned fps:{60U,120U,240U}) for(bool combine:{false,true}) {
+        FramePersistence phosphor_reference,trail_reference;
+        Framebuffer crt(8,4);crt.enable_layer_tags(true);
+        for(unsigned tick=0;tick<=fps/4;++tick) {
+            std::fill(crt.layer_tags().begin(),crt.layer_tags().end(),std::uint8_t(PixelLayer::background));
+            crt.layer_tags()[4]=std::uint8_t(PixelLayer::three_d);crt.layer_tags()[7]=std::uint8_t(PixelLayer::two_d);
+            std::vector<std::uint8_t> cpu(128,0);for(unsigned i=3;i<cpu.size();i+=4) cpu[i]=255;
+            if(tick%7==0) for(unsigned c=0;c<3;++c) {cpu[c]=192;cpu[16+c]=220;}
+            cpu[28]=23;auto hardware=cpu;
+            GpuEffectSettings intermediate;intermediate.preserve_phosphor=true;intermediate.preserve_persistence=true;
+            Framebuffer overlay(4,2);overlay.enable_layer_tags(true);std::vector<std::uint8_t> interim(32,0);
+            if(!gpu.apply(device.Get(),overlay,interim,intermediate)) return 68;
+            GpuEffectSettings settings;settings.phosphor=quality;
+            settings.persistence_mode=combine?1:0;settings.persistence_models=true;
+            settings.presentation_seconds=double(tick)/fps;
+            settings.scene_epoch=quality*1000+fps+unsigned(combine)*10000+(tick>fps/8?50000:0);
+            trail_reference.apply(crt,cpu,combine?PersistenceMode::trails:PersistenceMode::off,true,false,
+                settings.presentation_seconds,settings.scene_epoch);
+            phosphor_reference.apply(crt,cpu,PersistenceMode::phosphor,true,true,
+                settings.presentation_seconds,settings.scene_epoch,100,quality);
+            if(!gpu.apply(device.Get(),crt,hardware,settings)) return 69;
+            for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>1) {
+                std::cerr<<"phosphor mismatch quality="<<quality<<" fps="<<fps<<" combined="<<combine<<" tick="<<tick<<" byte="<<i<<'\n';return 70;
+            }
+            if(hardware[28]!=23 || hardware[29]!=0 || hardware[30]!=0 || hardware[31]!=255) return 71;
+        }
+    }
+    std::array<FramePersistence,3> crt_eyes;
+    for(unsigned tick=0;tick<5;++tick) for(unsigned eye=0;eye<3;++eye) {
+        std::fill(eye_frame.layer_tags().begin(),eye_frame.layer_tags().end(),std::uint8_t(PixelLayer::background));
+        std::vector<std::uint8_t> cpu(128,0);for(unsigned i=3;i<cpu.size();i+=4)cpu[i]=255;
+        if(!tick) cpu[eye*4+eye]=240;auto hardware=cpu;
+        GpuEffectSettings settings;settings.phosphor=2;settings.persistence_slot=eye;
+        settings.scene_epoch=990000;settings.presentation_seconds=double(tick)/60;
+        crt_eyes[eye].apply(eye_frame,cpu,PersistenceMode::phosphor,true,true,settings.presentation_seconds,settings.scene_epoch,100,2);
+        if(!gpu.apply(device.Get(),eye_frame,hardware,settings)) return 72;
+        for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>1) return 73;
+    }
+    std::cout<<"CRT phosphor: all qualities, 60/120/240 Hz, combined model trails, scene reset, HUD and independent eye histories pass\n";
+    for(unsigned quality:{1U,2U,3U}) for(unsigned fps:{60U,120U,240U}) {
+        AdaptiveExposure reference;
+        Framebuffer metered(67,35);metered.enable_layer_tags(true);
+        std::fill(metered.layer_tags().begin(),metered.layer_tags().end(),std::uint8_t(PixelLayer::background));
+        metered.layer_tags()[3]=std::uint8_t(PixelLayer::two_d);
+        for(unsigned tick=0;tick<=fps/2;++tick) {
+            std::vector<std::uint8_t> cpu(metered.pixels().size()*4);
+            for(unsigned i=0;i<metered.pixels().size();++i) {
+                cpu[i*4]=std::uint8_t((i%13)*3+(tick<fps/4?20:180));
+                cpu[i*4+1]=cpu[i*4];cpu[i*4+2]=cpu[i*4];cpu[i*4+3]=i%17?123:0;
+            }
+            auto hardware=cpu;
+            GpuEffectSettings settings;settings.exposure=quality;
+            settings.presentation_seconds=double(tick)/fps;settings.scene_epoch=700000+quality*1000+fps;
+            settings.exposure_paused=tick>fps/3;
+            reference.apply(metered,cpu,quality,settings.presentation_seconds,settings.scene_epoch,settings.exposure_paused);
+            if(!gpu.apply(device.Get(),metered,hardware,settings)) return 74;
+            for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>1) {
+                std::cerr<<"exposure mismatch quality="<<quality<<" fps="<<fps<<" tick="<<tick<<" byte="<<i<<" cpu="<<int(cpu[i])<<" gpu="<<int(hardware[i])<<'\n';return 75;
+            }
+            if(cpu[12]!=hardware[12] || cpu[15]!=hardware[15]) return 76;
+        }
+    }
+    std::cout<<"Adaptive exposure: tiled trimmed metering, all qualities, 60/120/240 Hz, HUD and alpha pass\n";
+    for(unsigned width:{64U,128U,224U}) for(double bank:{-.024,0.,.024}) {
+        Framebuffer world(width,64);world.enable_layer_tags(true);
+        std::vector<std::uint8_t> source(width*64*4,255),reference;
+        for(unsigned y=0;y<64;++y) for(unsigned x=0;x<width;++x) {
+            const auto i=(y*width+x)*4;source[i]=std::uint8_t(32+x/2);source[i+1]=std::uint8_t(32+y*2);source[i+2]=64;
+        }
+        GpuEffectSettings settings;settings.camera_response=CameraResponsePose{.009,-.007,bank};
+        settings.camera_response_focal={80,80};
+        if(!apply_camera_response(source,reference,width,64,80,80,*settings.camera_response)) return 90;
+        auto hardware=source;
+        if(!gpu.apply(device.Get(),world,hardware,settings)) return 91;
+        for(unsigned i=0;i<reference.size();++i) if(std::abs(int(reference[i])-int(hardware[i]))>1) {
+            std::cerr<<"Camera response GPU mismatch byte="<<i<<'\n';return 92;
+        }
+    }
+    std::cout<<"Camera response: cropped perspective CPU/GPU parity at three aspect ratios passed\n";
+    std::array<AdaptiveExposure,3> exposure_reference;
+    for(unsigned tick=0;tick<8;++tick) for(unsigned eye=0;eye<3;++eye) {
+        Framebuffer image(35,9);image.enable_layer_tags(true);
+        std::fill(image.layer_tags().begin(),image.layer_tags().end(),std::uint8_t(PixelLayer::background));
+        std::vector<std::uint8_t> cpu(image.pixels().size()*4,std::uint8_t(20+eye*80));
+        for(unsigned i=3;i<cpu.size();i+=4)cpu[i]=255;
+        auto hardware=cpu;
+        GpuEffectSettings settings;settings.exposure=3;settings.persistence_slot=eye;
+        settings.scene_epoch=900000+(tick>=5?1:0);settings.presentation_seconds=double(tick)/60;
+        exposure_reference[eye].apply(image,cpu,3,settings.presentation_seconds,settings.scene_epoch);
+        Framebuffer overlay(4,2);overlay.enable_layer_tags(true);std::vector<std::uint8_t> interim(32,0);
+        GpuEffectSettings intermediate;intermediate.preserve_exposure=true;
+        if(!gpu.apply(device.Get(),overlay,interim,intermediate)) return 77;
+        if(!gpu.apply(device.Get(),image,hardware,settings)) return 78;
+        for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>1) {
+            std::cerr<<"exposure history mismatch eye="<<eye<<" tick="<<tick<<'\n';return 79;
+        }
+    }
+    std::cout<<"Adaptive exposure: scene reset, intermediate resizes and isolated output histories pass\n";
+    {
+        Framebuffer metered(33,33);metered.enable_layer_tags(true);
+        std::vector<std::uint8_t> pixels(metered.pixels().size()*4,100);
+        GpuEffectSettings settings;
+        if(!gpu.apply(device.Get(),metered,pixels,settings)) return 80;
+        const auto baseline=gpu.texture_payload_bytes();
+        settings.exposure=1;
+        if(!gpu.apply(device.Get(),metered,pixels,settings)) return 81;
+        if(gpu.texture_payload_bytes()!=baseline+64*4*16+32) return 82;
+        settings.exposure=0;
+        if(!gpu.apply(device.Get(),metered,pixels,settings) || gpu.texture_payload_bytes()!=baseline) return 83;
+    }
+    std::cout<<"Adaptive exposure: exact tile/state allocation and disabled cleanup pass\n";
 #endif
     for(unsigned effect=0;effect<effect_count;++effect) for(unsigned intensity:{0U,37U,100U}) {
         auto cpu=source,hardware=source;
@@ -299,11 +412,10 @@ int main() {
         apply_effect(Effect(settings.model_effect),frame,cpu,scratch,settings.model_intensity,
             Effect(settings.world_effect),settings.world_intensity);
         if(!gpu.apply(device.Get(),frame,hardware,settings)) {std::cerr<<gpu.status();return 2;}
-        if(cpu!=hardware) {
-            for(std::size_t i=0;i<cpu.size();++i) if(cpu[i]!=hardware[i]) {
+        const int tolerance=(effect>=84 || settings.world_effect>=84)?1:0;
+        for(std::size_t i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>tolerance) {
                 std::cerr<<"style mismatch effect="<<effect<<" intensity="<<intensity<<" byte="<<i
-                    <<" cpu="<<int(cpu[i])<<" gpu="<<int(hardware[i])<<'\n'; break;
-            }
+                    <<" cpu="<<int(cpu[i])<<" gpu="<<int(hardware[i])<<'\n';
             return 3;
         }
     }
@@ -332,6 +444,83 @@ int main() {
         }
     }
     std::cout<<"Independent Cel + manipulation passes match CPU\n";
+    for(unsigned fx=84;fx<effect_count;++fx) for(float time:{.35f,1.7f}) {
+        auto cpu=source,hardware=source;GpuEffectSettings settings;
+        settings.presentation_seconds=time;
+        if(fx>=90) {settings.manipulation=fx;settings.extra_effects[0]=fx;}
+        else {settings.extra_effects[1]=fx;settings.extra_effects[2]=fx;}
+        apply_effect(static_cast<Effect>(fx),frame,cpu,scratch,100,static_cast<Effect>(fx),100,time);
+        if(!gpu.apply(device.Get(),frame,hardware,settings)) return 53;
+        for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>2) {
+            std::cerr<<"animated FX mismatch "<<fx<<" time "<<time<<" byte "<<i<<" CPU "<<unsigned(cpu[i])<<" GPU "<<unsigned(hardware[i])<<'\n';return 54;
+        }
+    }
+    std::cout<<"Independent animated FX: CPU/GPU coverage and time samples passed\n";
+    for(unsigned fx=0;fx<=global_enhancement_count;++fx) for(unsigned level=1;level<=3;++level) {
+        auto cpu=source,hardware=source;GpuEffectSettings settings;
+        settings.global_enhancements=fx==global_enhancement_count?global_enhancement_mask:level<<(fx*2);
+        settings.presentation_seconds=.35;
+        apply_global_enhancements(settings.global_enhancements,frame,cpu,scratch,.35f);
+        if(!gpu.apply(device.Get(),frame,hardware,settings)) return 55;
+        for(unsigned i=0;i<cpu.size();++i) {
+            if(std::abs(int(cpu[i])-int(hardware[i]))>2) {
+                std::cerr<<"global enhancement mismatch "<<fx<<" level "<<level<<" byte "<<i<<" CPU "<<unsigned(cpu[i])<<" GPU "<<unsigned(hardware[i])<<'\n';return 56;
+            }
+            if((i%4==3 || frame.layer_tags()[i/4]==1) && hardware[i]!=source[i]) return 57;
+        }
+    }
+    std::cout<<"Global enhancements: all 13, combined, three levels, CPU/GPU and protected layers passed\n";
+    for(unsigned kind=0;kind<9;++kind) {
+        auto cpu=source,hardware=source;GpuEffectSettings settings;
+        SurfaceBuffer receiver(frame.stored_width(),frame.stored_height());
+        for(unsigned y=0;y<frame.stored_height();++y) for(unsigned x=0;x<frame.stored_width();++x)
+            receiver.set(x,y,{0,0,-1,float(x<100?400:1000),0,true},frame.pixels()[std::size_t(y)*frame.stored_width()+x]);
+        settings.surfaces=&receiver;settings.scene_fx.camera={128,96,256,0};
+        settings.scene_fx.add({140,110,90,.8f},{float(kind),600,0,0},kind==1?std::array<float,4>{0,0,600,1000}:kind==8?std::array<float,4>{400,100,0,0}:std::array<float,4>{.2f,.6f,1.f,0});
+        apply_scene_enhancements(settings.scene_fx,frame,cpu,scratch,&receiver,0,0);
+        if(!gpu.apply(device.Get(),frame,hardware,settings)) return 58;
+        for(unsigned i=0;i<cpu.size();++i) {
+            if(std::abs(int(cpu[i])-int(hardware[i]))>2) {std::cerr<<"scene FX mismatch "<<kind<<" byte "<<i<<'\n';return 59;}
+            if((i%4==3 || frame.layer_tags()[i/4]==1) && hardware[i]!=source[i]) return 60;
+        }
+        if(cpu==source) {std::cerr<<"scene FX inert "<<kind<<'\n';return 61;}
+    }
+    std::cout<<"Scene enhancements: shockwave, lights, exhaust, weather, sparks/debris and heat CPU/GPU match; HUD/alpha protected\n";
+    {
+        auto cpu=source,hardware=source;GpuEffectSettings settings;
+        settings.scene_fx.camera={128,96,256,0};
+        for(unsigned n=0;n<scene_fx_capacity-1;++n)
+            settings.scene_fx.add({-1000,-1000,1,0},{2,600,0,0},{0,0,0,0});
+        settings.scene_fx.add({140,110,90,.8f},{2,600,0,0},{.2f,.6f,1.f,0});
+        apply_scene_enhancements(settings.scene_fx,frame,cpu,scratch,nullptr,0,0);
+        if(!gpu.apply(device.Get(),frame,hardware,settings) || cpu==source) return 66;
+        for(unsigned i=0;i<cpu.size();++i) if(std::abs(int(cpu[i])-int(hardware[i]))>2) {
+            std::cerr<<"last scene uniform slot mismatch at "<<i<<'\n';return 67;
+        }
+        std::cout<<"Scene uniform boundary: final emitter slot survives GPU upload\n";
+    }
+    bool depth_mismatch=false;
+    for(unsigned mode:{1U,2U,3U,4U,8U,12U,15U}) {
+        auto cpu=source,hardware=source;GpuEffectSettings settings;
+        SurfaceBuffer receiver(frame.stored_width(),frame.stored_height());
+        for(unsigned y=0;y<frame.stored_height();++y) for(unsigned x=0;x<frame.stored_width();++x)
+            receiver.set(x,y,{0,0,-1,float(x<160?900:1000),0,true},frame.pixels()[std::size_t(y)*frame.stored_width()+x]);
+        settings.surfaces=&receiver;settings.depth_fx.modes=mode;settings.depth_fx.camera={128,96,512,500};
+        apply_depth_enhancements(settings.depth_fx,frame,cpu,scratch,&receiver,0,0);
+        if(!gpu.apply(device.Get(),frame,hardware,settings)) return 62;
+        unsigned mismatches=0,max_error=0;
+        for(unsigned i=0;i<cpu.size();++i) {
+            const unsigned error=unsigned(std::abs(int(cpu[i])-int(hardware[i])));
+            max_error=std::max(max_error,error);
+            if(error>2) {if(mismatches<5) std::cerr<<"depth FX mismatch "<<mode<<" byte "<<i<<" CPU="<<unsigned(cpu[i])<<" GPU="<<unsigned(hardware[i])<<'\n';++mismatches;}
+            if((i%4==3 || frame.layer_tags()[i/4]==1) && hardware[i]!=source[i]) return 64;
+        }
+        if(cpu==source) {std::cerr<<"depth FX inert "<<mode<<'\n';return 65;}
+        std::cout<<"depth mode="<<mode<<" mismatches="<<mismatches<<" max_delta="<<max_error<<'\n';
+        depth_mismatch|=mismatches!=0;
+    }
+    if(depth_mismatch) return 63;
+    std::cout<<"Depth enhancements: geometric AO and depth-of-field CPU/GPU agree; HUD/alpha protected\n";
     BloomPass bloom;
     for(unsigned model=0;model<=3;++model) for(unsigned world=0;world<=3;++world) {
         auto cpu=source,hardware=source;

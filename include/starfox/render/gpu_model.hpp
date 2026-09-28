@@ -1,5 +1,6 @@
 #pragma once
 #include "starfox/render/gpu_raster.hpp"
+#include "starfox/render/gpu_msaa.hpp"
 #include "starfox/render/ray_materials.hpp"
 #include <array>
 #include <vector>
@@ -59,12 +60,15 @@ public:
     // Optional raster_size decouples logical viewport/projection from output
     // dimensions. Continuous subpixel geometry is required; whole-object
     // billboards and wave distortion currently require the normal path.
+    // Optional MSAA face packets are borrowed through the next enqueue. Each
+    // kind must be dispatched explicitly; empty packets mean a specialized
+    // model path. No MSAA allocation/packing is performed when not requested.
     GpuRasterOutput enqueue(void* device,void* command,const assets::Shape&,const RenderPose&,
         const RenderSettings&,std::uint32_t width,std::uint32_t height,bool surface_metadata=false,
         const GpuRasterOutput* background=nullptr,GpuModelDiagnostics* diagnostics=nullptr,
         bool geometry_depth=false,GpuModelRaySource* ray_source=nullptr,
         const RenderPose* previous_pose=nullptr,std::array<float,2> raster_jitter={},
-        std::array<std::uint32_t,2> raster_size={});
+        std::array<std::uint32_t,2> raster_size={},GpuMsaaFaces* msaa_faces=nullptr,unsigned msaa_samples=8);
     void release_device() noexcept;
     const std::string& status()const noexcept;
 private:

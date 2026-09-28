@@ -19,8 +19,11 @@ public:
     // Upscale the HUD-free scene, then restore the original full-resolution
     // HUD. Background artwork is spatially reconstructed, unlike DLSS.
     GpuCompositeOutput enqueue_composite(void* command,const GpuCompositeOutput& scene,
-        const GpuCompositeOutput& original,float sharpness=0.2F);
+        const GpuCompositeOutput& original,float sharpness=0.2F,void** world_texture=nullptr);
+    // Optional world_texture receives the borrowed RGBA8 full-resolution HUD-free
+    // result on success, valid until the next enqueue or device release.
     void release_device() noexcept;
+    void release_world_output() noexcept;
     const std::string& status() const noexcept;
 private:
     struct Impl;

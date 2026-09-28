@@ -148,7 +148,7 @@ struct SdlDxrShadows::Impl {
         return target;
     }
     void render(const Scene& scene,Camera camera,Vec3 light,std::optional<ReceiverPlane> plane,
-        const GpuScene::RayGeometryOutput* geometry,const DxrShadows::ReflectionInput* reflection=nullptr) {
+        const GpuScene::RayGeometryOutput* geometry,const DxrShadows::ReflectionInput* reflection=nullptr,bool ground_only=false) {
         output={};finish();
         DxrShadows::ResidentGeometry resident_geometry;
         if(geometry) resident_geometry=copy_geometry(*geometry,reflection!=nullptr);
@@ -157,7 +157,7 @@ struct SdlDxrShadows::Impl {
             bound_reflection.resident_materials=resident_geometry.resource;
             bound_reflection.resident_material_offset=geometry->material_offset;
         }
-        if(!producer->render_resident(scene,camera,light,plane,geometry?&resident_geometry:nullptr,nullptr,true,true,reflection?&bound_reflection:nullptr))
+        if(!producer->render_resident(scene,camera,light,plane,geometry?&resident_geometry:nullptr,nullptr,true,true,reflection?&bound_reflection:nullptr,ground_only))
             throw std::runtime_error("DXR producer: "+producer->status());
         if(!vulkan.bridge && !ready_fence) {
             HANDLE shared=static_cast<HANDLE>(producer->export_ready_fence_handle());
@@ -256,8 +256,9 @@ GpuReflectionOutput SdlDxrShadows::reflection_output() const {
 bool SdlDxrShadows::render_reflections(void* device,Camera camera,const GpuScene::RayGeometryOutput& geometry,
     std::span<const std::uint32_t,256> palette,std::uint32_t environment,float roughness,std::uint32_t metallic,
     std::span<const std::uint32_t> environment_cube,std::uint32_t face_size,std::array<float,9> environment_rotation,
-    const GpuBackgroundDraw* background,std::optional<ReceiverPlane> ground,float background_eye_x,const RayWater* water) {
+    const GpuBackgroundDraw* background,std::optional<ReceiverPlane> ground,float background_eye_x,const RayWater* water,bool ground_only) {
     impl_->output={};
+    if(ground_only && (!ground || !water)) return false;
 #if defined(STARFOX_NATIVE_SDL_DXR)
     if(!geometry.complete || !geometry.materials || (!geometry.material_offset
         && geometry.materials->triangles.size()*3!=geometry.vertex_count)) return false;
@@ -266,6 +267,7 @@ bool SdlDxrShadows::render_reflections(void* device,Camera camera,const GpuScene
         if(!impl_->device) impl_->initialize(static_cast<SDL_GPUDevice*>(device));
         DxrShadows::ReflectionInput reflection{geometry.materials,palette,environment,roughness,metallic,environment_cube,face_size,environment_rotation,background,ground,background_eye_x};
         reflection.water=water;
+        reflection.ground_only=ground_only;
         impl_->render(Scene{},camera,{0,1,0},{},&geometry,&reflection);return true;
     }catch(const std::exception& error){const std::string message=error.what();release_device();impl_->status=message;}
 #endif
@@ -275,13 +277,14 @@ bool SdlDxrShadows::render_reflections(void* device,Camera camera,const GpuScene
 const std::string& SdlDxrShadows::status() const {return impl_->status;}
 void SdlDxrShadows::release_device() noexcept {impl_.reset(new Impl);}
 bool SdlDxrShadows::render_resident(void* device,const Scene& scene,Camera camera,Vec3 light,std::optional<ReceiverPlane> plane,
-    const GpuScene::RayGeometryOutput* geometry) {
+    const GpuScene::RayGeometryOutput* geometry,bool ground_only) {
     impl_->output={};
+    if(ground_only && !plane) return false;
 #if defined(STARFOX_NATIVE_SDL_DXR)
     try {
         if(impl_->device && impl_->device!=device) release_device();
         if(!impl_->device) impl_->initialize(static_cast<SDL_GPUDevice*>(device));
-        impl_->render(scene,camera,light,plane,geometry);return true;
+        impl_->render(scene,camera,light,plane,geometry,nullptr,ground_only);return true;
     } catch(const std::exception& error) {
         const std::string message=error.what();release_device();impl_->status=message;
     }

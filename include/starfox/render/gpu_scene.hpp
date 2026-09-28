@@ -1,6 +1,7 @@
 #pragma once
 #include "starfox/render/gpu_raster.hpp"
 #include "starfox/render/gpu_background.hpp"
+#include "starfox/render/palette.hpp"
 #include "starfox/render/ray_materials.hpp"
 #include "starfox/render/grid_projection.hpp"
 #include "starfox/render/dust_renderer.hpp"
@@ -133,6 +134,12 @@ private:
 // as produced by GpuModel or enqueue_row_spans(pixel_coverage=true).
 class GpuScene {
 public:
+    struct MsaaSettings {
+        void* palette{}; // Resident 256-entry RGBA8 palette on the scene device.
+        unsigned samples{}; // 2, 4 or 8; omitted settings allocate no MSAA resources.
+        std::span<const Rgba8> cpu_palette; // Used when palette is null; copied during encoding.
+        bool defer_palette{}; // Do not publish provisional color through resident_output.
+    };
     struct RayGeometryOutput {
         void* device{};void* buffer{};
         std::uint32_t vertex_count{};
@@ -158,12 +165,19 @@ public:
     // caller-owned command on failure (including partially encoded batches).
     // Consume the result before another operation on this scene instance.
     GpuRasterOutput enqueue_batch(void* device,void* command,std::uint32_t width,
-        std::uint32_t height,std::span<const GpuSceneDraw> draws,std::array<float,2> raster_jitter={});
+        std::uint32_t height,std::span<const GpuSceneDraw> draws,std::array<float,2> raster_jitter={},const MsaaSettings* msaa=nullptr);
     // Owned submission for presentation. No readback; retains at most two older
     // submissions, cycling buffer storage on reuse. Borrowed enqueue calls reject
     // pending owned work until wait_for_completion succeeds.
     bool render_resident(void* device,std::uint32_t width,std::uint32_t height,
-        std::span<const GpuSceneDraw> draws,std::array<float,2> raster_jitter={});
+        std::span<const GpuSceneDraw> draws,std::array<float,2> raster_jitter={},const MsaaSettings* msaa=nullptr);
+    // Optional premultiplied RGBA scene coverage, accumulated in painter order.
+    // Empty MSAA scenes clear it to transparent; failed/non-MSAA submissions
+    // invalidate it. Borrowed like resident_output.
+    [[nodiscard]] void* msaa_output() const noexcept;
+    // Resolve retained indexed coverage with the final presentation palette.
+    // Requires an owned resident submission; leaves geometry/ray outputs intact.
+    bool resolve_msaa_palette(std::span<const Rgba8> palette);
     [[nodiscard]] GpuRasterOutput resident_output() const noexcept;
     // Triangle float4s, concatenated in draw order, borrowed through the next
     // batch/release. Submission ownership/fence rules match the colour output.

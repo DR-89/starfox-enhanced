@@ -341,7 +341,9 @@ public:
     starfox::render::GpuCompositeOutput evaluate(const starfox::render::GpuCompositeOutput& input,
         float focal,float cx,float cy,uint64_t serial,uint64_t epoch,const starfox::render::GpuCompositeOutput* final=nullptr,
         const starfox::render::TemporalCamera* camera=nullptr,const starfox::render::TemporalGroundPlane* ground_plane=nullptr,
-        float focal_y=0,std::array<float,2> raster_jitter={}) {
+        float focal_y=0,std::array<float,2> raster_jitter={},void** world_texture=nullptr) {
+        // Borrowed HUD-free RGBA8 output, valid until the next evaluation.
+        if(world_texture) *world_texture=nullptr;
         if(focal_y==0) focal_y=focal;
         const auto& original=final?*final:input;
         if(!enabled() || !input.geometry_depth
@@ -452,6 +454,7 @@ public:
             std::cerr<<"dlss-gameplay: evaluated frame="<<frame.frame_index<<" reset="<<reset<<" size="<<input.width<<'x'<<input.height
                 <<" mode="<<mode_<<" render="<<render_width_<<'x'<<render_height_
                 <<" jitter="<<raster_jitter[0]<<','<<raster_jitter[1]<<" diagnostic, incomplete world inputs\n";
+            if(world_texture) *world_texture=output_;
             auto result=original;result.rgba=protected_output;return result;
         } catch(const std::exception& e) {
             if(command) SDL_CancelGPUCommandBuffer(command);
@@ -471,5 +474,5 @@ class DlssHost {public:explicit DlssHost(const std::filesystem::path& ={}) {} vo
     bool set_mode(uint32_t) noexcept {return false;}
     const std::string& availability() const noexcept {static const std::string reason="DLSS requires Windows D3D12";return reason;}
     std::array<uint32_t,2> prepare_requested(SDL_GPUDevice*,uint32_t,uint32_t) {return {};}
-    starfox::render::GpuCompositeOutput evaluate(const starfox::render::GpuCompositeOutput& input,float,float,float,uint64_t,uint64_t,const starfox::render::GpuCompositeOutput* final=nullptr,const starfox::render::TemporalCamera* =nullptr,const starfox::render::TemporalGroundPlane* =nullptr,float=0,std::array<float,2> = {}){return final?*final:input;}};
+    starfox::render::GpuCompositeOutput evaluate(const starfox::render::GpuCompositeOutput& input,float,float,float,uint64_t,uint64_t,const starfox::render::GpuCompositeOutput* final=nullptr,const starfox::render::TemporalCamera* =nullptr,const starfox::render::TemporalGroundPlane* =nullptr,float=0,std::array<float,2> = {},void** world_texture=nullptr){if(world_texture) *world_texture=nullptr;return final?*final:input;}};
 #endif

@@ -94,6 +94,7 @@ void main(uint3 id:SV_DispatchThreadID) {
         uint dither_scale=max(1U,c.scroll_x);
         uint colour=c.dither && (((id.x/dither_scale)^(id.y/dither_scale))&1)!=0?c.odd:c.even;
         uint pixelTag=c.tag;
+        uint materialPair=0;
         if(c.textured==8) {
             if(c.du<=0 || c.texture_offset>texel_bytes || texel_bytes-c.texture_offset<640) continue;
             int px=c.dv!=0?((int(id.x)-c.u)*6+2)/(7*c.du):(int(id.x)-c.u)/c.du;
@@ -135,7 +136,16 @@ void main(uint3 id:SV_DispatchThreadID) {
             uint at=(uint(snapped.y)*uint(c.du)+sub.y)*c.u_mask+uint(snapped.x)*uint(c.du)+sub.x;
             uint offset=c.texture_offset+at;
             colour=(texels.Load(offset&~3U)>>((offset&3U)*8))&255;
-            if(colour==0) continue;
+            if(c.colour_base!=0) {
+                uint pairBase=c.colour_base-1;
+                if(pairBase>texel_bytes || c.u_mask>(texel_bytes-pairBase)/2
+                    || c.v_mask>(texel_bytes-pairBase)/2/c.u_mask) continue;
+                uint pairAt=pairBase+at*2;
+                materialPair=(texels.Load(pairAt&~3U)>>((pairAt&3U)*8))&255;
+                ++pairAt;
+                materialPair|=((texels.Load(pairAt&~3U)>>((pairAt&3U)*8))&255)<<8;
+            }
+            if(colour==0 && (materialPair&256)==0) continue;
             if(c.dither!=0) {offset=c.scroll_y+at;pixelTag=(texels.Load(offset&~3U)>>((offset&3U)*8))&255;}
         } else if(c.textured==4) {
             if(c.du<=0 || c.dv<=0 || c.texture_offset>texel_bytes || texel_bytes-c.texture_offset<65536) continue;
@@ -173,7 +183,11 @@ void main(uint3 id:SV_DispatchThreadID) {
             if(c.textured==2 && (c.scroll_x&256)!=0) colour=c.scroll_x&255;
         }
         if(!have_pixel || (sparse && owner>pixel_owner)) {
-            packed=(packed&0xffff0000U)|colour|(pixelTag<<8);have_pixel=true;pixel_owner=owner;
+            packed=(packed&0x7fff0000U)|colour|(pixelTag<<8);have_pixel=true;pixel_owner=owner;
+            if(pixelTag==0 && (materialPair&256)!=0)
+                packed=(packed&0xffff00ffU)|((materialPair&255U)<<8)|0x80000000U;
+            if(c.textured==0 && pixelTag==0 && c.dither!=0 && c.even!=c.odd)
+                packed=(packed&0xffff00ffU)|(((colour==c.even?c.odd:c.even)&255U)<<8)|0x80000000U;
             if(want_depth!=0) {
                 depth=0;
                 uint plane_id=c.has_surface>>1;
@@ -190,17 +204,17 @@ void main(uint3 id:SV_DispatchThreadID) {
             }
         }
         if(take_surface!=0 && (c.has_surface&1u)!=0 && (!have_surface || (sparse && owner>surface_owner))) {
-            packed=(packed&65535U)|(colour<<16)|(1U<<24);surface=c.surface;have_surface=true;surface_owner=owner;
+            packed=(packed&0x8000ffffU)|(colour<<16)|(1U<<24);surface=c.surface;have_surface=true;surface_owner=owner;
         }
         if(!sparse && have_pixel && have_surface) break;
     }
     if((reserved&0x40000000U)!=0 && have_pixel) packed|=0x04000000U;
     if(has_back!=0) {
         uint back=back_pixels[id.y*width+id.x];
-        if(!have_pixel) packed=(packed&0x01ff0000U)|(back&0x1c00ffffU);
+        if(!have_pixel) packed=(packed&0x01ff0000U)|(back&0x9c00ffffU);
         if(want_depth!=0 && !have_pixel && has_back_depth!=0) depth=back_depth[id.y*width+id.x];
         if((packed&0x01000000U)==0 && has_back_surface!=0 && (back&0x01000000U)!=0) {
-            packed=(packed&0x1c00ffffU)|(back&0x01ff0000U);
+            packed=(packed&0x9c00ffffU)|(back&0x01ff0000U);
             surface=back_surfaces[id.y*width+id.x];
         }
     }

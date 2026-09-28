@@ -1,3 +1,5 @@
+#include "../../../include/starfox/render/water_transmission.inc"
+#include "../../../include/starfox/render/water_caustics.inc"
 RaytracingAccelerationStructure scene : register(t0);
 ByteAddressBuffer coverage : register(t1);
 ByteAddressBuffer triangleVertices : register(t2);
@@ -9,7 +11,7 @@ cbuffer Settings : register(b0) {
     float4 options; // center y, ground enabled
     float4 groundPoint;
     float4 groundNormal;
-    float4 lights[8];
+    float4 lights[16];
 };
 
 bool covered(uint primitive, float2 bary) {
@@ -262,6 +264,10 @@ uint reflected_environment(float3 direction) {
     return rgb.x|(rgb.y<<8)|(rgb.z<<16)|0xff000000u;
 }
 uint trace_reflected_ray(RayDesc ray,uint2 id) {
+    uint waterFlags=uint(asfloat(coverage.Load(coverage.Load(4)+1100)));
+    // Bounded specular transport: never resolve a mirror hit to the original
+    // palette. At the budget limit use the enhanced environment, not stale art.
+    [loop] for(uint bounce=0;bounce<4;++bounce) {
     float groundDistance=ray.TMax;bool groundHit=false;
     if(options.y!=0) {
         float denominator=dot(ray.Direction,groundNormal.xyz);
@@ -275,10 +281,29 @@ uint trace_reflected_ray(RayDesc ray,uint2 id) {
     while(secondary.Proceed()) if(secondary.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE
         && reflected_colour(secondary.CandidatePrimitiveIndex(),secondary.CandidateTriangleBarycentrics(),id)!=0)
         secondary.CommitNonOpaqueTriangleHit();
-    if(secondary.CommittedStatus()==COMMITTED_TRIANGLE_HIT)
-        return reflected_colour(secondary.CommittedPrimitiveIndex(),secondary.CommittedTriangleBarycentrics(),id);
+    if(secondary.CommittedStatus()==COMMITTED_TRIANGLE_HIT) {
+        uint primitive=secondary.CommittedPrimitiveIndex();
+        if((waterFlags&16u)==0)
+            return reflected_colour(primitive,secondary.CommittedTriangleBarycentrics(),id);
+        uint stride=(uint)groundNormal.w,vertex=primitive*3*stride;
+        float3 a=asfloat(triangleVertices.Load3(vertex)),b=asfloat(triangleVertices.Load3(vertex+stride)),c=asfloat(triangleVertices.Load3(vertex+2*stride));
+        float3 normal=normalize(cross(b-a,c-a));
+        if(dot(normal,ray.Direction)>0) normal=-normal;
+        float distance=secondary.CommittedRayT(),bias=max(.05,distance*1e-5);
+        ray.Origin+=ray.Direction*distance+normal*bias;
+        ray.Direction=reflect(ray.Direction,normal);ray.TMin=bias;ray.TMax=65536;
+        continue;
+    }
     if(groundHit) {
         float3 hitPosition=ray.Origin+ray.Direction*groundDistance;
+        if((waterFlags&15u)==1u) {
+            float3 normal=normalize(groundNormal.xyz);
+            if(dot(normal,ray.Direction)>0) normal=-normal;
+            float bias=max(.05,groundDistance*1e-5);
+            ray.Origin=hitPosition+normal*bias;
+            ray.Direction=reflect(ray.Direction,normal);ray.TMin=bias;ray.TMax=65536;
+            continue;
+        }
         hitPosition.x+=asfloat(coverage.Load(coverage.Load(4)+1084));
         uint background=coverage.Load(coverage.Load(4)+1052);
         // A physical floor remains opaque even without a tiled material.
@@ -291,42 +316,64 @@ uint trace_reflected_ray(RayDesc ray,uint2 id) {
         return reflection_background(background,hitPosition);
     }
     return reflected_environment(ray.Direction);
+    }
+    return reflected_environment(ray.Direction);
+}
+bool caustic_blocked(float3 origin,float3 direction,float maximum,float bias,uint2 id) {
+    RayDesc ray;ray.Origin=origin;ray.Direction=direction;ray.TMin=bias;ray.TMax=maximum;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(scene,RAY_FLAG_FORCE_NON_OPAQUE,255,ray);
+    while(query.Proceed()) if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE
+        && reflected_colour(query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics(),id)!=0)
+        query.CommitNonOpaqueTriangleHit();
+    return query.CommittedStatus()==COMMITTED_TRIANGLE_HIT;
 }
 uint trace_water(uint2 id,float3 direction,float distance) {
     uint data=coverage.Load(4)+1088;
     float4 settings=asfloat(coverage.Load4(data));
+    uint caustics=(uint(settings.w)>>5)&3u;
+    settings.w=float(uint(settings.w)&15u);
     float4 r0=asfloat(coverage.Load4(data+16)),r1=asfloat(coverage.Load4(data+32)),r2=asfloat(coverage.Load4(data+48));
     float3x3 rotation=float3x3(r0.xyz,r1.xyz,r2.xyz);
     float3 hit=direction*distance;
     float3 position=mul(hit,rotation)+float3(r0.w,r1.w,r2.w);
     float t=settings.x;
+    float footprint=distance/max(camera.z,1.f)/max(abs(dot(direction,groundNormal.xyz)),.04f);
     // Long waves plus smaller crossing ripples; anchored in world coordinates,
     // not screen pixels. No stochastic sampling or per-frame noise.
-    float dx=.055*cos(position.x*.018+position.z*.011-t*.8)
-        +.025*cos(position.x*.047-position.z*.025+t*1.2);
-    float dz=.045*cos(position.z*.022-position.x*.009-t*.65)
-        -.020*cos(position.x*.047-position.z*.025+t*1.2);
+    float dx=.055*cos(position.x*.018+position.z*.011-t*.8)*water_light_band(footprint,.022)
+        +.025*cos(position.x*.047-position.z*.025+t*1.2)*water_light_band(footprint,.054);
+    float dz=.045*cos(position.z*.022-position.x*.009-t*.65)*water_light_band(footprint,.024)
+        -.020*cos(position.x*.047-position.z*.025+t*1.2)*water_light_band(footprint,.054);
+    LavaSample liquid;
     if(settings.w==3) {
-        dx=.18*cos(position.x*.08+position.z*.055-t*.8)
-            +.08*cos(position.x*.19-position.z*.12+t*1.2);
-        dz=.16*cos(position.z*.10-position.x*.04-t*.65)
-            -.06*cos(position.x*.19-position.z*.12+t*1.2);
+        liquid=lava_surface(position.x,position.z,t,footprint);
+        float3 travel=mul(direction,rotation);
+        float shift=clamp(-liquid.height/max(travel.y,.12f),-distance*.2f,distance*.2f);
+        position+=travel*shift;hit+=direction*shift;
+        liquid=lava_surface(position.x,position.z,t,footprint);
+        dx=liquid.dx;dz=liquid.dz;
     }
     if(settings.w==1 || settings.w==2) {dx=0;dz=0;}
     float3 normal=normalize(mul(rotation,float3(dx,-1,dz)));
     if(dot(normal,direction)>0) normal=-normal;
     if(settings.w==3) {
-        // Pass the moving water-style surface slopes to the compositor.
-        // It displaces the detailed molten-crust material already drawn in
-        // stage 31; replacing that material with a flat ray colour erased it.
-        float a=sin(position.x*.08+position.z*.055-t*.8);
-        float b=sin(position.x*.19-position.z*.12+t*1.2);
-        float c=sin(position.z*.10-position.x*.04-t*.65);
-        float heat=saturate(.47+.25*a+.17*b+.08*c);
-        float bubble=pow(saturate(sin(position.x*.035+position.z*.018-t*1.8)
-            *sin(position.z*.041-position.x*.012+t*1.3)),24);
-        uint3 flow=uint3(saturate(float3(.5+dx*1.5,.5+dz*1.5,heat+bubble*.15))*255+.5);
-        return flow.x|(flow.y<<8)|(flow.z<<16)|0xfd000000u;
+        float3 viewer=mul(-direction,rotation);
+        LavaColour colour=lava_shade(liquid,viewer.x,viewer.y,viewer.z);
+        float3 molten=float3(colour.r,colour.g,colour.b)*settings.z;
+        if(settings.y>0) {
+            float bias=max(.05,distance*1e-5);
+            RayDesc reflected;reflected.Origin=hit+normal*bias;
+            reflected.TMin=bias;reflected.TMax=65536;
+            reflected.Direction=reflect(direction,normal);
+            float3 sky=reflection_rgb(trace_reflected_ray(reflected,id));
+            float fresnel=.035f+.40f*pow(1-saturate(dot(-direction,normal)),5);
+            molten+=sky*fresnel*settings.y*(.3f+.7f*liquid.crust);
+        }
+        // Shade the continuous surface directly. Packing slopes then rounding
+        // a second screen-space warp caused visible whole-pixel jumps.
+        uint3 rgb=uint3(saturate(molten)*255+.5);
+        return rgb.x|(rgb.y<<8)|(rgb.z<<16)|0xfe000000u;
     }
     float bias=max(.05,distance*1e-5);
     RayDesc ray;ray.Origin=hit+normal*bias;ray.TMin=bias;ray.TMax=65536;
@@ -348,8 +395,70 @@ uint trace_water(uint2 id,float3 direction,float distance) {
     if(settings.w==2) base=luminance*float3(1,.875,.58);
     float diffuse=.65+.35*visibility*max(0,dot(normal,light));
     float3 radiance=base*base*diffuse;
+    if(settings.w==0) {
+        // Trace UNDER the water plane rather than alpha-blending a screenshot.
+        // This ray deliberately ignores the analytic water receiver itself.
+        float3 transmitted=refract(direction,normal,.75);
+        RayDesc through;through.Origin=hit-normal*bias;through.Direction=transmitted;
+        through.TMin=bias;through.TMax=65536;
+        float3 worldOrigin=mul(through.Origin,rotation)+float3(r0.w,r1.w,r2.w);
+        float3 worldDirection=mul(transmitted,rotation);
+        float bottomTravel=worldDirection.y>0?(position.y+640-worldOrigin.y)/worldDirection.y:65536;
+        through.TMax=min(through.TMax,bottomTravel);
+        RayQuery<RAY_FLAG_NONE> submerged;
+        submerged.TraceRayInline(scene,RAY_FLAG_FORCE_NON_OPAQUE,255,through);
+        while(submerged.Proceed()) if(submerged.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE
+            && reflected_colour(submerged.CandidatePrimitiveIndex(),submerged.CandidateTriangleBarycentrics(),id)!=0)
+            submerged.CommitNonOpaqueTriangleHit();
+        if(submerged.CommittedStatus()==COMMITTED_TRIANGLE_HIT) {
+            float3 receiver=reflection_rgb(reflected_colour(submerged.CommittedPrimitiveIndex(),submerged.CommittedTriangleBarycentrics(),id));
+            receiver*=receiver;
+            float travel=submerged.CommittedRayT();
+            if(caustics!=0) {
+                float3 receiverView=through.Origin+transmitted*travel;
+                float3 receiverWorld=mul(receiverView,rotation)+float3(r0.w,r1.w,r2.w);
+                float depth=receiverWorld.y-position.y;
+                if(depth>0) {
+                    WaterCausticSample focus=water_caustic_sample(receiverWorld.x,receiverWorld.z,t,depth,footprint);
+                    float3 entry=mul(rotation,float3(focus.entry_x,position.y,focus.entry_z)-float3(r0.w,r1.w,r2.w));
+                    float3 segment=entry-receiverView;float lengthToWater=length(segment);
+                    uint primitive=submerged.CommittedPrimitiveIndex(),stride=uint(groundNormal.w),vertex=primitive*3*stride;
+                    float3 a=asfloat(triangleVertices.Load3(vertex)),b=asfloat(triangleVertices.Load3(vertex+stride)),c=asfloat(triangleVertices.Load3(vertex+2*stride));
+                    float3 receiverNormal=normalize(cross(b-a,c-a));
+                    if(dot(receiverNormal,transmitted)>0)receiverNormal=-receiverNormal;
+                    float up=saturate(-mul(receiverNormal,rotation).y);
+                    if(lengthToWater>bias*2 && up>0
+                        && !caustic_blocked(receiverView,segment/lengthToWater,lengthToWater-bias,bias,id)
+                        && !caustic_blocked(entry,mul(rotation,float3(0,-1,0)),65536,bias,id))
+                        receiver*=clamp(1+(focus.irradiance-exp(-depth/1600))*up*float(caustics)/3,.25,3);
+                }
+            }
+            radiance=float3(water_transmitted_channel(receiver.r,radiance.r,travel,.0025),
+                water_transmitted_channel(receiver.g,radiance.g,travel,.0008),
+                water_transmitted_channel(receiver.b,radiance.b,travel,.00035));
+        }
+        else if(bottomTravel>bias && bottomTravel<65536) {
+            float3 receiverView=through.Origin+transmitted*bottomTravel;
+            float3 receiverWorld=mul(receiverView,rotation)+float3(r0.w,r1.w,r2.w);
+            // A quiet sandy bed supplies a real refracted receiver on stages
+            // whose original ground was only an infinite coloured plane.
+            float3 receiver=float3(.28,.24,.16);
+            if(caustics!=0) {
+                WaterCausticSample focus=water_caustic_sample(receiverWorld.x,receiverWorld.z,t,640,footprint);
+                float3 entry=mul(rotation,float3(focus.entry_x,position.y,focus.entry_z)-float3(r0.w,r1.w,r2.w));
+                float3 segment=entry-receiverView;float lengthToWater=length(segment);
+                if(lengthToWater>bias*2
+                    && !caustic_blocked(receiverView,segment/lengthToWater,lengthToWater-bias,bias,id)
+                    && !caustic_blocked(entry,mul(rotation,float3(0,-1,0)),65536,bias,id))
+                    receiver*=clamp(1+(focus.irradiance-exp(-640.f/1600))*float(caustics)/3,.25,3);
+            }
+            radiance=float3(water_transmitted_channel(receiver.r,radiance.r,bottomTravel,.0025),
+                water_transmitted_channel(receiver.g,radiance.g,bottomTravel,.0008),
+                water_transmitted_channel(receiver.b,radiance.b,bottomTravel,.00035));
+        }
+    }
     float grazing=pow(1-saturate(dot(-direction,normal)),5);
-    float fresnel=settings.w!=0?.95:.02+.98*grazing;
+    float fresnel=settings.w==1?1:settings.w!=0?.95:.02+.98*grazing;
     if(settings.y>0) {
         ray.Direction=reflect(direction,normal);
         float3 reflected=reflection_rgb(trace_reflected_ray(ray,id));
@@ -372,6 +481,7 @@ uint trace_reflection(uint2 id) {
         float distance=abs(denominator)>1e-8?dot(groundPoint.xyz,groundNormal.xyz)/denominator:0;
         if(distance>ray.TMin && distance<ray.TMax) {ray.TMax=distance;water=true;}
     }
+    if ((uint(options.w)&2u)!=0) return water?trace_water(id,direction,ray.TMax):0;
     RayQuery<RAY_FLAG_NONE> primary;
     primary.TraceRayInline(scene,RAY_FLAG_FORCE_NON_OPAQUE,255,ray);
     while(primary.Proceed()) if(primary.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE
@@ -432,20 +542,23 @@ uint trace_pixel(uint2 id) {
             }
         }
     }
-    RayDesc receiverRay;
-    receiverRay.Origin = 0;
-    receiverRay.Direction = ray;
-    receiverRay.TMin = 1;
-    receiverRay.TMax = depth;
-    RayQuery<RAY_FLAG_NONE> receiver;
-    receiver.TraceRayInline(scene, options.w != 0 ? RAY_FLAG_FORCE_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE, 255, receiverRay);
-    while (receiver.Proceed()) {
-        if (receiver.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && covered(receiver.CandidatePrimitiveIndex(), receiver.CandidateTriangleBarycentrics()))
-            receiver.CommitNonOpaqueTriangleHit();
-    }
-    if (receiver.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-        depth = receiver.CommittedRayT();
-        receiverFound = true;
+    // Underlay receivers must not stop on the model hiding the ground.
+    if ((uint(options.w)&2u)==0) {
+        RayDesc receiverRay;
+        receiverRay.Origin = 0;
+        receiverRay.Direction = ray;
+        receiverRay.TMin = 1;
+        receiverRay.TMax = depth;
+        RayQuery<RAY_FLAG_NONE> receiver;
+        receiver.TraceRayInline(scene, (uint(options.w)&1u) != 0 ? RAY_FLAG_FORCE_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE, 255, receiverRay);
+        while (receiver.Proceed()) {
+            if (receiver.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && covered(receiver.CandidatePrimitiveIndex(), receiver.CandidateTriangleBarycentrics()))
+                receiver.CommitNonOpaqueTriangleHit();
+        }
+        if (receiver.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            depth = receiver.CommittedRayT();
+            receiverFound = true;
+        }
     }
     uint blocked = 0;
     if (receiverFound) {
@@ -453,10 +566,10 @@ uint trace_pixel(uint2 id) {
         shadowRay.Origin = ray * depth;
         shadowRay.TMin = max(.1, depth * 1e-5);
         shadowRay.TMax = 65536;
-        for (uint sample = 0; sample < 8; ++sample) {
+        for (uint sample = 0; sample < uint(lights[0].w); ++sample) {
             shadowRay.Direction = lights[sample].xyz;
             RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> shadow;
-            shadow.TraceRayInline(scene, options.w != 0 ? RAY_FLAG_FORCE_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE, 255, shadowRay);
+            shadow.TraceRayInline(scene, (uint(options.w)&1u) != 0 ? RAY_FLAG_FORCE_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE, 255, shadowRay);
             while (shadow.Proceed()) {
                 if (shadow.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && covered(shadow.CandidatePrimitiveIndex(), shadow.CandidateTriangleBarycentrics()))
                     shadow.CommitNonOpaqueTriangleHit();
@@ -464,7 +577,7 @@ uint trace_pixel(uint2 id) {
             if (shadow.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ++blocked;
         }
     }
-    return 160 * blocked / 8;
+    return 160 * blocked / uint(lights[0].w);
 }
 
 // One byte per pixel, with four-byte row alignment for ByteAddressBuffer.

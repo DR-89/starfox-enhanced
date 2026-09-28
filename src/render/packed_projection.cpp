@@ -43,7 +43,7 @@ bool collinear(const assets::Vec3i& a,const assets::Vec3i& b,const assets::Vec3i
 std::optional<GpuProjection::MotionSurfaceSettings> pack_motion_surface(
     const PackedProjection& current,const PackedProjection& previous,
     std::uint32_t width,std::uint32_t height,std::uint32_t scale) {
-    if(!current.continuous || !previous.continuous || !scale || scale>4 || !width || !height
+    if(!current.continuous || !previous.continuous || !scale || scale>10 || !width || !height
         || current.continuous_vertices.empty()
         || current.continuous_vertices.size()!=previous.continuous_vertices.size()) return {};
     bool used[2]{};

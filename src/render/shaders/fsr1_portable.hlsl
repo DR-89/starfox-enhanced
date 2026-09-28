@@ -6,10 +6,17 @@
 #define FSR_EASU_F 1
 #define FSR_RCAS_F 1
 
+#if defined(STARFOX_FSR1_D3D11)
+Texture2D<float4> sourceImage : register(t0);
+SamplerState sourceSampler : register(s0);
+RWTexture2D<float4> outputImage : register(u0);
+cbuffer Settings : register(b0) {
+#else
 Texture2D<float4> sourceImage : register(t0, space0);
 SamplerState sourceSampler : register(s0, space0); // Clamp-to-edge.
 RWTexture2D<float4> outputImage : register(u0, space1);
 cbuffer Settings : register(b0, space2) {
+#endif
     uint sourceWidth,sourceHeight,outputWidth,outputHeight;
     uint stage; float sharpness; uint reserved0,reserved1;
 };
@@ -32,6 +39,8 @@ void main(uint3 id : SV_DispatchThreadID) {
         FsrEasuCon(c0,c1,c2,c3,float(sourceWidth),float(sourceHeight),
             float(sourceWidth),float(sourceHeight),float(outputWidth),float(outputHeight));
         FsrEasuF(colour,id.xy,c0,c1,c2,c3);
+    } else if(stage==2) {
+        colour=sourceImage.SampleLevel(sourceSampler,(float2(id.xy)+.5)/float2(outputWidth,outputHeight),0).rgb;
     } else {
         uint4 constants;
         FsrRcasCon(constants,clamp(sharpness,0.0,2.0));

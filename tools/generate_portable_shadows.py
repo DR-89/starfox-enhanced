@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dxc')
 parser.add_argument('--spirv-cross')
 parser.add_argument('--check', action='store_true')
-parser.add_argument('--shader', choices=['warp_lookup_portable', 'warp_reflection_portable', 'ray_materials_portable', 'temporal_resample_portable', 'temporal_hud_portable', 'temporal_inputs_portable', 'background2_portable', 'background_portable', 'ray_geometry_portable', 'motion_portable', 'projected_text_portable', 'particle_portable', 'dust_portable', 'grid_spans_portable', 'grid_portable', 'warp_expand_portable', 'warp_material_portable', 'colour_warp_portable', 'axis_portable', 'shadow_portable', 'raster_portable', 'raster_bins', 'composite_portable', 'projection_portable', 'visibility_portable', 'transform_portable', 'continuous_portable', 'continuous_visibility_portable', 'clip_portable', 'clip_continuous_portable', 'spans_portable', 'bsp_portable', 'surface_portable', 'scene_portable', 'billboard_portable'], default='shadow_portable')
+parser.add_argument('--shader', choices=['temporal_surfaces_portable', 'scene_shutter_portable', 'motion_blur_portable', 'volumetric_portable', 'msaa_pack_portable', 'msaa_portable', 'smaa_portable', 'temporal_aa_portable', 'warp_lookup_portable', 'warp_reflection_portable', 'ray_materials_portable', 'temporal_resample_portable', 'temporal_hud_portable', 'temporal_inputs_portable', 'background2_portable', 'background_portable', 'ray_geometry_portable', 'motion_portable', 'projected_text_portable', 'particle_portable', 'dust_portable', 'grid_spans_portable', 'grid_portable', 'warp_expand_portable', 'warp_material_portable', 'colour_warp_portable', 'axis_portable', 'shadow_portable', 'raster_portable', 'raster_bins', 'composite_portable', 'projection_portable', 'visibility_portable', 'transform_portable', 'continuous_portable', 'continuous_visibility_portable', 'clip_portable', 'clip_continuous_portable', 'spans_portable', 'bsp_portable', 'surface_portable', 'scene_portable', 'billboard_portable'], default='shadow_portable')
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[1]
 source = root / f'src/render/shaders/{args.shader}.hlsl'
@@ -67,6 +67,13 @@ with tempfile.TemporaryDirectory() as temporary:
         'Settings': 0, 'commands': 1, 'rows': 2, 'indices': 3, 'texels': 4,
         'back_pixels': 5, 'back_surfaces': 6, 'geometry_planes': 7, 'back_depth': 8,
         'pixels': 9, 'surfaces': 10, 'geometry_depth': 11}
+    if args.shader == 'volumetric_portable':
+        bindings = {'Settings': 0, 'nodes': 1, 'triangles': 2, 'fogOutput': 3}
+    if args.shader == 'scene_shutter_portable':
+        bindings = {'Settings': 0, 'ownership': 1, 'surfaces': 2}
+    if args.shader == 'motion_blur_portable':
+        bindings = {'Settings': 0, 'ParticleSettings': 1, 'ownership': 2, 'depth': 3, 'motion': 4,
+                    'nearest': 5, 'sums': 6, 'integral': 7}
     if args.shader == 'composite_portable':
         bindings = {'Settings': 0, 'cpuPixels': 1, 'nativePixels': 2, 'nativeSurfaces': 3, 'palette': 4, 'latePixels': 5, 'backgroundPixels': 6,
                     'nativeDepth': 7, 'nativeMotion': 8, 'pixels': 9, 'surfaces': 10, 'edgeColours': 11, 'geometryDepth': 12, 'motion': 13}
@@ -94,6 +101,16 @@ with tempfile.TemporaryDirectory() as temporary:
         bindings = {'Settings': 0, 'currentPoints': 1, 'previousPoints': 2, 'motion': 3}
     if args.shader == 'temporal_inputs_portable':
         bindings = {'Settings': 0, 'cameraDepth': 1, 'sourceMotion': 2, 'groundCoverage': 3}
+    if args.shader == 'temporal_aa_portable':
+        bindings = {'Settings': 0, 'cameraDepth': 1, 'sourceMotion': 2, 'packedPixels': 3}
+    if args.shader == 'temporal_surfaces_portable':
+        bindings = {'Settings': 0, 'sourcePixels': 1, 'sourceSurfaces': 2, 'sourceDepth': 3, 'protectedPixels': 4, 'targetPixels': 5, 'targetSurfaces': 6}
+    if args.shader == 'smaa_portable':
+        bindings = {'Settings': 0, 'packedPixels': 1}
+    if args.shader == 'msaa_pack_portable':
+        bindings = {'Settings': 0, 'clipped': 1, 'materials': 2, 'order': 3, 'orderResults': 4, 'triangles': 5, 'kinds': 6}
+    if args.shader == 'msaa_portable':
+        bindings = {'Settings': 0, 'triangles': 1, 'palette': 2, 'previousSamples': 3, 'texels': 4, 'layerPixels': 5, 'faceKinds': 6, 'sampleOutput': 7}
     if args.shader == 'temporal_hud_portable':
         bindings = {'Settings': 0, 'packedPixels': 1}
     if args.shader == 'temporal_resample_portable':
@@ -150,6 +167,12 @@ with tempfile.TemporaryDirectory() as temporary:
     blob = spv.read_bytes()
     rows = [','.join(str(b) for b in blob[i:i+32]) for i in range(0, len(blob), 32)]
     namespace = 'starfox::render::shadows::portable_shader' if args.shader == 'shadow_portable' else 'starfox::render::raster_shader'
+    if args.shader == 'volumetric_portable':
+        namespace = 'starfox::render::volumetric_shader'
+    if args.shader == 'scene_shutter_portable':
+        namespace = 'starfox::render::scene_shutter_shader'
+    if args.shader == 'motion_blur_portable':
+        namespace = 'starfox::render::motion_blur_shader'
     if args.shader == 'composite_portable':
         namespace = 'starfox::render::composite_shader'
     if args.shader == 'background_portable':
@@ -216,6 +239,16 @@ with tempfile.TemporaryDirectory() as temporary:
         namespace = 'starfox::render::temporal_hud_shader'
     if args.shader == 'temporal_resample_portable':
         namespace = 'starfox::render::temporal_resample_shader'
+    if args.shader == 'temporal_aa_portable':
+        namespace = 'starfox::render::temporal_aa_shader'
+    if args.shader == 'temporal_surfaces_portable':
+        namespace = 'starfox::render::temporal_surfaces_shader'
+    if args.shader == 'smaa_portable':
+        namespace = 'starfox::render::smaa_shader'
+    if args.shader == 'msaa_portable':
+        namespace = 'starfox::render::msaa_shader'
+    if args.shader == 'msaa_pack_portable':
+        namespace = 'starfox::render::msaa_pack_shader'
     if platform_payloads:
         native_text = '\n#if defined(_WIN32)\n' + native_text + '#endif\n'
     metal_text = '\ninline constexpr char metal[]=R"SFXMETAL(\n' + metal + ')SFXMETAL";\n'

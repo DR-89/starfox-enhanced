@@ -3,6 +3,12 @@
 #include <memory>
 #include <string>
 namespace starfox::render {
+// Bit 31 carries an authored flat-face dither pair. Byte 1 then stores the
+// alternate palette index, not a layer tag. The selected index stays in byte 0
+// so original-resolution indexed readback is unchanged.
+inline constexpr std::uint8_t gpu_pixel_layer(std::uint32_t value) noexcept {
+    return (value&0x80000000U)?0:std::uint8_t(value>>8);
+}
 void replay_raster_commands(const RasterCommands&,Framebuffer&,SurfaceBuffer*,bool clear_target=true);
 // Borrowed SDL GPU buffers, valid until the next render or device release.
 // pixels packs index/tag/surface-palette/valid into four bytes; surfaces is
@@ -23,6 +29,9 @@ struct GpuRasterOutput {
     // Optional float4 previous-current XY pixels, camera Z, validity. Follows
     // visible colour ownership; unknown motion is not valid zero motion.
     void* motion{};
+    // Optional premultiplied RGBA multisample coverage, same extent/device.
+    // Indexed data remains authoritative for metadata and original readback.
+    void* msaa_color{};
 };
 struct GpuGeometryDepthInput {
     void* planes{}; // float4 camera-space plane (normal.xyz, dot(normal, point)).

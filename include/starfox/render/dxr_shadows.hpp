@@ -14,8 +14,11 @@ struct RayWater {
     float time{};
     float reflection_strength{};
     unsigned material{}; // 0 water, 1 mirror ground, 2 gold ground, 3 lava.
+    bool mirror_models{}; // Secondary hits must follow the model's mirror, not its base colour.
     std::array<float,9> world_to_view{1,0,0,0,1,0,0,0,1};
     std::array<float,3> camera_position{};
+    float brightness{1.f};
+    unsigned caustics{}; // Off/low/medium/high, only transmitted water light.
 };
 // Optional Windows DXR 1.1 backend. Unsupported devices/platforms return false;
 // callers retain the CPU implementation. Unchanged geometry may reuse its BLAS.
@@ -66,6 +69,9 @@ public:
         void* resident_materials{};
         std::uint32_t resident_material_offset{}; // 16-byte aligned, may follow geometry.
         const RayWater* water{};
+        // Trace the liquid/metal ground hidden by foreground models, retaining
+        // those models in reflected, transmitted and shadow rays.
+        bool ground_only{};
     };
     // When supplied, only this Windows adapter may produce shared output.
     // Never falls back to a different GPU if the requested adapter lacks DXR.
@@ -92,7 +98,9 @@ public:
     // submission; exporting its fence then requires no second GPU submission.
     // defer_completion requires release_for_external. The consumer must wait
     // on exported ready_value before reading; producer reuse waits internally.
-    bool render_resident(const Scene&,Camera,Vec3,std::optional<ReceiverPlane>,const ResidentGeometry* geometry=nullptr,const Coverage* coverage=nullptr,bool release_for_external=false,bool defer_completion=false,const ReflectionInput* reflection=nullptr);
+    // ground_only selects the revealed plane as primary receiver while models
+    // remain shadow casters. Requires a ground plane and no ReflectionInput.
+    bool render_resident(const Scene&,Camera,Vec3,std::optional<ReceiverPlane>,const ResidentGeometry* geometry=nullptr,const Coverage* coverage=nullptr,bool release_for_external=false,bool defer_completion=false,const ReflectionInput* reflection=nullptr,bool ground_only=false);
     // Explicit diagnostic/fallback download; presentation need not call this.
     bool readback_resident(std::vector<std::uint8_t>&);
     // Diagnostic image transfer count; camera/palette metadata is separate.

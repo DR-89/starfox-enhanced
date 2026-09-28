@@ -13,6 +13,63 @@ void require(bool condition) { if (!condition) { std::cerr << "Stereo output reg
 int main() {
     using namespace starfox::render;
     {
+        RasterCommands source;source.reset(800,448);
+        for(unsigned i=0;i<5;++i) {
+            RasterCommand c;c.left=20+int(i)*32;c.right=c.left+32;c.top=40;c.bottom=72;
+            c.u=c.left;c.v=c.top;c.du=2;c.dv=16;c.textured=4;c.reserved1=i<4?4U|(i&3U):0U;
+            source.add(c);
+        }
+        for(double displacement:{-8.25,-2.,0.,2.,8.25}) {
+            auto eye=source;require(stereo_translate_crosshair(eye,displacement));
+            for(unsigned i=0;i<5;++i) {
+                const auto& c=eye.commands[i];const auto& original=source.commands[i];
+                const auto offset=i<4?std::llround(displacement*2):0;
+                require(c.left==original.left+offset && c.right==original.right+offset && c.u==original.u+offset);
+                require(c.top==original.top && c.v==original.v && c.reserved1==original.reserved1);
+            }
+        }
+        auto invalid=source;invalid.commands[2].du=0;
+        require(!stereo_translate_crosshair(invalid,8) && invalid.commands[0].left==source.commands[0].left);
+        require(!stereo_translate_crosshair(source,std::numeric_limits<double>::infinity()));
+        invalid=source;invalid.commands[2].u=std::numeric_limits<std::int32_t>::max();
+        require(!stereo_translate_crosshair(invalid,1) && invalid.commands[0].left==source.commands[0].left);
+        invalid=source;invalid.commands[2].left=std::numeric_limits<std::int32_t>::min();
+        require(!stereo_translate_crosshair(invalid,-1) && invalid.commands[0].left==source.commands[0].left);
+        for(int scale=1;scale<=10;++scale) {
+            auto scaled=source;
+            for(auto& c:scaled.commands) c.du=scale;
+            require(stereo_translate_crosshair(scaled,2.5));
+            require(scaled.commands[0].u==source.commands[0].u+std::llround(2.5*scale));
+            require(scaled.commands[4].u==source.commands[4].u);
+        }
+    }
+    {
+        // TV rig: a ship at 512 must not sit at zero disparity as it did
+        // with the old convergence plane. Distant models go behind the
+        // screen, with no vertical disparity or toe-in distortion.
+        GpuModelDraw model;
+        model.settings.focal_length=256;
+        model.pose.y=24;
+        model.pose.vanish_y=96;
+        for(const double depth:{512.,kSbsConvergence,2048.}) {
+            model.pose.z=depth;
+            const std::array<GpuSceneDraw,1> frame{model};
+            const auto left=stereo_scene_eye(frame,0,kSbsEyeSeparation,kSbsConvergence);
+            const auto right=stereo_scene_eye(frame,1,kSbsEyeSeparation,kSbsConvergence);
+            require(left && right);
+            const auto& l=std::get<GpuModelDraw>((*left)[0]);
+            const auto& r=std::get<GpuModelDraw>((*right)[0]);
+            const double disparity=(l.pose.x-r.pose.x)*256/depth+l.pose.vanish_x-r.pose.vanish_x;
+            require(std::abs(disparity-256*kSbsEyeSeparation*(1/depth-1/kSbsConvergence))<1e-10);
+            if(depth==512) require(disparity>=4);
+            if(depth==kSbsConvergence) require(std::abs(disparity)<1e-10);
+            if(depth==2048) require(disparity<0);
+            require(l.pose.y==r.pose.y && l.pose.vanish_y==r.pose.vanish_y);
+            require(l.pose.z==r.pose.z && l.pose.yaw==r.pose.yaw);
+        }
+        require(sbs_eye_x(0)==-sbs_eye_x(1));
+    }
+    {
         starfox::assets::Shape shape;
         GpuModelDraw draw{&shape};
         draw.identity=GpuModelIdentity{42,3,7,11,2};
@@ -214,7 +271,24 @@ int main() {
     require(!stereo_output_layout(StereoOutput::half_sbs,1919,1080));
     require(!stereo_output_layout(StereoOutput::full_sbs,0xffffffffU,1080));
     require(!stereo_output_layout(StereoOutput::off,1920,0));
-    require(!stereo_output_layout(static_cast<StereoOutput>(3),1920,1080));
+    require(!stereo_output_layout(static_cast<StereoOutput>(8),1920,1080));
+    for(auto mode:{StereoOutput::interlaced,StereoOutput::interlaced_reversed,StereoOutput::anaglyph_red_cyan}) {
+        const auto layout=stereo_output_layout(mode,1920,1081);
+        require(layout && layout->width==1920 && layout->height==1081 && layout->eye_count==2);
+        require(layout->eyes[0].width==1920 && layout->eyes[1].height==1081);
+    }
+    for(const auto mode:{StereoOutput::half_top_bottom,StereoOutput::full_top_bottom}) {
+        const auto layout=stereo_output_layout(mode,1920,1080);
+        require(layout && layout->eye_count==2 && layout->width==1920);
+        require(layout->scene_aspect==1920./1080);
+        require(layout->height==(mode==StereoOutput::half_top_bottom?1080U:2160U));
+        require(layout->eyes[0].x==0 && layout->eyes[1].x==0);
+        require(layout->eyes[0].width==1920 && layout->eyes[1].width==1920);
+        require(layout->eyes[0].y==0 && layout->eyes[1].y==layout->eyes[0].height);
+        require(layout->eyes[1].y+layout->eyes[1].height==layout->height);
+    }
+    require(!stereo_output_layout(StereoOutput::half_top_bottom,1920,1079));
+    require(!stereo_output_layout(StereoOutput::full_top_bottom,1920,0xffffffffU));
     const auto eyes = stereo_eye_projections(6.4,100,1.5);
     require(eyes.has_value());
     const auto project = [&](unsigned eye, double x, double z) {
@@ -225,6 +299,30 @@ int main() {
     require(project(0,0,50) > project(1,0,50));
     require(project(0,0,200) < project(1,0,200));
     require(!stereo_eye_projections(0,100,1.5));
+    for(const double separation:{1.,16.,64.,512.}) for(const double convergence:{16.,1024.,4096.,65535.}) {
+        const auto rig=stereo_eye_projections(separation,convergence,256.);
+        require(rig.has_value());
+        const auto disparity=[&](double depth) {
+            return -256.*(*rig)[0].eye_x/depth+(*rig)[0].projection_offset_x
+                +256.*(*rig)[1].eye_x/depth-(*rig)[1].projection_offset_x;
+        };
+        require(std::abs(disparity(convergence))<1e-10);
+        require(disparity(convergence*.5)>0 && disparity(convergence*2)<0);
+        require(std::abs(disparity(1e12)+256.*separation/convergence)<1e-6);
+        const auto far_left=stereo_layer_displacement(0,separation,convergence,256.);
+        const auto far_right=stereo_layer_displacement(1,separation,convergence,256.);
+        require(far_left && far_right && *far_left<0 && *far_right>0);
+        require(std::abs((*far_left-*far_right)-disparity(1e12))<1e-6);
+        for(const double depth:{convergence*.5,convergence,convergence*2}) {
+            const auto l=stereo_layer_displacement(0,separation,convergence,256.,depth);
+            const auto r=stereo_layer_displacement(1,separation,convergence,256.,depth);
+            require(l && r && std::abs((*l-*r)-disparity(depth))<1e-10);
+        }
+    }
+    require(!stereo_layer_displacement(2,16,1024,256));
+    require(!stereo_layer_displacement(0,16,1024,256,0));
+    require(!stereo_layer_displacement(0,16,1024,256,std::numeric_limits<double>::infinity()));
+    require(!stereo_layer_displacement(0,16,1024,std::numeric_limits<double>::quiet_NaN()));
     require(!stereo_eye_projections(6.4,-100,1.5));
     require(!stereo_eye_projections(6.4,100,std::numeric_limits<double>::infinity()));
     std::cout << "SBS layout and off-axis stereo projection checks pass\n";

@@ -24,9 +24,9 @@ namespace {
 struct alignas(16) Float4 {float x{},y{},z{},w{};};
 struct Parameters {
     Float4 extent_focal{},center_ground{},ground_point{},ground_normal{};
-    std::array<Float4,8> lights{};
+    std::array<Float4,16> lights{};
 };
-static_assert(sizeof(Parameters)==192);
+static_assert(sizeof(Parameters)==320);
 struct alignas(16) ReflectionParameters {
     std::array<std::uint32_t,4> dimensions{};
     Float4 camera{},settings{},ground_point{},ground_normal{};
@@ -39,22 +39,22 @@ struct alignas(16) ReflectionParameters {
 static_assert(sizeof(ReflectionParameters)==288);
 Float4 vector4(Vec3 v) {return {float(v.x),float(v.y),float(v.z),0};}
 Float4 vector4(const std::array<float,4>& v) {return {v[0],v[1],v[2],v[3]};}
-std::array<Float4,8> light_samples(Vec3 light) {
+std::array<Float4,16> light_samples(Vec3 light,unsigned samples,double angular_radius) {
     light=light*(1.0/std::sqrt(dot(light,light)));
     const auto reference=std::abs(light.y)<.9?Vec3{0,1,0}:Vec3{1,0,0};
     auto tangent=cross(light,reference);
     tangent=tangent*(1.0/std::sqrt(dot(tangent,tangent)));
     const auto bitangent=cross(light,tangent);
-    std::array<Float4,8> result{};
-    for(unsigned i=0;i<result.size();++i) {
-        const auto radius=.015*std::sqrt((i+.5)/result.size());
+    std::array<Float4,16> result{};
+    for(unsigned i=0;i<samples;++i) {
+        const auto radius=angular_radius*std::sqrt((i+.5)/samples);
         const auto angle=i*2.399963229728653;
         auto direction=light+tangent*(radius*std::cos(angle))
             +bitangent*(radius*std::sin(angle));
         direction=direction*(1.0/std::sqrt(dot(direction,direction)));
         result[i]=vector4(direction);
     }
-    return result;
+    result[0].w=float(samples);return result;
 }
 struct Buffer {VkBuffer handle{};VkDeviceMemory memory{};VkDeviceSize size{};};
 void check(VkResult result,const char* operation) {
@@ -479,8 +479,9 @@ bool VulkanHardwareRt::available(void* raw) const noexcept {
 #endif
 }
 bool VulkanHardwareRt::render_shadows(void* raw,const Scene& scene,Camera camera,
-    Vec3 light,std::optional<ReceiverPlane> ground,const GpuScene::RayGeometryOutput* geometry) {
+    Vec3 light,std::optional<ReceiverPlane> ground,const GpuScene::RayGeometryOutput* geometry,bool ground_only) {
     impl_->output={};
+    if(ground_only && !ground) return false;
 #if defined(STARFOX_SDL_GPU_EFFECTS) && defined(__linux__)
     try {
         const std::uint64_t pixels=std::uint64_t(camera.width)*camera.height;
@@ -514,9 +515,9 @@ bool VulkanHardwareRt::render_shadows(void* raw,const Scene& scene,Camera camera
         Parameters params{};
         params.extent_focal={float(camera.width),float(camera.height),
             float(camera.focal_length),float(camera.vertical_focal_length())};
-        params.center_ground={float(camera.center_x),float(camera.center_y),ground?1.f:0.f,0};
+        params.center_ground={float(camera.center_x),float(camera.center_y),ground?1.f:0.f,ground_only?1.f:0.f};
         if(ground) {params.ground_point=vector4(ground->point);params.ground_normal=vector4(ground->normal);}
-        params.lights=light_samples(light);
+        params.lights=light_samples(light,camera.shadow_samples(),camera.shadow_angular_radius());
         slot.parameters=impl_->create_buffer(sizeof(params),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,true,false);
         impl_->upload(slot.parameters,&params,sizeof(params));
         impl_->ensure_output(std::uint32_t(pixels));
@@ -548,7 +549,7 @@ bool VulkanHardwareRt::render_shadows(void* raw,const Scene& scene,Camera camera
         return true;
     } catch(const std::exception& error) {impl_->status=error.what();return false;}
 #else
-    (void)raw;(void)scene;(void)camera;(void)light;(void)ground;(void)geometry;return false;
+    (void)raw;(void)scene;(void)camera;(void)light;(void)ground;(void)geometry;(void)ground_only;return false;
 #endif
 }
 bool VulkanHardwareRt::render_reflections(void* raw,
@@ -556,8 +557,9 @@ bool VulkanHardwareRt::render_reflections(void* raw,
     std::span<const std::uint32_t,256> palette,std::uint32_t environment,
     std::uint8_t quality,float roughness,std::uint32_t metallic,
     std::optional<ReceiverPlane> ground,const GpuBackgroundDraw* background,
-    const RayWater* water) {
+    const RayWater* water,bool ground_only) {
     impl_->reflection={};
+    if(ground_only && (!ground || !water)) return false;
 #if defined(STARFOX_SDL_GPU_EFFECTS) && defined(__linux__)
     try {
         const std::uint64_t pixels=std::uint64_t(camera.width)*camera.height;
@@ -570,8 +572,9 @@ bool VulkanHardwareRt::render_reflections(void* raw,
             return reject("Invalid reflection camera focal length");
         if(!std::isfinite(roughness) || roughness<0)
             return reject("Invalid reflection roughness");
-        if(water && (!ground || water->material>3
+        if(water && (!ground || water->material>3 || water->caustics>3
             || !std::isfinite(water->time) || !std::isfinite(water->reflection_strength)
+            || !std::isfinite(water->brightness) || water->brightness<0 || water->brightness>1
             || water->reflection_strength<0 || water->reflection_strength>1))
             return reject("Invalid ray-water settings");
         if(!geometry.complete || geometry.device!=raw || !geometry.buffer)
@@ -655,7 +658,7 @@ bool VulkanHardwareRt::render_reflections(void* raw,
         params.dimensions={camera.width,camera.height,quality,metallic};
         params.camera={float(camera.focal_length),float(camera.vertical_focal_length()),
             float(camera.center_x),float(camera.center_y)};
-        params.settings={roughness,ground?1.f:0.f,float(materials.texels.size()),0};
+        params.settings={roughness,ground?1.f:0.f,float(materials.texels.size()),ground_only?1.f:0.f};
         if(ground) {
             params.ground_point=vector4(ground->point);
             params.ground_normal=vector4(ground->normal);
@@ -672,7 +675,7 @@ bool VulkanHardwareRt::render_reflections(void* raw,
             params.enhanced_keep1=vector4(enhanced_environment->backdrop_keep[1]);
         }
         if(water) {
-            params.water_settings={water->time,water->reflection_strength,1.f,float(water->material)};
+            params.water_settings={water->time,water->reflection_strength,water->brightness,float(water->material+(water->mirror_models?16:0)+(water->caustics<<5))};
             params.water_row0={water->world_to_view[0],water->world_to_view[1],water->world_to_view[2],water->camera_position[0]};
             params.water_row1={water->world_to_view[3],water->world_to_view[4],water->world_to_view[5],water->camera_position[1]};
             params.water_row2={water->world_to_view[6],water->world_to_view[7],water->world_to_view[8],water->camera_position[2]};

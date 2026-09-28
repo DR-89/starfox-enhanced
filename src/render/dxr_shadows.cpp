@@ -33,8 +33,8 @@ void check(HRESULT result, const char* operation) {
 struct Buffer { ComPtr<ID3D12Resource> resource; UINT64 capacity{}; };
 struct Float4 { float x{}, y{}, z{}, w{}; };
 Float4 floats(Vec3 v) { return {float(v.x),float(v.y),float(v.z),0}; }
-struct Constants { Float4 camera,options,point,normal; std::array<Float4,8> lights; };
-static_assert(sizeof(Constants)==192);
+struct Constants { Float4 camera,options,point,normal; std::array<Float4,16> lights; };
+static_assert(sizeof(Constants)==320);
 }
 struct DxrShadows::Impl {
     bool attempted{}, failed{};
@@ -190,7 +190,7 @@ struct DxrShadows::Impl {
         std::span<const std::uint32_t> environment_cube={},std::uint32_t face_size=0,
         const std::array<float,9>& environment_rotation={1,0,0,0,1,0,0,0,1},
         const render::GpuBackgroundDraw* background=nullptr,float background_eye_x=0,
-        ID3D12Resource* resident_materials=nullptr,std::uint32_t material_offset=0,const RayWater* water=nullptr) {
+        ID3D12Resource* resident_materials=nullptr,std::uint32_t material_offset=0,const RayWater* water=nullptr,bool ground_only=false) {
         // Upload buffers and the command allocator belong to the previous
         // producer submission until its fence completes.
         await_producer();
@@ -234,7 +234,7 @@ struct DxrShadows::Impl {
             std::memcpy(coverage_bytes.data()+palette_at+1068,&texel_count,4);
             std::memset(coverage_bytes.data()+palette_at+1088,0,64);
             if(water) {
-                const float values[16]={water->time,water->reflection_strength,1,float(water->material),
+                const float values[16]={water->time,water->reflection_strength,water->brightness,float(water->material+(water->mirror_models?16:0)+((water->caustics&3)<<5)),
                     water->world_to_view[0],water->world_to_view[1],water->world_to_view[2],water->camera_position[0],
                     water->world_to_view[3],water->world_to_view[4],water->world_to_view[5],water->camera_position[1],
                     water->world_to_view[6],water->world_to_view[7],water->world_to_view[8],water->camera_position[2]};
@@ -383,19 +383,21 @@ struct DxrShadows::Impl {
         if(download) ensure(readback,transfer_bytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
         Constants settings{};
         settings.camera={float(camera.width),float(camera.height),float(camera.focal_length),float(camera.center_x)};
-        settings.options={float(camera.center_y),ground?1.f:0.f,float(camera.vertical_focal_length()),coverage?1.f:0.f};
+        settings.options={float(camera.center_y),ground?1.f:0.f,float(camera.vertical_focal_length()),float((coverage?1U:0U)|(ground_only?2U:0U))};
         if (ground) { settings.point=floats(ground->point); settings.normal=floats(ground->normal); }
         if(reflection) {settings.point.w=std::bit_cast<float>(environment);settings.normal.w=float(external?stride:12);}
         light=light*(1.0/std::sqrt(dot(light,light)));
         const auto reference=std::abs(light.y)<.9?Vec3{0,1,0}:Vec3{1,0,0};
         auto tangent=cross(light,reference); tangent=tangent*(1.0/std::sqrt(dot(tangent,tangent)));
         const auto bitangent=cross(light,tangent);
-        for (unsigned i=0;i<8;++i) {
-            const auto radius=.015*std::sqrt((i+.5)/8);
+        const auto samples=camera.shadow_samples();
+        for (unsigned i=0;i<samples;++i) {
+            const auto radius=camera.shadow_angular_radius()*std::sqrt((i+.5)/samples);
             const auto angle=i*2.399963229728653;
             auto direction=light+tangent*(radius*std::cos(angle))+bitangent*(radius*std::sin(angle));
             settings.lights[i]=floats(direction*(1.0/std::sqrt(dot(direction,direction))));
         }
+        settings.lights[0].w=float(samples);
         upload(constants,&settings,sizeof(settings));
         check(allocator->Reset(),"DXR allocator reset");
         check(list->Reset(allocator.Get(),pipeline.Get()),"DXR command reset");
@@ -695,8 +697,10 @@ bool DxrShadows::readback_resident(std::vector<std::uint8_t>& mask) {
     return false;
 }
 bool DxrShadows::render_resident(const Scene& scene,Camera camera,Vec3 light,
-    std::optional<ReceiverPlane> ground,const ResidentGeometry* geometry,const Coverage* coverage,bool release_for_external,bool defer_completion,const ReflectionInput* reflection) {
+    std::optional<ReceiverPlane> ground,const ResidentGeometry* geometry,const Coverage* coverage,bool release_for_external,bool defer_completion,const ReflectionInput* reflection,bool ground_only) {
     resident_={};
+    if(ground_only && (!ground || reflection)) return false;
+    if(reflection && reflection->ground_only && (!reflection->ground || !reflection->water)) return false;
 #if defined(STARFOX_DXR)
     if(impl_->failed || (defer_completion && !release_for_external) || (!geometry && !scene.triangle_count()) || !camera.width || !camera.height
         || !std::isfinite(dot(light,light)) || dot(light,light)<1e-20 || camera.focal_length<=0
@@ -707,7 +711,8 @@ bool DxrShadows::render_resident(const Scene& scene,Camera camera,Vec3 light,
             if(reflection->water) {
                 const auto& water=*reflection->water;
                 if(!reflection->ground || !std::isfinite(water.time) || !std::isfinite(water.reflection_strength)
-                    || water.reflection_strength<0 || water.reflection_strength>1 || water.material>3) return false;
+                    || !std::isfinite(water.brightness) || water.brightness<0 || water.brightness>1
+                    || water.reflection_strength<0 || water.reflection_strength>1 || water.material>3 || water.caustics>3) return false;
                 for(auto value:water.world_to_view) if(!std::isfinite(value)) return false;
                 for(auto value:water.camera_position) if(!std::isfinite(value)) return false;
             }
@@ -785,7 +790,8 @@ bool DxrShadows::render_resident(const Scene& scene,Camera camera,Vec3 light,
             reflection?reflection->environment_cube:std::span<const std::uint32_t>{},reflection?reflection->face_size:0,
             reflection?reflection->environment_rotation:std::array<float,9>{1,0,0,0,1,0,0,0,1},
             reflection?reflection->background:nullptr,reflection?reflection->background_eye_x:0,external_materials,
-            reflection?reflection->resident_material_offset:0,reflection?reflection->water:nullptr);
+            reflection?reflection->resident_material_offset:0,reflection?reflection->water:nullptr,
+            ground_only || (reflection && reflection->ground_only));
         resident_={impl_->device.Get(),impl_->output.resource.Get(),camera.width,camera.height,reflection?camera.width*4:(camera.width+3U)&~3U};
         resident_.bytes_per_pixel=reflection?4:1;
         LUID luid{};

@@ -13,6 +13,8 @@
 namespace starfox::render {
 void replay_raster_commands(const RasterCommands& batch,Framebuffer& frame,SurfaceBuffer* surfaces,bool clear_target) {
     frame.record_to(nullptr);
+    if(frame.draw_scale()>1 && std::any_of(batch.commands.begin(),batch.commands.end(),[](const auto& c){return (c.textured==0 && c.tag==0 && c.dither) || (c.textured==5 && c.colour_base);} ))
+        frame.enable_dither_pairs(true);
     if(clear_target) {frame.clear();if(surfaces) surfaces->clear();}
     for(const auto& c:batch.commands) {
         for(int y=std::max(0,c.top);y<std::min(int(batch.height()),c.bottom);++y)
@@ -32,6 +34,7 @@ void replay_raster_commands(const RasterCommands& batch,Framebuffer& frame,Surfa
                 const auto dither_scale=int(std::max(1U,c.reserved0));
                 auto colour=c.dither && (((x/dither_scale)^(y/dither_scale))&1)?c.odd:c.even;
                 auto pixel_tag=c.tag;
+                unsigned material_pair=0;
                 if(c.textured==8) {
                     if(c.du<=0 || c.texture_offset>batch.texels.size() || batch.texels.size()-c.texture_offset<640) continue;
                     const int px=c.dv?((x-c.u)*6+2)/(7*c.du):(x-c.u)/c.du,py=(y-c.v)/c.du;
@@ -69,7 +72,12 @@ void replay_raster_commands(const RasterCommands& batch,Framebuffer& frame,Surfa
                     const auto ix=sx*c.du+((x%c.dv*2+1)*c.du)/(c.dv*2);
                     const auto iy=sy*c.du+((y%c.dv*2+1)*c.du)/(c.dv*2);
                     const auto at=std::size_t(iy)*c.u_mask+ix;
-                    colour=batch.texels[c.texture_offset+at];if(!colour) continue;
+                    if(c.colour_base) {
+                        const auto offset=std::size_t(c.colour_base-1);
+                        if(offset>batch.texels.size() || size>(batch.texels.size()-offset)/2) continue;
+                        material_pair=batch.texels[offset+at*2]|(unsigned(batch.texels[offset+at*2+1])<<8);
+                    }
+                    colour=batch.texels[c.texture_offset+at];if(!colour && !(material_pair&256)) continue;
                     if(c.dither) pixel_tag=batch.texels[c.reserved1+at];
                 } else if(c.textured==4) {
                     if(c.du<=0 || c.dv<=0 || c.texture_offset>batch.texels.size()
@@ -105,6 +113,10 @@ void replay_raster_commands(const RasterCommands& batch,Framebuffer& frame,Surfa
                     if(c.textured==2 && (c.reserved0&256)) colour=std::uint8_t(c.reserved0);
                 }
                 frame.set_stored(x,y,std::uint8_t(colour),PixelLayer(pixel_tag));
+                if(pixel_tag==0 && (material_pair&256))
+                    frame.set_dither_alternate(std::size_t(y)*frame.stored_width()+x,std::uint8_t(material_pair));
+                if(c.textured==0 && pixel_tag==0 && c.dither && c.even!=c.odd)
+                    frame.set_dither_alternate(std::size_t(y)*frame.stored_width()+x,std::uint8_t(colour==c.even?c.odd:c.even));
                 if(surfaces && c.has_surface) surfaces->set(x,y,
                     {c.surface[0],c.surface[1],c.surface[2],c.surface[3]},std::uint8_t(colour));
             }
@@ -321,10 +333,13 @@ struct GpuRaster::Impl {
         const auto* normals=reinterpret_cast<const float*>(reinterpret_cast<const Uint8*>(packed)+pixel_bytes);
         if(surfaces) surfaces->clear();
         auto& pixels=frame.pixels();auto& tags=frame.layer_tags();
+        if(frame.draw_scale()>1) frame.enable_dither_pairs(true);
+        frame.clear_dither_pairs();
         for(unsigned y=0;y<height;++y) for(unsigned x=0;x<width;++x) {
             const auto i=std::size_t(y)*width+x;
             pixels[i]=std::uint8_t(packed[i]);
-            if(frame.layer_tags_enabled()) tags[i]=std::uint8_t(packed[i]>>8);
+            if(packed[i]&0x80000000U) frame.set_dither_alternate(i,std::uint8_t(packed[i]>>8));
+            if(frame.layer_tags_enabled()) tags[i]=gpu_pixel_layer(packed[i]);
             if(surfaces && (packed[i]&(1U<<24))) surfaces->set(x,y,
                 {normals[i*4],normals[i*4+1],normals[i*4+2],normals[i*4+3]},std::uint8_t(packed[i]>>16));
         }

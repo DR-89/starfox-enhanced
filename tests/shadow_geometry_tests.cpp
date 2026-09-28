@@ -107,4 +107,39 @@ int main() {
     require(mask==serial_mask,"parallel shadows changed receiver pixels");
     render_mask(scene,camera,{-1,0,-1},std::nullopt,mask);
     require(mask[100*200+150]==0, "empty space received a shadow");
+    // The foreground receiver is lit, while the plane hidden behind it is
+    // shadowed by that same geometry. Removing casters would be incorrect.
+    const Camera underlay_camera{1,1,1,.5,.5};
+    const ReceiverPlane underlay_plane{{0,0,40},{0,0,1}};
+    render_mask(scene,underlay_camera,{0,0,-1},underlay_plane,mask);
+    require(mask==std::vector<std::uint8_t>{0},"foreground caster self-shadowed");
+    render_mask(scene,underlay_camera,{0,0,-1},underlay_plane,mask,nullptr,false,true);
+    require(mask==std::vector<std::uint8_t>{160},"underlay discarded foreground shadow caster");
+    render_mask(scene,underlay_camera,{0,0,-1},{},mask,nullptr,false,true);
+    require(mask==std::vector<std::uint8_t>{0},"underlay shadowed space without a plane");
+    // A fixed angular emitter is not a fixed image-space blur: its projected
+    // footprint must grow with the physical caster/receiver separation.
+    // Examine the exposed half of a straight edge so primary visibility of
+    // the caster cannot be mistaken for a contact shadow.
+    for(unsigned quality:{1U,2U,3U}) {
+        Camera contact_camera{128,8,1000,64,4};contact_camera.quality=quality;
+        const auto penumbra=[&](double gap) {
+            Scene edge;
+            const double z=1000-gap;
+            edge.add({{-1000,-1000,z},{0,-1000,z},{0,1000,z}});
+            edge.add({{-1000,-1000,z},{0,1000,z},{-1000,1000,z}});
+            edge.build();
+            std::vector<std::uint8_t> result;
+            render_mask(edge,contact_camera,{0,0,-1},ReceiverPlane{{0,0,1000},{0,0,1}},result);
+            unsigned partial=0;
+            for(unsigned x=64;x<128;++x) {
+                const auto value=result[4*128+x];
+                if(value>0 && value<160) ++partial;
+            }
+            return partial;
+        };
+        const auto contact=penumbra(1),near=penumbra(100),far=penumbra(500);
+        require(contact==0,"contact shadow retained a fixed-width blur");
+        require(near>contact && far>near,"shadow penumbra did not grow with caster separation");
+    }
 }

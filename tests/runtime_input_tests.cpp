@@ -171,6 +171,10 @@ int main() {
     }
     require(starfox::render::device_fitted_width(224,2400,1080,256,800)==498,
         "mobile canvas did not fill the display aspect");
+    require(starfox::render::device_fitted_width(224,1280,800,256,800)==358
+        && starfox::render::device_fitted_width(224,1920,1080,256,800)==398
+        && starfox::render::device_fitted_width(224,1024,768,256,800)==299,
+        "fit canvas did not follow desktop and handheld window sizes");
     require(starfox::render::device_fitted_width(224,0,1080,256,800)==256
         && starfox::render::device_fitted_width(224,8000,1080,256,800)==800,
         "mobile canvas did not handle missing or extreme dimensions");
@@ -635,10 +639,15 @@ int main() {
         / "starfox-enhanced-pregame-test.cfg";
     require(starfox::app::PregameSettings{}.timing_mode == 1U,
             "new pre-game settings did not default to Original pace");
-    const starfox::app::PregameSettings saved_pregame{
-        1U, 90U, 3U, true, true,
+    require(starfox::app::PregameSettings{}.fullscreen,
+            "new settings must default to fullscreen");
+    starfox::app::PregameSettings saved_pregame{
+        1U, 90U, 5U, true, true,
         3U, true, false, true, 2U, true, 1U, true, false, 5U, 1U, 70U, 30U,
         3U, false, true, 7U, 60U, 6U, 40U};
+    saved_pregame.fullscreen = false;
+    saved_pregame.aa_type = 6;
+    saved_pregame.integer_scaling = true;
     require(starfox::app::save_pregame_settings(
                 pregame_test_path, saved_pregame),
             "pre-game settings could not be saved");
@@ -689,14 +698,42 @@ int main() {
             && loaded_pregame == saved_pregame && loaded_pregame.stereo_output == 0,
             "pre-stereo settings did not default to OFF");
     }
-    for (std::uint8_t mode = 0; mode < 3; ++mode) {
+    for(const auto separation:{1U,16U,128U,512U}) for(const auto convergence:{16U,1024U,65535U}) {
+        auto settings=saved_pregame;
+        settings.stereo_separation=static_cast<std::uint16_t>(separation);
+        settings.stereo_convergence=static_cast<std::uint16_t>(convergence);
+        require(starfox::app::save_pregame_settings(pregame_test_path,settings)
+            && starfox::app::load_pregame_settings(pregame_test_path,loaded_pregame)
+            && loaded_pregame==settings,"stereo rig did not round-trip");
+    }
+    for(const auto entry:{"STEREO_SEPARATION 0", "STEREO_SEPARATION 513", "STEREO_CONVERGENCE 15", "STEREO_CONVERGENCE 65536"}) {
+        require(starfox::app::save_pregame_settings(pregame_test_path,saved_pregame),"stereo rig fixture");
+        {std::ofstream bad{pregame_test_path,std::ios::app};bad<<entry<<'\n';}
+        auto unchanged=saved_pregame;
+        require(!starfox::app::load_pregame_settings(pregame_test_path,unchanged)
+            && unchanged==saved_pregame,"invalid stereo rig accepted");
+    }
+    for (const auto depth : {0,16,2048,4096,65535}) {
+        auto settings=saved_pregame;settings.stereo_crosshair_depth=std::uint16_t(depth);
+        require(starfox::app::save_pregame_settings(pregame_test_path,settings)
+            && starfox::app::load_pregame_settings(pregame_test_path,loaded_pregame)
+            && loaded_pregame.stereo_crosshair_depth==depth,"reticle depth did not round trip");
+    }
+    for(const auto depth:{-1,1,15,65536}) {
+        require(starfox::app::save_pregame_settings(pregame_test_path,saved_pregame),"reticle validation fixture failed");
+        {std::ofstream bad{pregame_test_path,std::ios::app};bad<<"STEREO_CROSSHAIR_DEPTH "<<depth<<'\n';}
+        auto unchanged=saved_pregame;
+        require(!starfox::app::load_pregame_settings(pregame_test_path,unchanged) && unchanged==saved_pregame,
+            "invalid reticle depth accepted or mutated settings");
+    }
+    for (std::uint8_t mode = 0; mode < 8; ++mode) {
         auto settings = saved_pregame;
         settings.stereo_output = mode;
         require(starfox::app::save_pregame_settings(pregame_test_path, settings)
             && starfox::app::load_pregame_settings(pregame_test_path, loaded_pregame)
             && loaded_pregame == settings, "stereo output did not round-trip");
     }
-    for (const int invalid : {-1, 3, 256}) {
+    for (const int invalid : {-1, 8, 256}) {
         require(starfox::app::save_pregame_settings(pregame_test_path, saved_pregame),
             "could not write stereo validation fixture");
         std::ofstream bad{pregame_test_path, std::ios::app};
@@ -708,7 +745,7 @@ int main() {
     }
     {
         auto settings = saved_pregame;
-        settings.stereo_output = 3;
+        settings.stereo_output = 8;
         require(!starfox::app::save_pregame_settings(pregame_test_path, settings),
             "invalid stereo output saved");
     }
@@ -781,7 +818,32 @@ int main() {
         require(!starfox::app::save_pregame_settings(pregame_test_path,invalid_reflection),
             "invalid reflection intensity saved");
         auto settings=saved_pregame;
+        settings.global_enhancements=0x02aaaaaaU;
+        settings.scene_enhancements=0xaa;
+        settings.depth_enhancements=15;
+        settings.particle_enhancements=15;
+        settings.phosphor_persistence=3;
+        settings.adaptive_exposure=2;
+        settings.water_caustics=3;
+        settings.shadow_softness=3;
+        settings.camera_response=57;
+        settings.volumetric_fog=3;
+        auto invalid_fog=settings;invalid_fog.volumetric_fog=4;
+        require(!starfox::app::save_pregame_settings(pregame_test_path,invalid_fog),"invalid volumetric fog saved");
+        auto invalid_camera=settings;invalid_camera.camera_response=64;
+        require(!starfox::app::save_pregame_settings(pregame_test_path,invalid_camera),"invalid camera response accepted");
+        auto invalid_softness=settings;invalid_softness.shadow_softness=4;
+        require(!starfox::app::save_pregame_settings(pregame_test_path,invalid_softness),"invalid shadow softness saved");
+        auto invalid_caustics=settings;invalid_caustics.water_caustics=4;
+        require(!starfox::app::save_pregame_settings(pregame_test_path,invalid_caustics),
+            "invalid water caustics quality saved");
         settings.ray_tracing=ray_tracing;
+        for(std::uint8_t quality=1;quality<=3;++quality) {
+            settings.ray_tracing_quality=quality;
+            require(starfox::app::save_pregame_settings(pregame_test_path,settings)
+                && starfox::app::load_pregame_settings(pregame_test_path,loaded_pregame)
+                && loaded_pregame==settings,"ray quality config round trip failed");
+        }
         require(starfox::app::save_pregame_settings(pregame_test_path,settings),
             "could not write shadow migration fixture");
         std::ofstream legacy{pregame_test_path,std::ios::app};
@@ -797,6 +859,20 @@ int main() {
         settings.language = 6;
         require(!starfox::app::save_pregame_settings(pregame_test_path, settings),
             "invalid language setting was saved");
+    }
+    for (std::uint8_t scale = 0; scale < 10; ++scale) {
+        auto settings = saved_pregame;
+        settings.render_scale = scale;
+        require(starfox::app::save_pregame_settings(pregame_test_path, settings)
+            && starfox::app::load_pregame_settings(pregame_test_path, loaded_pregame)
+            && loaded_pregame.render_scale == scale,
+            "render scale configuration override did not round trip");
+    }
+    {
+        auto settings = saved_pregame;
+        settings.render_scale = 10;
+        require(!starfox::app::save_pregame_settings(pregame_test_path, settings),
+            "out-of-range render scale saved");
     }
     for (std::uint8_t style = 0; style < starfox::render::effect_count; ++style) {
         auto settings = saved_pregame;
@@ -815,6 +891,9 @@ int main() {
         if(starfox::render::material(static_cast<starfox::render::Effect>(style))) {
             settings.effect=0;settings.material=style;
         }
+        if(starfox::render::special_fx(static_cast<starfox::render::Effect>(style))) {settings.effect=0;settings.extra_effects[1]=style;}
+        if(starfox::render::manipulation(static_cast<starfox::render::Effect>(settings.world_effect))) {if(!starfox::render::persistence_mode(static_cast<starfox::render::Effect>(settings.world_effect))) settings.extra_effects[0]=settings.world_effect;settings.world_effect=0;}
+        if(starfox::render::special_fx(static_cast<starfox::render::Effect>(settings.world_effect))) {settings.extra_effects[2]=settings.world_effect;settings.world_effect=0;}
         require(loaded_pregame==settings,"model/world styles or legacy manipulation migration failed");
         settings.effect=1;settings.manipulation=unsigned(starfox::render::Effect::checker_fold);
         settings.manipulation_intensity=60;
@@ -933,9 +1012,11 @@ int main() {
     loaded_layouts = {};
     require(starfox::app::load_hud_layout(layout_test_path, loaded_layouts)
                 && loaded_layouts[0][starfox::render::HudElement::lives].x == 1
-                && loaded_layouts[5][starfox::render::HudElement::lives].x == 1
+                && loaded_layouts[6][starfox::render::HudElement::lives].x == 1
+                && loaded_layouts[5][starfox::render::HudElement::lives].x == 0
+                && loaded_layouts[11][starfox::render::HudElement::lives].x == 0
                 && loaded_layouts[4][starfox::render::HudElement::comms].x == 5
-                && loaded_layouts[9][starfox::render::HudElement::comms].x == 5,
+                && loaded_layouts[10][starfox::render::HudElement::comms].x == 5,
             "legacy HUD layouts were not migrated into both experiences");
     std::error_code layout_remove_error;
     std::filesystem::remove(layout_test_path, layout_remove_error);

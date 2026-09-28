@@ -33,7 +33,7 @@ std::optional<std::vector<GpuSceneDraw>> resize_scene_raster(
                 unsigned scale;
                 if constexpr(std::is_same_v<T,GpuModelDraw>) scale=draw.settings.render_scale;
                 else scale=draw.scale;
-                if(scale<1 || scale>4 || width%scale || height%scale) return false;
+                if(scale<1 || scale>10 || width%scale || height%scale) return false;
                 const std::array<std::uint32_t,2> logical{width/scale,height/scale};
                 if constexpr(std::is_same_v<T,GpuBackgroundDraw>) draw.settings.logical_viewport=logical;
                 else draw.logical_viewport=logical;
@@ -54,6 +54,7 @@ std::optional<std::vector<GpuSceneDraw>> resize_scene_raster(
 }
 bool enqueue_stereo_texture_pack(void* command,void* left,void* right,
     void* destination,StereoOutput mode,std::uint32_t width,std::uint32_t height) {
+    if(unsigned(mode)>=unsigned(StereoOutput::interlaced)) return false;
     const auto layout=stereo_output_layout(mode,width,height);
     if(!layout || !command || !left || !destination || destination==left
         || (layout->eye_count==2 && (!right || destination==right || left==right))) return false;
@@ -62,13 +63,56 @@ bool enqueue_stereo_texture_pack(void* command,void* left,void* right,
         SDL_GPUBlitInfo blit{};
         blit.source={static_cast<SDL_GPUTexture*>(eye?right:left),0,0,0,0,width,height};
         blit.destination={static_cast<SDL_GPUTexture*>(destination),0,0,
-            layout->eyes[eye].x,0,layout->eyes[eye].width,height};
+            layout->eyes[eye].x,layout->eyes[eye].y,layout->eyes[eye].width,layout->eyes[eye].height};
         // Only the first eye clears. Cycling or clearing the second pass can
         // discard the first eye; retain the same backing texture throughout.
         blit.load_op=eye?SDL_GPU_LOADOP_LOAD:SDL_GPU_LOADOP_CLEAR;
         blit.clear_color={0,0,0,1};
-        blit.filter=mode==StereoOutput::half_sbs?SDL_GPU_FILTER_LINEAR:SDL_GPU_FILTER_NEAREST;
+        blit.filter=(mode==StereoOutput::half_sbs || mode==StereoOutput::half_top_bottom)?SDL_GPU_FILTER_LINEAR:SDL_GPU_FILTER_NEAREST;
         SDL_BlitGPUTexture(static_cast<SDL_GPUCommandBuffer*>(command),&blit);
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+bool render_stereo_overlay(void* renderer,void* left,void* right,StereoOutput mode,
+    std::uint32_t width,std::uint32_t height,std::optional<std::array<float,4>> viewport) {
+#if defined(STARFOX_SDL_GPU_EFFECTS)
+    if(!renderer || !left || !right || left==right || !width || !height
+        || width>32767 || height>32767
+        || (!stereo_interlaced(mode) && mode!=StereoOutput::anaglyph_red_cyan)) return false;
+    auto* r=static_cast<SDL_Renderer*>(renderer);
+    const auto v=viewport.value_or(std::array<float,4>{0,0,float(width),float(height)});
+    for(float component:v) if(!std::isfinite(component)) return false;
+    if(v[0]<0 || v[1]<0 || v[2]<=0 || v[3]<=0 || v[0]+v[2]>width || v[1]+v[3]>height) return false;
+    for(unsigned eye=0;eye<2;++eye) {
+        auto* texture=static_cast<SDL_Texture*>(eye?right:left);
+        SDL_BlendMode blend;SDL_ScaleMode filter;float red,green,blue,alpha;
+        if(!SDL_GetTextureBlendMode(texture,&blend) || !SDL_GetTextureScaleMode(texture,&filter)
+            || !SDL_GetTextureColorModFloat(texture,&red,&green,&blue) || !SDL_GetTextureAlphaModFloat(texture,&alpha)) return false;
+        bool ok=SDL_SetTextureColorModFloat(texture,1,1,1) && SDL_SetTextureAlphaModFloat(texture,1)
+            && SDL_SetTextureScaleMode(texture,SDL_SCALEMODE_LINEAR)
+            && SDL_SetTextureBlendMode(texture,stereo_interlaced(mode)?SDL_BLENDMODE_NONE:SDL_BLENDMODE_ADD);
+        std::vector<SDL_Vertex> vertices;
+        const SDL_FColor tint=stereo_interlaced(mode)?SDL_FColor{1,1,1,1}:
+            (eye?SDL_FColor{0,1,1,1}:SDL_FColor{1,0,0,1});
+        const auto quad=[&](float top,float bottom) {
+            const float t=(top-v[1])/v[3],b=(bottom-v[1])/v[3];
+            const SDL_Vertex a{{v[0],top},tint,{0,t}},c{{v[0]+v[2],bottom},tint,{1,b}};
+            const SDL_Vertex ab{{v[0]+v[2],top},tint,{1,t}},ac{{v[0],bottom},tint,{0,b}};
+            vertices.insert(vertices.end(),{a,ab,c,a,c,ac});
+        };
+        if(stereo_interlaced(mode)) {
+            vertices.reserve(std::size_t(height)*3+6);
+            for(unsigned row=unsigned(std::floor(v[1]));row<unsigned(std::ceil(v[1]+v[3]));++row)
+                if(((row&1U)^(mode==StereoOutput::interlaced_reversed?1U:0U))==eye)
+                    quad(std::max(float(row),v[1]),std::min(float(row+1),v[1]+v[3]));
+        } else quad(v[1],v[1]+v[3]);
+        if(ok && !vertices.empty()) ok=SDL_RenderGeometry(r,texture,vertices.data(),int(vertices.size()),nullptr,0);
+        const bool restored=SDL_SetTextureBlendMode(texture,blend) && SDL_SetTextureScaleMode(texture,filter)
+            && SDL_SetTextureColorModFloat(texture,red,green,blue) && SDL_SetTextureAlphaModFloat(texture,alpha);
+        if(!ok || !restored) return false;
     }
     return true;
 #else
@@ -146,33 +190,33 @@ void GpuSceneRecording::flush(RasterCommands& pending) {
 }
 void GpuSceneRecording::append_model(RasterCommands& pending,GpuModelDraw draw) {
     const auto scale=draw.settings.render_scale;
-    if(!draw.shape || scale<1 || scale>4 || width_%scale || height_%scale)
+    if(!draw.shape || scale<1 || scale>10 || width_%scale || height_%scale)
         throw std::runtime_error("Invalid recorded scene model");
     flush(pending);draws_.emplace_back(std::move(draw));
 }
 void GpuSceneRecording::finish(RasterCommands& pending) {flush(pending);}
 void GpuSceneRecording::append_indexed_layer(RasterCommands& pending,RasterCommands source,
     const LayerCompositeSettings& settings,std::uint32_t source_scale,std::uint32_t destination_scale) {
-    if(!source_scale || source_scale>4 || !destination_scale || destination_scale>4)
+    if(!source_scale || source_scale>10 || !destination_scale || destination_scale>10)
         throw std::runtime_error("Invalid indexed layer scales");
     if(source.commands.empty()) return;
     flush(pending);raster_.push_back(std::move(source));
     draws_.emplace_back(GpuIndexedLayerDraw{&raster_.back(),settings,source_scale,destination_scale,{width_,height_}});
 }
 void GpuSceneRecording::append_background(RasterCommands& pending,GpuBackgroundDraw draw) {
-    if(!draw.ppu || !draw.scale || draw.scale>4 || width_%draw.scale || height_%draw.scale
+    if(!draw.ppu || !draw.scale || draw.scale>10 || width_%draw.scale || height_%draw.scale
         || draw.settings.layer<1 || draw.settings.layer>3)
         throw std::runtime_error("Invalid recorded background");
     flush(pending);draws_.emplace_back(std::move(draw));
 }
 void GpuSceneRecording::append_text(RasterCommands& pending,GpuTextDraw draw) {
-    if(!draw.scale || draw.scale>4 || width_%draw.scale || height_%draw.scale || draw.frame.glyphs.size()>256)
+    if(!draw.scale || draw.scale>10 || width_%draw.scale || height_%draw.scale || draw.frame.glyphs.size()>256)
         throw std::runtime_error("Invalid recorded text");
     if(draw.frame.glyphs.empty()) return;
     flush(pending);draws_.emplace_back(std::move(draw));
 }
 void GpuSceneRecording::append_particles(RasterCommands& pending,GpuParticleDraw draw) {
-    if(!draw.scale || draw.scale>4 || width_%draw.scale || height_%draw.scale
+    if(!draw.scale || draw.scale>10 || width_%draw.scale || height_%draw.scale
         || draw.frame.particles.size()>300)
         throw std::runtime_error("Invalid recorded particles");
     std::erase_if(draw.frame.particles,[&](const auto& p){return !p.life || p.owner!=draw.frame.owner;});
@@ -180,14 +224,14 @@ void GpuSceneRecording::append_particles(RasterCommands& pending,GpuParticleDraw
     flush(pending);draws_.emplace_back(std::move(draw));
 }
 void GpuSceneRecording::append_dust(RasterCommands& pending,GpuDustDraw draw) {
-    if(!draw.scale || draw.scale>4 || width_%draw.scale || height_%draw.scale
+    if(!draw.scale || draw.scale>10 || width_%draw.scale || height_%draw.scale
         || draw.frame.points.size()>simulation::kMaximumDustPoints)
         throw std::runtime_error("Invalid recorded dust");
     if(draw.frame.points.empty()) return;
     flush(pending);draws_.emplace_back(std::move(draw));
 }
 void GpuSceneRecording::append_grid(RasterCommands& pending,GpuGridDraw draw) {
-    if(!draw.scale || draw.scale>4 || width_%draw.scale || height_%draw.scale)
+    if(!draw.scale || draw.scale>10 || width_%draw.scale || height_%draw.scale)
         throw std::runtime_error("Invalid recorded grid scale");
     flush(pending);draws_.emplace_back(std::move(draw));
 }
@@ -266,6 +310,9 @@ struct GpuScene::Impl {
     std::string status{"GPU scene merge unavailable"};
     std::array<std::uint64_t,4> submission_cost{};
     GpuModel models[2];
+    GpuMsaa msaa[2];
+    std::unique_ptr<GpuScene> msaa_layer_mapper;
+    void* msaa_result{};
     GpuRaster raster;
     GpuBackground background;
     GpuProjection grid_projection;
@@ -283,6 +330,8 @@ struct GpuScene::Impl {
     SDL_GPUBuffer* depths[2]{};Uint32 depth_capacity[2]{};
     SDL_GPUBuffer* motions[2]{};Uint32 motion_capacity[2]{};
     SDL_GPUBuffer* ray_vertices{};
+    SDL_GPUBuffer* msaa_palette{};
+    SDL_GPUTransferBuffer* msaa_palette_upload{};
     struct RayTopology {
         std::vector<std::array<std::uint32_t,4>> triangles;
         SDL_GPUBuffer* buffer{};
@@ -310,6 +359,12 @@ struct GpuScene::Impl {
         for(auto* previous:retired) SDL_ReleaseGPUFence(device,previous);
         retired.clear();
         resident={};
+        msaa_result=nullptr;
+        for(auto& aa:msaa) aa.release_device();
+        msaa_layer_mapper.reset();
+        if(msaa_palette) SDL_ReleaseGPUBuffer(device,msaa_palette);
+        if(msaa_palette_upload) SDL_ReleaseGPUTransferBuffer(device,msaa_palette_upload);
+        msaa_palette=nullptr;msaa_palette_upload=nullptr;
         ray_output={};ray_vertex_count=0;
         ray_expander.release_device();
         if(ray_vertices) SDL_ReleaseGPUBuffer(device,ray_vertices);
@@ -431,6 +486,26 @@ struct GpuScene::Impl {
         // and an extra GPU copy/barrier pair for every caster model.
         ray_vertex_count+=Uint32(source.triangles.size()*3U);
     }
+    SDL_GPUBuffer* upload_msaa_palette(SDL_GPUCommandBuffer* command,std::span<const Rgba8> palette) {
+        if(palette.empty() || palette.size()>256) throw std::runtime_error("Invalid MSAA palette");
+        if(!msaa_palette) {
+            SDL_GPUBufferCreateInfo b{SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ,1024,0};
+            msaa_palette=SDL_CreateGPUBuffer(device,&b);require(msaa_palette);
+        }
+        if(!msaa_palette_upload) {
+            SDL_GPUTransferBufferCreateInfo t{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,1024,0};
+            msaa_palette_upload=SDL_CreateGPUTransferBuffer(device,&t);require(msaa_palette_upload);
+        }
+        auto* words=static_cast<Uint32*>(SDL_MapGPUTransferBuffer(device,msaa_palette_upload,true));require(words);
+        std::fill_n(words,256,0U);
+        for(unsigned i=0;i<palette.size();++i) {
+            const auto c=palette[i];words[i]=Uint32(c.r)|(Uint32(c.g)<<8)|(Uint32(c.b)<<16)|(Uint32(c.a)<<24);
+        }
+        SDL_UnmapGPUTransferBuffer(device,msaa_palette_upload);
+        auto* copy=SDL_BeginGPUCopyPass(command);require(copy);
+        SDL_GPUTransferBufferLocation from{msaa_palette_upload,0};SDL_GPUBufferRegion to{msaa_palette,0,1024};
+        SDL_UploadToGPUBuffer(copy,&from,&to,true);SDL_EndGPUCopyPass(copy);return msaa_palette;
+    }
     void finish() {
         if(fence) {
             require(SDL_WaitForGPUFences(device,true,&fence,1));
@@ -510,7 +585,7 @@ GpuRasterOutput GpuScene::enqueue(void* command,const GpuRasterOutput& front,con
     try {
         if(!impl_->owned_encoding && impl_->pending()) throw std::runtime_error("Finish submitted scene work before borrowed enqueue");
         impl_->resident={};
-        if(layer && (!layer->source_scale || layer->source_scale>4 || !layer->scale || layer->scale>4
+        if(layer && (!layer->source_scale || layer->source_scale>10 || !layer->scale || layer->scale>10
             || !layer->reference_size[0] || !layer->reference_size[1]
             || !front.width || !front.height || front.width%layer->source_scale || front.height%layer->source_scale))
             throw std::runtime_error("Invalid GPU indexed layer mapping");
@@ -568,15 +643,18 @@ GpuRasterOutput GpuScene::enqueue(void* command,const GpuRasterOutput& front,con
     return {};
 }
 GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t width,
-    std::uint32_t height,std::span<const GpuSceneDraw> draws,std::array<float,2> jitter) {
+    std::uint32_t height,std::span<const GpuSceneDraw> draws,std::array<float,2> jitter,const MsaaSettings* msaa) {
 #if defined(STARFOX_SDL_GPU_EFFECTS)
     try {
         if(!impl_->owned_encoding && impl_->pending()) throw std::runtime_error("Finish submitted scene work before borrowed batch enqueue");
         impl_->resident={};
+        impl_->msaa_result=nullptr;
         impl_->ray_output={};impl_->ray_vertex_count=0;
         impl_->ray_materials.triangles.clear();impl_->ray_materials.texels.clear();impl_->ray_materials_complete=true;
         if(!valid_raster_jitter(jitter) || !device || !command || !width || !height || std::uint64_t(width)*height>UINT32_MAX/16)
             throw std::runtime_error("Invalid GPU scene batch dimensions");
+        if(msaa && ((!msaa->palette && (msaa->cpu_palette.empty() || msaa->cpu_palette.size()>256)) || !msaa_sample_count(msaa->samples)))
+            throw std::runtime_error("Invalid scene MSAA settings");
         // Validate the entire layout before encoding any draws. Geometry packing
         // can still fail later; the caller must cancel, never submit a partial scene.
         std::uint64_t ray_triangles=0;bool rays_requested=false,materials_requested=false;
@@ -585,7 +663,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             if(const auto* model=std::get_if<GpuModelDraw>(&draw)) {
                 const auto scale=model->settings.render_scale;
                 const bool custom=model->logical_viewport[0] || model->logical_viewport[1];
-                if(!model->shape || scale<1 || scale>4 || (!custom && (width%scale || height%scale
+                if(!model->shape || scale<1 || scale>10 || (!custom && (width%scale || height%scale
                     || width/scale>32767 || height/scale>32767)) || (custom &&
                     (!model->logical_viewport[0] || !model->logical_viewport[1] || model->logical_viewport[0]>32767 || model->logical_viewport[1]>32767)))
                     throw std::runtime_error("Invalid GPU scene model layout");
@@ -601,14 +679,14 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
                     if(ray_triangles>1'000'000) throw std::runtime_error("GPU ray scene topology too large");
                 }
             } else if(const auto* layer=std::get_if<GpuIndexedLayerDraw>(&draw)) {
-                if(!layer->commands || !layer->source_scale || layer->source_scale>4 || !layer->scale || layer->scale>4
+                if(!layer->commands || !layer->source_scale || layer->source_scale>10 || !layer->scale || layer->scale>10
                     || !layer->reference_size[0] || !layer->reference_size[1]
                     || layer->commands->width()%layer->source_scale || layer->commands->height()%layer->source_scale)
                     throw std::runtime_error("Invalid indexed scene layer");
             } else if(const auto* bg=std::get_if<GpuBackgroundDraw>(&draw)) {
                 const auto logical=bg->settings.logical_viewport;
                 const bool custom=logical[0] || logical[1];
-                if(!bg->ppu || !bg->scale || bg->scale>4
+                if(!bg->ppu || !bg->scale || bg->scale>10
                     || (!custom && (width%bg->scale || height%bg->scale))
                     || (custom && (!logical[0] || !logical[1] || logical[0]>4096 || logical[1]>4096))
                     || bg->settings.layer<1 || bg->settings.layer>3)
@@ -616,7 +694,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             } else if(const auto* text=std::get_if<GpuTextDraw>(&draw)) {
                 const auto logical=text->logical_viewport;
                 const bool custom=logical[0] || logical[1];
-                if(!text->scale || text->scale>4
+                if(!text->scale || text->scale>10
                     || (!custom && (width%text->scale || height%text->scale))
                     || (custom && (!logical[0] || !logical[1] || logical[0]>2048 || logical[1]>2048))
                     || text->frame.glyphs.size()>256)
@@ -624,7 +702,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             } else if(const auto* particles=std::get_if<GpuParticleDraw>(&draw)) {
                 const auto logical=particles->logical_viewport;
                 const bool custom=logical[0] || logical[1];
-                if(!particles->scale || particles->scale>4
+                if(!particles->scale || particles->scale>10
                     || (!custom && (width%particles->scale || height%particles->scale))
                     || (custom && (logical[0]<2 || logical[1]<2 || logical[0]>32767 || logical[1]>32767))
                     || particles->frame.particles.size()>300)
@@ -632,7 +710,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             } else if(const auto* dust=std::get_if<GpuDustDraw>(&draw)) {
                 const auto logical=dust->logical_viewport;
                 const bool custom=logical[0] || logical[1];
-                if(!dust->scale || dust->scale>4
+                if(!dust->scale || dust->scale>10
                     || (!custom && (width%dust->scale || height%dust->scale))
                     || (custom && (logical[0]<2 || logical[1]<2 || logical[0]>32767 || logical[1]>32767))
                     || dust->frame.points.size()>simulation::kMaximumDustPoints
@@ -642,7 +720,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             } else if(const auto* grid=std::get_if<GpuGridDraw>(&draw)) {
                 const auto logical=grid->logical_viewport;
                 const bool custom=logical[0] || logical[1];
-                if(!grid->scale || grid->scale>4
+                if(!grid->scale || grid->scale>10
                     || (!custom && (width%grid->scale || height%grid->scale))
                     || (custom && (!logical[0] || !logical[1] || logical[0]>32767 || logical[1]>32767)))
                     throw std::runtime_error("Invalid GPU grid layout");
@@ -656,6 +734,10 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
         // Initialize before encoding layers: switching devices must not release
         // the first layer's newly allocated model/raster resources during merge.
         impl_->initialize(static_cast<SDL_GPUDevice*>(device));
+        void* aa_palette=msaa?msaa->palette:nullptr;
+        if(msaa && !aa_palette) {
+            aa_palette=impl_->upload_msaa_palette(static_cast<SDL_GPUCommandBuffer*>(command),msaa->cpu_palette);
+        }
         // Borrowed/failed commands can be cancelled by their owner. Only
         // successful owned submissions promote uploads to persistent cache.
         impl_->clear_ray_topologies(false);
@@ -667,18 +749,32 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             Impl* impl;
             ~BatchCycleGuard(){impl->batch_encoding=false;}
         } cycle_guard{impl_.get()};
+        GpuMsaaSamples previous_samples{};
+        const auto accumulate_msaa=[&](const GpuRasterOutput& front,const GpuMsaaFaces& faces) {
+            if(!msaa) return;
+            auto& aa=impl_->msaa[0];
+            const GpuMsaaLayer layer{front.pixels,faces.kinds,faces.triangle_count/128};
+            impl_->msaa_result=aa.enqueue(device,command,nullptr,faces.triangles,aa_palette,width,height,
+                faces.triangle_count,msaa->samples,previous_samples.buffer?&previous_samples:nullptr,true,
+                faces.texels,faces.texel_bytes,faces.triangles!=nullptr,&layer);
+            if(!impl_->msaa_result) throw std::runtime_error(aa.status());
+            previous_samples=aa.sample_output();
+        };
         if(draws.empty()) {
             RasterCommands empty;empty.reset(width,height);
             auto output=impl_->raster.enqueue_commands(device,command,empty,false);
             if(!output.pixels) throw std::runtime_error(impl_->raster.status());
+            accumulate_msaa(output,{});
+            output.msaa_color=msaa && msaa->defer_palette?nullptr:impl_->msaa_result;
             impl_->status="Empty GPU scene batch cleared resident";
             return output;
         }
         GpuRasterOutput output{};
         unsigned model_slot=0;
-        const bool fused=!std::getenv("STARFOX_TEST_SEPARATE_SCENE_MERGE");
+        const bool fused=!msaa && !std::getenv("STARFOX_TEST_SEPARATE_SCENE_MERGE");
         for(const auto& draw:draws) {
             GpuRasterOutput front{};
+            GpuMsaaFaces msaa_faces{};
             bool world_sprite=false;
             if(const auto* model=std::get_if<GpuModelDraw>(&draw)) {
                 const auto scale=model->settings.render_scale;
@@ -689,7 +785,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
                     && !world_sprite
                     && !((model->logical_viewport[0] || jitter!=std::array<float,2>{}) && model->pose.simple_scaled_sprite);
                 auto pose=model->pose;auto previous=model->previous_pose;
-                if(jitter!=std::array<float,2>{}) {
+                if(msaa || jitter!=std::array<float,2>{}) {
                     pose.continuous_geometry=pose.subpixel_projection=true;
                     if(previous) previous->continuous_geometry=previous->subpixel_projection=true;
                 }
@@ -702,7 +798,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
                 front=renderer.enqueue(device,command,*model->shape,pose,model->settings,
                     custom?model->logical_viewport[0]:width/scale,custom?model->logical_viewport[1]:height/scale,model->surface_metadata,fuse_model && output.pixels?&output:nullptr,nullptr,model->geometry_depth,
                     casts_rays?&rays:nullptr,previous?&*previous:nullptr,model_jitter,
-                    custom?std::array<std::uint32_t,2>{width,height}:std::array<std::uint32_t,2>{});
+                    custom?std::array<std::uint32_t,2>{width,height}:std::array<std::uint32_t,2>{},msaa?&msaa_faces:nullptr,msaa?msaa->samples:8);
                 if(!front.pixels) throw std::runtime_error(renderer.status());
                 if(casts_rays) {
                     if(!rays.points) {
@@ -715,6 +811,12 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             } else if(const auto* layer=std::get_if<GpuIndexedLayerDraw>(&draw)) {
                 front=impl_->raster.enqueue_commands(device,command,*layer->commands,false,true);
                 if(!front.pixels) throw std::runtime_error(impl_->raster.status());
+                if(msaa) {
+                    if(!impl_->msaa_layer_mapper) impl_->msaa_layer_mapper=std::make_unique<GpuScene>();
+                    const auto mapped=impl_->msaa_layer_mapper->enqueue(command,front,nullptr,false,false,layer,width,height);
+                    if(!mapped.pixels) throw std::runtime_error(impl_->msaa_layer_mapper->status());
+                    accumulate_msaa(mapped,{});
+                }
                 const auto back=output;
                 output=enqueue(command,front,back.pixels?&back:nullptr,false,false,layer,width,height);
                 if(!output.pixels) throw std::runtime_error(impl_->status);
@@ -778,6 +880,7 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
                     raster.independent_raster_size?std::array<std::uint32_t,2>{width,height}:std::array<std::uint32_t,2>{},jitter);
                 if(!front.pixels) throw std::runtime_error(impl_->raster.status());
             }
+            accumulate_msaa(front,msaa_faces);
             const auto back=output;
             const auto* model_draw=std::get_if<GpuModelDraw>(&draw);
             output=enqueue(command,front,back.pixels?&back:nullptr,world_sprite,
@@ -790,19 +893,21 @@ GpuRasterOutput GpuScene::enqueue_batch(void* device,void* command,std::uint32_t
             RasterCommands empty;empty.reset(width,height);
             output=impl_->raster.enqueue_commands(device,command,empty,false);
             if(!output.pixels) throw std::runtime_error(impl_->raster.status());
+            accumulate_msaa(output,{});
         }
         impl_->status="Ordered mixed GPU scene batch resident";
+        output.msaa_color=msaa && msaa->defer_palette?nullptr:impl_->msaa_result;
         if(rays_requested && rays_complete)
             impl_->ray_output={device,impl_->ray_vertex_count?impl_->ray_vertices:nullptr,impl_->ray_vertex_count,true,
                 impl_->ray_materials_complete && (impl_->ray_gpu_materials_complete || impl_->ray_materials.triangles.size()*3==impl_->ray_vertex_count)
                     ? &impl_->ray_materials : nullptr,impl_->ray_gpu_materials_complete?impl_->ray_material_offset:0};
         return output;
-    } catch(const std::exception& error) {impl_->ray_output={};impl_->status=error.what();}
+    } catch(const std::exception& error) {impl_->msaa_result=nullptr;impl_->ray_output={};impl_->status=error.what();}
 #endif
     return {};
 }
 bool GpuScene::render_resident(void* device,std::uint32_t width,std::uint32_t height,
-    std::span<const GpuSceneDraw> draws,std::array<float,2> jitter) {
+    std::span<const GpuSceneDraw> draws,std::array<float,2> jitter,const MsaaSettings* msaa) {
 #if defined(STARFOX_SDL_GPU_EFFECTS)
     SDL_GPUCommandBuffer* command=nullptr;
     try {
@@ -819,7 +924,7 @@ bool GpuScene::render_resident(void* device,std::uint32_t width,std::uint32_t he
         if(!device) throw std::runtime_error("Missing GPU scene device");
         command=SDL_AcquireGPUCommandBuffer(static_cast<SDL_GPUDevice*>(device));Impl::require(command);
         impl_->owned_encoding=true;
-        const auto output=enqueue_batch(device,command,width,height,draws,jitter);
+        const auto output=enqueue_batch(device,command,width,height,draws,jitter,msaa);
         const auto encoded=profile?std::chrono::steady_clock::now():begin;
         impl_->owned_encoding=false;
         if(!output.pixels) throw std::runtime_error(impl_->status);
@@ -841,7 +946,7 @@ bool GpuScene::render_resident(void* device,std::uint32_t width,std::uint32_t he
     } catch(const std::exception& error) {
         impl_->owned_encoding=false;
         if(command) SDL_CancelGPUCommandBuffer(command);
-        impl_->resident={};impl_->ray_output={};impl_->status=error.what();
+        impl_->msaa_result=nullptr;impl_->resident={};impl_->ray_output={};impl_->status=error.what();
     }
 #else
     (void)device;(void)width;(void)height;(void)draws;
@@ -854,6 +959,30 @@ GpuRasterOutput GpuScene::resident_output() const noexcept {
 #else
     return {};
 #endif
+}
+void* GpuScene::msaa_output() const noexcept {return impl_->msaa_result;}
+bool GpuScene::resolve_msaa_palette(std::span<const Rgba8> palette) {
+#if defined(STARFOX_SDL_GPU_EFFECTS)
+    SDL_GPUCommandBuffer* command=nullptr;
+    try {
+        if(!impl_->resident.pixels || !impl_->msaa_result) throw std::runtime_error("No resident MSAA scene to resolve");
+        impl_->retire_submission();
+        command=SDL_AcquireGPUCommandBuffer(impl_->device);Impl::require(command);
+        auto* colors=impl_->upload_msaa_palette(command,palette);
+        auto* output=impl_->msaa[0].resolve_scene(command,colors);
+        if(!output) throw std::runtime_error(impl_->msaa[0].status());
+        auto* submitted=command;command=nullptr;
+        impl_->fence=SDL_SubmitGPUCommandBufferAndAcquireFence(submitted);Impl::require(impl_->fence);
+        impl_->msaa_result=output;impl_->resident.msaa_color=output;
+        impl_->status="Retained MSAA palette resolved without geometry replay";return true;
+    } catch(const std::exception& error) {
+        if(command) SDL_CancelGPUCommandBuffer(command);
+        impl_->msaa_result=nullptr;impl_->resident.msaa_color=nullptr;impl_->status=error.what();
+    }
+#else
+    (void)palette;
+#endif
+    return false;
 }
 GpuScene::RayGeometryOutput GpuScene::ray_geometry_output() const noexcept {
 #if defined(STARFOX_SDL_GPU_EFFECTS)
@@ -905,11 +1034,14 @@ bool GpuScene::readback(Framebuffer& frame,SurfaceBuffer* surfaces) {
         const auto* packed=static_cast<const Uint32*>(SDL_MapGPUTransferBuffer(device,transfer,false));Impl::require(packed);
         const auto* values=reinterpret_cast<const float*>(packed+pixels);
         if(surfaces) surfaces->clear();
+        if(frame.draw_scale()>1) frame.enable_dither_pairs(true);
+        frame.clear_dither_pairs();
         for(unsigned y=0;y<output.height;++y) for(unsigned x=0;x<output.width;++x) {
             const auto i=std::size_t(y)*output.width+x;
             if(coverage && (packed[i]&(1U<<26))) frame.set_stored(x,y,std::uint8_t(packed[i]));
             else frame.pixels()[i]=std::uint8_t(packed[i]);
-            if(frame.layer_tags_enabled()) frame.layer_tags()[i]=std::uint8_t(packed[i]>>8);
+            if(packed[i]&0x80000000U) frame.set_dither_alternate(i,std::uint8_t(packed[i]>>8));
+            if(frame.layer_tags_enabled()) frame.layer_tags()[i]=gpu_pixel_layer(packed[i]);
             if(normals && (packed[i]&(1U<<24))) surfaces->set(x,y,
                 {values[i*4],values[i*4+1],values[i*4+2],values[i*4+3]},std::uint8_t(packed[i]>>16));
         }

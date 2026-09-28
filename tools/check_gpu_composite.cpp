@@ -3,6 +3,7 @@
 #include "starfox/render/sdl_gpu_effects.hpp"
 #include "starfox/render/colour_math.hpp"
 #include "starfox/render/pixel_filter.hpp"
+#include "starfox/render/model_smoothing.hpp"
 #include <SDL3/SDL.h>
 #include <iostream>
 #include <stdexcept>
@@ -177,6 +178,51 @@ int main(int argc,char** argv) {
     shadowScene.add({{-10,-10,40},{10,-10,40},{0,10,45}});shadowScene.build();
     Palette256 palette;
     for(unsigned i=0;i<256;++i) palette[i]={std::uint8_t(i),std::uint8_t(i*7),std::uint8_t(255-i),std::uint8_t(i*13)};
+    // Authored dither pairs must resolve even in single-pixel-wide faces. No
+    // spatial pattern recognizer can recover these alternates at the edges.
+    for(unsigned scale:{1U,2U,3U,4U}) for(bool merged:{false,true}) {
+        Framebuffer native(8,8,scale),base(8,8,scale),actual(8,8,scale);
+        for(auto* f:{&native,&base,&actual}) f->enable_layer_tags(true);
+        RasterCommands commands;commands.reset(native.stored_width(),native.stored_height());
+        for(unsigned x=0;x<native.stored_width();++x) {
+            RasterCommand c;c.left=x;c.right=x+1;c.bottom=native.stored_height();
+            c.even=x%4?17:0;c.odd=53;c.dither=1;c.tag=x%3==0?0:x%3==1?1:4;
+            c.has_surface=1;c.surface={0,0,1,100};commands.commands.push_back(c);
+        }
+        SurfaceBuffer normals(native.stored_width(),native.stored_height());
+        if(!raster.render(commands,native,&normals)) {std::cerr<<raster.status();return 120;}
+        for(unsigned i=0;i<base.pixels().size();++i) base.pixels()[i]=7;
+        std::vector<uint8_t> coverage(base.pixels().size());
+        for(unsigned x=0;x<base.stored_width();++x) {coverage[x]=1;base.set_stored(x,0,9,PixelLayer::two_d);}
+        auto source=raster.resident_output();GpuRaster front;GpuScene merge;
+        if(merged) {
+            auto* device=static_cast<SDL_GPUDevice*>(source.device);
+            auto* cb=SDL_AcquireGPUCommandBuffer(device);if(!cb) return 124;
+            auto layer=front.enqueue_commands(device,cb,commands,true);
+            source=merge.enqueue(cb,layer,nullptr);
+            if(!source.pixels) {SDL_CancelGPUCommandBuffer(cb);return 125;}
+            auto* fence=SDL_SubmitGPUCommandBufferAndAcquireFence(cb);
+            if(!fence || !SDL_WaitForGPUFences(device,true,&fence,1)) return 126;
+            SDL_ReleaseGPUFence(device,fence);
+        }
+        if(!composite.compose(source,scale,base,coverage,{},palette)) return 121;
+        std::vector<uint8_t> rgba;
+        if(!composite.readback(actual,rgba)) return 122;
+        for(unsigned y=0;y<base.stored_height();++y) for(unsigned x=0;x<base.stored_width();++x) {
+            const auto i=y*base.stored_width()+x;const auto index=native.pixels()[i];
+            const auto tag=x%3==0?0U:x%3==1?1U:4U;
+            const bool resolve=scale>1 && tag==0 && y!=0;
+            auto expected=palette[y==0?9:resolve?index:index?index:7];
+            if(resolve) {
+                const auto a=palette[x%4?17:0],b=palette[53];
+                expected.r=uint8_t((unsigned(a.r)+b.r+1)/2);expected.g=uint8_t((unsigned(a.g)+b.g+1)/2);expected.b=uint8_t((unsigned(a.b)+b.b+1)/2);
+            }
+            if(rgba[i*4]!=expected.r || rgba[i*4+1]!=expected.g || rgba[i*4+2]!=expected.b || rgba[i*4+3]!=expected.a
+                || (y!=0 && (index || resolve) && actual.layer_tags()[i]!=tag)) {
+                std::cerr<<"Authored dither material resolve mismatch scale="<<scale<<" x="<<x<<" y="<<y;return 123;
+            }
+        }
+    }
     {
         Framebuffer base(400,224,2),portrait(400,224),text(400,224),deviceFrame(1,1);
         base.enable_layer_tags(true);
@@ -224,6 +270,9 @@ int main(int argc,char** argv) {
             || cached.last_cpu_upload_bytes()!=0U
             || cached.last_palette_upload_bytes()!=1024U
             || !cached.readback(read,first)) return 118;
+        std::vector<MotionBlurGuide> unavailable_guides(1,{42,0,10,true,true});
+        if(cached.readback_motion_guides(true,unavailable_guides)
+            || unavailable_guides.size()!=1 || unavailable_guides[0].motion_x!=42) return 180;
         if(!cached.compose(raster.resident_output(),1,blank,{},plain,palette)
             || cached.last_cpu_upload_bytes()!=0U
             || cached.last_palette_upload_bytes()!=0U
@@ -358,6 +407,31 @@ int main(int argc,char** argv) {
             return 143;
         }
     }
+    for(unsigned scale:{2U,4U}) for(unsigned mosaic:{0U,0x11U}) {
+        Framebuffer source(8,8,scale),expected(8,8,scale),recorded(8,8,scale),actual(8,8,scale),replayed(8,8,scale);
+        source.enable_layer_tags(true);source.enable_dither_pairs(true);
+        for(unsigned y=0;y<source.stored_height();++y) for(unsigned x=0;x<source.stored_width();++x) {
+            source.set_stored(x,y,(x+y)&1?53:0,PixelLayer::three_d);
+            source.set_dither_alternate(std::size_t(y)*source.stored_width()+x,(x+y)&1?0:53);
+        }
+        LayerCompositeSettings settings;settings.mosaic=mosaic;settings.mosaic_layer_mask=1;
+        composite_transparent_layer(source,expected,settings);
+        RasterCommands batch;batch.reset(recorded.stored_width(),recorded.stored_height());recorded.record_to(&batch);
+        composite_transparent_layer(source,recorded,settings);recorded.record_to(nullptr);
+        replay_raster_commands(batch,replayed,nullptr);
+        if(!raster.render(batch,actual,nullptr)) {std::cerr<<raster.status();return 144;}
+        std::vector<std::uint8_t> reference,cpuImage,gpuImage;
+        expand_rgba(expected,reference,palette);expand_rgba(replayed,cpuImage,palette);expand_rgba(actual,gpuImage,palette);
+        if(reference!=cpuImage || reference!=gpuImage) {std::cerr<<"Recorded material pair lost during layer composition";return 145;}
+        GpuIndexedLayerDraw indexed;indexed.commands=&batch;indexed.source_scale=indexed.scale=scale;
+        indexed.reference_size={actual.stored_width(),actual.stored_height()};
+        const std::array<GpuSceneDraw,1> indexedDraws{indexed};GpuScene indexedScene;
+        if(!indexedScene.render_resident(raster.resident_output().device,actual.stored_width(),actual.stored_height(),indexedDraws)) {std::cerr<<indexedScene.status();return 146;}
+        Framebuffer mapped(8,8,scale);
+        if(!indexedScene.readback(mapped,nullptr)) {std::cerr<<indexedScene.status();return 147;}
+        expand_rgba(mapped,gpuImage,palette);
+        if(reference!=gpuImage) {std::cerr<<"Resident indexed remap dropped palette-zero material samples";return 148;}
+    }
     unsigned cases=0;
     for(unsigned sourceScale:{1U,2U,4U}) for(unsigned scale:{1U,2U,4U})
     for(int offset:{-7,0,3}) for(unsigned mosaic:{0U,0x31U}) for(bool clipped:{false,true}) {
@@ -404,7 +478,26 @@ int main(int argc,char** argv) {
             if(coverage[std::size_t(y)*actual.stored_width()+x] && surface.get(x,y).valid) {
                 std::cerr<<"CPU foreground inherited hidden model lighting";return 99;
             }
+        if(clipped) for(unsigned y=0;y<actual.stored_height();++y) for(unsigned x=0;x<actual.stored_width();++x) {
+            const int lx=int(x/scale),ly=int(y/scale);
+            if((lx<settings.clip_left || lx>=settings.clip_right || ly<settings.clip_top || ly>=settings.clip_bottom)
+                && surface.get(x,y).valid) {
+                std::cerr<<"Clipped model leaked lighting metadata at "<<x<<","<<y;return 149;
+            }
+        }
         if(offset==0 && mosaic==0 && !clipped) {
+            // A motion-blur underlay hides the native layer with an empty clip.
+            // It must not retain normals, even with matching palette entries.
+            GpuComposite underlay;LayerCompositeSettings hidden;hidden.clip_left=hidden.clip_right=0;
+            Framebuffer behind=cpu;SurfaceBuffer behind_surfaces(cpu.stored_width(),cpu.stored_height());
+            std::vector<uint8_t> behind_rgba,behind_reference;
+            if(!underlay.compose(raster.resident_output(),sourceScale,cpu,coverage,hidden,palette)
+                || !underlay.readback(behind,behind_rgba,&behind_surfaces)) return 150;
+            expand_rgba(cpu,behind_reference,palette);
+            if(behind_rgba!=behind_reference) {std::cerr<<"Empty clip changed underlay colour";return 151;}
+            for(const auto& sample:behind_surfaces.samples()) if(sample.valid) {
+                std::cerr<<"Empty clip retained model surfaces in underlay";return 152;
+            }
             Framebuffer base(23,17,sourceScale),world(23,17,sourceScale);base.enable_layer_tags(true);world.enable_layer_tags(true);
             for(unsigned y=0;y<base.stored_height();++y) for(unsigned x=0;x<base.stored_width();++x)
                 base.set_stored(x,y,x?9:7,x?PixelLayer::background:PixelLayer::two_d);
@@ -645,6 +738,28 @@ int main(int argc,char** argv) {
         if(result!=reference) {std::cerr<<"Resident effects mismatch case "<<cases;return 8;}
         if(effects.last_staging_upload_bytes()!=0) {std::cerr<<"Resident effects uploaded placeholder data";return 53;}
         {
+            GpuEffectSettings resolve;resolve.smoothing=4;
+            auto wanted=rgba;std::vector<std::uint8_t> scratch;
+            smooth_models(4,actual,wanted,scratch);
+            if(!effects.apply_resident(composite.output(),cpu,result,resolve) || result!=wanted) {
+                std::cerr<<"Upscaled dither resolve differs from CPU";return 115;
+            }
+        }
+        for(unsigned type:{0U,1U,2U,3U,5U}) for(unsigned quality=1;quality<=3;++quality) {
+            GpuEffectSettings aa;aa.anti_aliasing=type*4+quality;
+            auto wanted=rgba;
+            if(!referenceEffects.apply(raster.resident_output().device,actual,wanted,aa)
+                || !effects.apply_resident(composite.output(),cpu,result,aa) || result!=wanted) {
+                std::cerr<<"AA type/quality resident mismatch";return 113;
+            }
+            for(std::size_t i=0;i<actual.layer_tags().size();++i)
+                if(!anti_aliasing_eligible(static_cast<PixelLayer>(actual.layer_tags()[i])))
+                    for(unsigned channel=0;channel<4;++channel)
+                        if(result[i*4+channel]!=rgba[i*4+channel]) {
+                            std::cerr<<"AA altered protected HUD pixels";return 114;
+                        }
+        }
+        {
             SdlGpuEffects backdropEffects;
             BackdropImage sky;sky.width=16;sky.height=16;sky.pixels.assign(256,0xff553311);
             GpuEffectSettings skySettings;auto& env=skySettings.environment;
@@ -660,6 +775,53 @@ int main(int argc,char** argv) {
             }
         }
         {
+            // Per-eye source shifts cover both panoramas and unique bodies,
+            // including fractional offsets, without moving foreground/HUD.
+            BackdropImage stereoSky;stereoSky.width=32;stereoSky.height=48;
+            for(unsigned y=0;y<48;++y) for(unsigned x=0;x<32;++x)
+                stereoSky.pixels.push_back(0xff000000u|((x*7u)&255u)|(((y*5u)&255u)<<8)|(((x+y)*3u&255u)<<16));
+            for(float offset:{-4.25f,4.25f}) for(float projection:{0.f,1.f,3.f,4.f,6.f,7.f}) {
+                GpuEffectSettings shifted;auto& env=shifted.environment;
+                env.backdrop=&stereoSky;env.modes[2]=1;env.motion[0]=1000;env.plane[3]=1;
+                env.classes.fill(6);env.scroll_fraction[2]=offset;
+                env.backdrop_projection={1/32.f,1/24.f,.5f,projection};
+                env.backdrop_keep[0]={0,8,6,6};
+                if(projection==4) env.backdrop_keep[1]={.1f,-.1f,0,0};
+                auto wanted=rgba;apply_environment(env,actual,wanted);
+                if(!effects.apply_resident(composite.output(),cpu,result,shifted)) return 116;
+                for(std::size_t i=0;i<result.size();++i) if(std::abs(int(result[i])-int(wanted[i]))>1) {
+                    std::cerr<<"Stereo enhanced backdrop CPU/GPU mismatch";return 117;
+                }
+                for(std::size_t i=0;i<actual.layer_tags().size();++i) if(actual.layer_tags()[i]!=unsigned(PixelLayer::background))
+                    for(unsigned c=0;c<4;++c) if(result[i*4+c]!=rgba[i*4+c]) {
+                        std::cerr<<"Stereo backdrop shifted foreground or HUD";return 118;
+                    }
+            }
+        }
+        {
+            // Bomb/death disks must tint the replacement sky, not be erased by it.
+            BackdropImage sky;sky.width=16;sky.height=16;sky.pixels.assign(256,0xff553311);
+            for(bool subtract:{false,true}) {
+                GpuEffectSettings flash;
+                auto& env=flash.environment;env.backdrop=&sky;env.modes[2]=1;
+                env.motion[0]=1000;env.plane[3]=1;
+                flash.circle=GpuEffectSettings::Circle{0,0,100000,0,0,
+                    int(cpu.stored_width()),int(cpu.stored_height()),31,9,0,subtract,false,false};
+                auto wanted=rgba;apply_environment(env,actual,wanted);
+                for(std::size_t i=0;i<actual.pixels().size();++i) {
+                    if(actual.pixels()[i]>=128) continue;
+                    for(unsigned channel=0;channel<3;++channel) {
+                        auto& value=wanted[i*4+channel];
+                        const int fixed=channel==0?31:channel==1?9:0;
+                        int v=(unsigned(value)*31+127)/255;
+                        v=std::clamp(v+(subtract?-fixed:fixed),0,31);
+                        value=std::uint8_t((v<<3)|(v>>2));
+                    }
+                }
+                if(!effects.apply_resident(composite.output(),cpu,result,flash) || result!=wanted) {
+                    std::cerr<<"Enhanced scenery covered bomb/death colour disk";return 112;
+                }
+            }
             SplitTextures split(raster.resident_output().device,cpu.stored_width(),cpu.stored_height());
             for(bool bloom:{false,true}) {
                 auto separated=bloom?s:GpuEffectSettings{};separated.surfaces=&surface;

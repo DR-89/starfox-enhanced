@@ -102,6 +102,20 @@ int main() {
         DxrShadows producer(identity);
         SdlDxrShadows owned;
         require(producer.available(),producer.status().c_str());
+        {
+            Scene casters;casters.add({{-12,-12,20},{12,-12,20},{0,12,20}});casters.build();
+            const ReceiverPlane plane{{0,0,40},{0,0,1}};
+            std::vector<std::uint8_t> actual,expected;
+            const Camera camera{37,23,30,18.5,11.5,26};
+            render_mask(casters,camera,{0,0,-1},plane,expected,nullptr,true,true);
+            require(owned.render_resident(device,casters,camera,{0,0,-1},plane,nullptr,true),owned.status().c_str());
+            require(owned.readback(actual) && actual==expected,"SDL DXR underlay lost plane shadows");
+            require(!owned.render_resident(device,casters,camera,{0,0,-1},{},nullptr,true)
+                && !owned.output().buffer,"SDL DXR underlay retained stale no-plane output");
+            require(owned.render_resident(device,casters,camera,{0,0,-1},plane,nullptr,true)
+                && owned.readback(actual) && actual==expected,"SDL DXR underlay failed recovery");
+            std::cout<<"SDL DXR ground-only receiver transfer and invalidation passed\n";
+        }
         for(unsigned frame=0;frame<12;++frame) {
             const unsigned width=frame%3==0?133:frame%3==1?400:129,height=frame%3==1?224:79;
             Scene scene;

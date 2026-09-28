@@ -26,9 +26,13 @@ struct RasterCommand {
     // textured=4 is SNES OBJ 4bpp: texture_offset points to a 64 KiB VRAM
     // snapshot, u/v are unclipped stored origins, du is draw scale, dv size,
     // reserved0 is the base byte address, reserved1 bits 0/1 are X/Y flips.
+    // Bit 2 marks a verified complete retail reticle group for stereo placement;
+    // rasterizers ignore that metadata and preserve normal palette/coverage.
     // textured=5 composites indexed layers: u/v logical offsets, du/dv source/
     // destination scale, u_mask/v_mask stored source extents, even/odd mosaic
     // origins, reserved0 mosaic step; dither enables per-pixel tags at reserved1.
+    // colour_base, when nonzero, is one plus the byte offset of little-endian
+    // uint16 material pairs (bit 8 valid, low byte alternate palette index).
     // textured=6 decodes 24 font bytes (12 little-endian 16-bit rows): u/v
     // unclipped stored origin, du draw scale, dv output glyph height.
     // textured=7 decodes 8 bitmap-font row bytes: same origin/scale, dv square

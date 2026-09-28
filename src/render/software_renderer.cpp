@@ -863,6 +863,7 @@ void fill_source_polygon(
                     + (colour.dither && ((x ^ plot_y) & 1) != 0
                         ? colour.odd : colour.even));
                 target.set(x, plot_y, palette_index);
+                if(colour.dither) target.annotate_dither(x,plot_y,std::uint8_t(colour_index_base+colour.even),std::uint8_t(colour_index_base+colour.odd));
                 if (surfaces != nullptr) {
                     surfaces->set(x, plot_y, surface, palette_index);
                 }
@@ -1151,8 +1152,8 @@ void draw_line(
     const auto sx = x0 < x1 ? 1 : -1;
     const auto dy = std::abs(y1 - y0);
     const auto sy = y0 < y1 ? 1 : -1;
-    const auto dither_scale = static_cast<int>(std::clamp(render_scale, 1U, 4U));
-    const auto thickness = static_cast<int>(std::clamp(render_scale, 1U, 4U)
+    const auto dither_scale = static_cast<int>(std::clamp(render_scale, 1U, 10U));
+    const auto thickness = static_cast<int>(std::clamp(render_scale, 1U, 10U)
         * std::clamp<unsigned>(wireframe_thickness, 1U, 4U));
     const auto offset = (thickness - 1) / 2;
     const auto plot = [&] {
@@ -1175,6 +1176,7 @@ void draw_line(
                 target.set(x, y, static_cast<std::uint8_t>(colour_index_base
                     + (colour.dither && (((x / dither_scale) ^ (y / dither_scale)) & 1) != 0
                         ? colour.odd : colour.even)));
+                if(colour.dither) target.annotate_dither(x,y,std::uint8_t(colour_index_base+colour.even),std::uint8_t(colour_index_base+colour.odd));
             }
         }
     };
@@ -1503,6 +1505,7 @@ void SoftwareRenderer::draw_impl(
     SurfaceBuffer* surfaces, shadows::Scene* shadow_scene,
     RenderDiagnostics* axis_diagnostics,bool shadow_only) const {
     if (axis_diagnostics) *axis_diagnostics = {};
+    if(!shadow_only && !target.command_buffer() && settings_.render_scale>1) target.enable_dither_pairs(true);
     // Everything this renderer emits is the Super FX layer, whatever draw
     // scale each path happens to use. Scan conversion drops the scale to 1 and
     // would derive that correctly on its own, but the sprite paths below

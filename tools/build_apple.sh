@@ -33,6 +33,9 @@ ios)
     exit 2
     ;;
 esac
+metal_sdk=macosx
+if [[ "${platform}" == "ios" ]]; then metal_sdk=iphoneos; fi
+python3 "${source_root}/tools/check_metal_rt_shaders.py" --sdk "${metal_sdk}"
 cmake --build "${build_root}" --config Release --target starfox_pc
 
 if [[ "${platform}" == "macos" ]]; then
