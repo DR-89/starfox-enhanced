@@ -6,6 +6,8 @@ on:
     paths:
       - 'platform/3ds/**'
       - 'include/starfox/platform/nintendo_3ds/**'
+      - 'tests/nintendo_3ds*.cpp'
+      - 'tools/check_3ds*.cpp'
       - '.github/workflows/3ds-native-check.yml'
       - 'tests/nintendo_3ds_pica_tests.cpp'
       - 'tests/nintendo_3ds_source_geometry_tests.cpp'
