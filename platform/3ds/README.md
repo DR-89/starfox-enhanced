@@ -48,7 +48,16 @@ CI validates the initialized strong `__stacksize__` symbol in each linked ARM
 ELF and reports compiler stack-usage records. This catches a missing/weak
 override and an individual frame exhausting the reservation. It does not prove
 whole-call-chain stack depth, total peak RAM or physical hardware performance.
-The follow-up still needs a new ARM build and emulator/device acceptance.
+The R8 actual ARM build passes the stack gate (3,296 compiler frames; largest
+individual frame 79,280 bytes). Its isolated emulator boot gets past the stack
+failure, then exposed a second native error: `C3D_TexBind(1, nullptr)` dereferences
+the texture type on Citro3D's secondary units. R8 is not a working tester candidate.
+
+The next source follow-up binds the existing resident 2D dashboard while the
+secondary TEV stage is inactive, then selects the actual ownership texture when
+needed. No dummy allocation or sampled-colour substitution is added; stale mask
+pointers are replaced even after texture layout changes. Fresh ARM/runtime and
+physical device acceptance of that follow-up remain pending.
 
 ## Signed tunnel entrance/exit faces
 

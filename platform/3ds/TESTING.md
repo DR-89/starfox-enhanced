@@ -20,10 +20,12 @@ must not be relabeled as containing it.
 
 ## Install
 
-Use a candidate after R7: the first isolated native emulator boot uncovered a
+Use a candidate after R8: the first isolated native emulator boot uncovered a
 32 KiB main-stack overflow during cartridge audio loading in R7. Its earlier
 host/link/package checks did not establish successful boot. The source follow-up
-reserves a bounded native stack; it still requires fresh ARM/runtime validation.
+reserves a bounded native stack, validated in the R8 ARM build. R8 then exposed
+a null secondary-texture binding in the native presenter. Both issues need the
+latest source follow-up; fresh ARM/runtime validation is still in progress.
 
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.
    This package does not modify firmware or install a CIA.

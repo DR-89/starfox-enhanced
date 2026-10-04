@@ -214,7 +214,13 @@ struct NativeGpu::Impl {
     void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false,
         std::array<std::uint8_t,4> odd={},bool projected_uv=false) {
         auto* env=C3D_GetTexEnv(0);C3D_TexEnvInit(env);
-        C3D_TexEnvInit(C3D_GetTexEnv(1));C3D_TexBind(1,nullptr);
+        C3D_TexEnvInit(C3D_GetTexEnv(1));
+        // Citro3D permits null on unit 0, but units 1/2 first dereference the
+        // texture to check its type. The default TEV stage ignores unit 1;
+        // bind the already-resident 2D dashboard until an ownership mask is
+        // selected. This also retires stale mask pointers after layout changes,
+        // with no extra texture storage or artificial sampled colour.
+        C3D_TexBind(1,&dashboard.texture);
         C3D_AlphaTest(true,GPU_GREATER,0);
         if(texture) {
             texture->texture.param=(texture->texture.param&~GPU_TEXTURE_MODE(7))
