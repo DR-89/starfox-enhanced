@@ -72,6 +72,12 @@ landscapes. Source water/tunnel/unique/orbital observations are reported
 separately; their presence is not proof of visual/depth acceptance. The checks
 still assert shared eye source bytes, painter order, resource budgets and
 unchanged VM/SPC state. This host tool is not a native gameplay package.
+Mandatory-positive dust/grid coverage still belongs to the default BOOT and
+Corneria fixtures. Other selectable stages can disable dots entirely: every
+such source frame must yield zero dust/grid coverage and no native dot
+geometry, draw or texture. Tunnel scenes are not forced to invent ground dots
+to satisfy a fixture assumption. Policy counts print before final fixture
+assertions, so a failed targeted check retains its observations.
 
 Checkpoint `dda633a6308d37658787ee865478f5919f4fb6a6` passes 15 root/exact
 host suites and all three actual ARM links in

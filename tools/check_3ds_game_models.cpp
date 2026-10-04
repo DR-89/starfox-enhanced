@@ -94,7 +94,7 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
     unsigned panorama_frames{},combined_resident_bytes{},optical_frames{},optical_resident_bytes{};
-    unsigned water_frames{},tunnel_frames{},unique_frames{},orbital_frames{};
+    unsigned water_frames{},tunnel_frames{},unique_frames{},orbital_frames{},disabled_dot_frames{};
     std::array<bool,2> optical_checked{};
     std::array<bool,4> panorama_modes_checked{};
     std::array<bool,2> unique_halves_checked{};
@@ -221,6 +221,12 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         }
         const auto dot_coverage=dots.coverage();dust_points+=dot_coverage.dust;
         grid_points+=dot_coverage.grid;connected_points+=dot_coverage.connections;
+        if(source.current->dots_mode==0) {
+            ++disabled_dot_frames;
+            require(dot_coverage.dust==0 && dot_coverage.grid==0 && dot_coverage.connections==0
+                && dot_frame.vertices.empty() && dot_frame.draws.empty() && dot_frame.textures.empty(),
+                "Cartridge-disabled dust/grid produced native geometry or retained ink");
+        }
         const auto ordered_work=cartridge_layers.work();
         const auto background_work=background.work(),object_work=objects.work();
         const auto effect_builds=colour.builds();
@@ -270,20 +276,22 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         require(session.game().save_state()==state && session.audio().save_state()==apu,"Native model preparation advanced/mutated game or audio");
         ++frames;
     }
-    require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
-    // Only Corneria's fixture promises outdoor terrain. Space, orbital and
-    // tunnel stages must not pass by being falsely classified as landscape.
-    if(map=="LEVEL1_1") require(outdoor_frames>0,"Corneria check stopped before the outdoor terrain actually appeared");
-    require(dust_points+grid_points+connected_points>0,"Actual fixture did not exercise cartridge dust/grid");
     std::cout<<map<<": "<<frames<<" source frames, "<<models_seen<<" models, "<<shadows<<" shadows, "<<glyphs<<" glyphs, "
         <<particles<<" particles, "<<outdoor_frames<<" terrain frames; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
     std::cout<<map<<": dust/grid/connected points "<<dust_points<<" / "<<grid_points<<" / "<<connected_points
         <<"; combined peak "<<combined_vertices<<" vertices / "<<combined_draws<<" draws / "<<combined_textures<<" textures\n";
     std::cout<<map<<": "<<panorama_frames<<" panorama frames; padded texture residency peak "<<combined_resident_bytes<<" bytes including lower LCD\n";
     std::cout<<map<<": source policy observations water/tunnel/unique/orbital "<<water_frames<<" / "<<tunnel_frames
-        <<" / "<<unique_frames<<" / "<<orbital_frames<<"; counts do not prove visual policy acceptance\n";
+        <<" / "<<unique_frames<<" / "<<orbital_frames<<"; cartridge-disabled dot frames "<<disabled_dot_frames
+        <<"; counts do not prove visual policy acceptance\n";
     std::cout<<map<<": "<<optical_frames<<" actual maximum-menu optical fixtures / "<<optical_resident_bytes
         <<" padded GPU bytes including lower LCD; not all rolled scenes or whole-flow peak RAM\n";
+    require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
+    // These mandatory-positive checks belong to the original default fixtures.
+    // Other stages can legitimately disable dots, or never contain terrain.
+    if(map=="LEVEL1_1") require(outdoor_frames>0,"Corneria check stopped before the outdoor terrain actually appeared");
+    if(map=="BOOT" || map=="LEVEL1_1")
+        require(dust_points+grid_points+connected_points>0,"Default fixture did not exercise cartridge dust/grid");
 }
 }
 int main(int argc,char** argv) try {
