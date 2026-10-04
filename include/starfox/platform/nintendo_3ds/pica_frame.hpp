@@ -34,6 +34,16 @@ inline std::array<unsigned,4> pica_screen_scissor(const PicaClip& clip) {
     return {screen_height-unsigned(clip.bottom),top_width-unsigned(clip.right),
         screen_height-unsigned(clip.top),top_width-unsigned(clip.left)};
 }
+// SNES CGADSUB layer bits: BG1..4, OBJ, backdrop. Zero protects host UI
+// and black window masks. A native Super FX model belongs to BG1, not OBJ.
+inline constexpr bool pica_source_layer(unsigned layer) noexcept {
+    return layer==0 || (layer<=32 && std::has_single_bit(layer));
+}
+struct PicaColourOp {
+    bool subtract{},half{};
+    std::uint8_t layers{};
+    bool operator==(const PicaColourOp&) const=default;
+};
 struct PicaDraw {
     unsigned first{},count{},texture{pica_no_texture};
     PicaMatrix model{pica_identity};
@@ -45,11 +55,17 @@ struct PicaDraw {
     bool screen_dither{};
     std::array<std::uint8_t,4> dither_odd{}; // TEV constant; one shared parity mask.
     std::optional<PicaClip> clip{}; // Source effect window, identical for both eye submissions.
+    std::uint8_t source_layer{1};
+    std::optional<PicaColourOp> colour_op{}; // Screen fixed-colour operation; preserves layer/depth ownership.
 };
 struct PicaImage {
     std::span<const std::uint8_t> pixels;
     unsigned width{},height{},pitch{},channels{4}; // RGB24 or RGBA8, row-major.
     bool repeat{}; // Source wrapping artwork must have power-of-two dimensions.
+    // Optional one-byte provenance for an opaque/transparent PPU painter
+    // group. Resident GPU_A8 storage, NOT six duplicated RGBA layer textures.
+    std::span<const std::uint8_t> source_layers{};
+    unsigned layer_pitch{};
 };
 struct PicaTextureLayout {
     unsigned width{},height{},bytes{};
@@ -60,10 +76,18 @@ inline PicaTextureLayout pica_texture_layout(PicaImage image) {
         || (image.channels!=3 && image.channels!=4) || image.pitch<image.width*image.channels
         || image.pitch>16384 || !image.pixels.data()
         || image.pixels.size()<std::size_t(image.pitch)*(image.height-1)+image.width*image.channels
+        || (!image.source_layers.empty() && (image.channels!=4 || image.layer_pitch<image.width
+            || image.layer_pitch>16384 || !image.source_layers.data()
+            || image.source_layers.size()<std::size_t(image.layer_pitch)*(image.height-1)+image.width))
+        || (image.source_layers.empty() && image.layer_pitch!=0)
         || (image.repeat && (!std::has_single_bit(image.width) || !std::has_single_bit(image.height))))
         throw std::invalid_argument("Invalid 3DS GPU texture");
     const auto w=std::max(8U,std::bit_ceil(image.width)),h=std::max(8U,std::bit_ceil(image.height));
     return {w,h,w*h*4,{float(image.width)/w,float(image.height)/h}};
+}
+inline unsigned pica_resident_texture_bytes(PicaImage image) {
+    const auto layout=pica_texture_layout(image);
+    return layout.bytes+(image.source_layers.empty()?0:layout.width*layout.height);
 }
 inline unsigned pica_texel_offset(unsigned x,unsigned y,unsigned width) noexcept {
     // PICA RGBA8 uses 8x8 Morton tiles, not a linear RGBA framebuffer.
@@ -89,6 +113,40 @@ inline void pack_pica_texture(PicaImage source,std::span<std::uint8_t> destinati
         destination[to]=source.channels==4?source.pixels[from+3]:255; // ABGR bytes.
         destination[to+1]=source.pixels[from+2];destination[to+2]=source.pixels[from+1];destination[to+3]=source.pixels[from];
     }
+}
+// Validate provenance on changed uploads only. Frame/eye validation is O(draws),
+// not a second full image walk on every presentation. Bitset returns exactly
+// the populated one-hot classes, so mixed groups need no empty layer draws.
+inline unsigned validate_pica_layers(PicaImage source) {
+    static_cast<void>(pica_texture_layout(source));
+    if(source.source_layers.empty()) throw std::invalid_argument("Missing 3DS source layer bytes");
+    unsigned classes=0;
+    for(unsigned y=0;y<source.height;++y) for(unsigned x=0;x<source.width;++x) {
+        const unsigned layer=source.source_layers[std::size_t(y)*source.layer_pitch+x];
+        const unsigned alpha=source.pixels[std::size_t(y)*source.pitch+x*4+3];
+        if(!pica_source_layer(layer) || (layer==0?alpha!=0:alpha!=255))
+            throw std::invalid_argument("Invalid/ambiguous 3DS PPU source ownership");
+        classes|=layer;
+    }
+    return classes;
+}
+inline unsigned pack_pica_layers(PicaImage source,std::span<std::uint8_t> destination) {
+    const auto layout=pica_texture_layout(source);
+    if(source.source_layers.empty() || destination.size()!=layout.width*layout.height || !destination.data())
+        throw std::invalid_argument("Incomplete 3DS source layer allocation");
+    const auto independent=[&](std::span<const std::uint8_t> from) {
+        const auto src=reinterpret_cast<std::uintptr_t>(from.data()),dst=reinterpret_cast<std::uintptr_t>(destination.data());
+        return !((dst>=src && dst-src<from.size()) || (src>=dst && src-dst<destination.size()));
+    };
+    if(!independent(source.source_layers) || !independent(source.pixels))
+        throw std::invalid_argument("3DS source layer upload requires independent storage");
+    const auto classes=validate_pica_layers(source);
+    for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
+        const unsigned sx=source.repeat?x%source.width:std::min(x,source.width-1);
+        const unsigned sy=source.repeat?y%source.height:std::min(y,source.height-1);
+        destination[pica_texel_offset(x,layout.height-1-y,layout.width)/4]=source.source_layers[std::size_t(sy)*source.layer_pitch+sx];
+    }
+    return classes;
 }
 inline PicaMatrix pica_screen_matrix(unsigned width,unsigned height=screen_height) {
     if((width!=top_width && width!=bottom_width) || height!=screen_height)
@@ -138,7 +196,7 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
         throw std::invalid_argument("Incomplete 3DS eye plan");
     unsigned bytes=pica_texture_layout({dashboard.pixels,dashboard.width,dashboard.height,dashboard.pitch,3}).bytes;
     for(auto texture:frame.textures) {
-        const auto size=pica_texture_layout(texture).bytes;
+        const auto size=pica_resident_texture_bytes(texture);
         if(size>pica_texture_budget-bytes) throw std::invalid_argument("3DS GPU texture budget exceeded");
         bytes+=size;
     }
@@ -151,6 +209,14 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             || (draw.space!=PicaSpace::world && (draw.depth_test || draw.depth_write))
             || (draw.depth_write && !draw.depth_test))
             throw std::invalid_argument("Invalid/omitted 3DS GPU draw range");
+        if(!pica_source_layer(draw.source_layer)) throw std::invalid_argument("Invalid 3DS source draw layer");
+        if(draw.texture!=pica_no_texture && !frame.textures[draw.texture].source_layers.empty()
+            && (draw.space==PicaSpace::world || draw.screen_dither || draw.colour_op))
+            throw std::invalid_argument("3DS per-pixel source layers require opaque PPU artwork");
+        if(draw.colour_op && (draw.space!=PicaSpace::screen || draw.texture!=pica_no_texture
+            || draw.source_layer!=0 || draw.screen_dither || draw.alpha_blend || draw.model!=pica_identity
+            || !draw.colour_op->layers || draw.colour_op->layers>63))
+            throw std::invalid_argument("Invalid 3DS screen colour operation");
         if(draw.screen_dither && (draw.texture==pica_no_texture
             || frame.textures[draw.texture].width!=8 || frame.textures[draw.texture].height!=8
             || !frame.textures[draw.texture].repeat))
@@ -167,6 +233,10 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             for(float value:vertex.uv) if(!std::isfinite(value) || std::abs(value)>65536
                 || (draw.texture!=pica_no_texture && !frame.textures[draw.texture].repeat && (value<0 || value>1)))
                 throw std::invalid_argument("Invalid 3DS texture coordinate");
+            if(draw.colour_op && (vertex.colour!=frame.vertices[cursor].colour || vertex.colour[3]!=1))
+                throw std::invalid_argument("3DS fixed-colour operation cannot interpolate different colours");
+            if(draw.texture!=pica_no_texture && !frame.textures[draw.texture].source_layers.empty() && vertex.colour[3]!=1)
+                throw std::invalid_argument("3DS source layer artwork cannot interpolate opacity");
         }
         cursor+=draw.count;
     }

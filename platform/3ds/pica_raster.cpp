@@ -88,7 +88,11 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             const bool extend=batch.expand_horizontal && pass.extend_horizontal;
             const auto priority=pass.priority<0?render::TilePriorityPass::all:
                 pass.priority?render::TilePriorityPass::high:render::TilePriorityPass::low;
-            const render::ScopedLayer tag(*next,pass.layer==PpuLayer::bg2?render::PixelLayer::background:render::PixelLayer::two_d);
+            // Internal tags deliberately differ from shared PixelLayer::two_d
+            // (1), which SpriteRenderer applies inside its own scoped pass.
+            // Do not modify the shared renderer or infer OBJ from palette ink.
+            const auto bg_bit=pass.layer==PpuLayer::bg1?1:pass.layer==PpuLayer::bg2?2:4;
+            const render::ScopedLayer tag(*next,static_cast<render::PixelLayer>(64|bg_bit));
             switch(pass.layer) {
             case PpuLayer::bg1:
                 backgrounds.draw_bg1(*source,*next,priority,origin,extend,
@@ -108,7 +112,8 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     }
     const auto& bitmap=decode?*next:*indexed_;
     const bool recolour=decode || palette_!=source->cgram || brightness_!=brightness || subtract_!=subtract;
-    auto pixels=std::vector<std::uint8_t>{};bool visible=visible_;
+    auto pixels=std::vector<std::uint8_t>{},layers=std::vector<std::uint8_t>{};bool visible=visible_;
+    if(decode) layers.assign(std::size_t(width)*screen_height,0);
     if(recolour) {
         pixels.assign(std::size_t(width)*screen_height*4,0);visible=false;
         std::array<std::array<std::uint8_t,3>,256> normal{},background{};
@@ -123,15 +128,19 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             const auto offset=std::size_t(sy)*width+x;
             if(sy<batch.first_row || sy>=batch.last_row || !bitmap.write_coverage()[offset]) continue;
             const auto ink=bitmap.pixels()[offset];
-            const auto& rgb=bitmap.layer_tags()[offset]==unsigned(render::PixelLayer::background)?background[ink]:normal[ink];
+            const auto tag=bitmap.layer_tags()[offset];
+            const auto layer=tag==unsigned(render::PixelLayer::two_d)?16U:unsigned(tag&63);
+            if(!pica_source_layer(layer) || !layer) throw std::logic_error("Unclassified 3DS PPU source pixel");
+            const auto& rgb=layer==2?background[ink]:normal[ink];
             const auto out=(std::size_t(y)*width+x)*4;
             std::copy(rgb.begin(),rgb.end(),pixels.begin()+out);pixels[out+3]=255;visible=true;
+            if(decode) layers[std::size_t(y)*width+x]=std::uint8_t(layer);
         }
     }
     // All allocating work precedes publication. Shader/native upload errors
     // are the presenter's responsibility; no failed source decode is published.
     auto next_batch=batch;
-    if(decode) {indexed_=std::move(next);++work_.decodes;}
+    if(decode) {indexed_=std::move(next);layers_=std::move(layers);++work_.decodes;}
     if(recolour) {rgba_=std::move(pixels);++work_.colour_updates;}
     batch_=std::move(next_batch);source_=std::move(source);palette_=source_->cgram;
     brightness_=brightness;subtract_=subtract;visible_=visible;
@@ -141,7 +150,7 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     for(unsigned corner:{0U,1U,2U,0U,2U,3U})
         vertices_[vertex++]={{left+uv[corner][0]*width,uv[corner][1]*screen_height,0},{1,1,1,1},uv[corner]};
     draws_[0]={0,6,0,pica_identity,batch.space,false,false,true};
-    images_[0]={rgba_,width,screen_height,width*4,4};
+    images_[0]={rgba_,width,screen_height,width*4,4,false,layers_,width};
     return {plan,visible_?std::span<const PicaVertex>(vertices_):std::span<const PicaVertex>{},
         visible_?std::span<const PicaDraw>(draws_):std::span<const PicaDraw>{},
         visible_?std::span<const PicaImage>(images_):std::span<const PicaImage>{}};

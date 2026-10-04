@@ -8,6 +8,7 @@
 .out out_colour color
 .out out_uv texcoord0
 .out out_q texcoord0w
+.out out_layers texcoord1
 .alias in_position v0
 .alias in_colour v1
 .alias in_uv v2
@@ -23,6 +24,9 @@
     mul r1.xy, uv_scale, in_uv
     add r1.y, constants.y, -r1.y
     mul r1.xy, uv_mode.x, r1
+    ; Unit 1's A8 source-layer mask uses its own UV set, never the screen
+    ; projection checker coordinates. It shares padding with the RGBA image.
+    mov out_layers.xy, r1
     ; Rotated LCD: X = 200*(W-Y), bottom-up Y = 120*(W+X).
     ; Divide by the 8x8 repeated source checker, and retain Q=W so texture
     ; projection cancels perspective interpolation. Pixel parity is fixed.

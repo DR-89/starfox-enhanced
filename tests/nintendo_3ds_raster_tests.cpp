@@ -1,6 +1,7 @@
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include "starfox/platform/nintendo_3ds/pica_window.hpp"
+#include "starfox/platform/nintendo_3ds/pica_colour.hpp"
 #include <iostream>
 
 namespace {
@@ -49,6 +50,7 @@ void raster() {
     require(frame.vertices.size()==6 && frame.draws.size()==1 && frame.textures.size()==1,"Native sky quad missing");
     require(frame.draws[0].space==PicaSpace::scenery && !frame.draws[0].depth_test && frame.draws[0].alpha_blend,"Sky placed at model/HUD depth");
     const auto image=frame.textures[0];
+    const auto* ownership=image.source_layers.data();
     require(image.width==464 && image.height==240 && frame.vertices[0].position[0]==-32,"Infinite sky guard/layout mismatch");
     for(unsigned y=0;y<240;++y) for(unsigned x=0;x<464;++x)
         require(pixel(image,x,y)==std::array<unsigned,4>{0,0,0,255},"Opaque black source ink became transparent or viewport guard was uncovered");
@@ -64,6 +66,8 @@ void raster() {
     frame=renderer.prepare(palette,batch,plan,7);
     require(renderer.work().decodes==1 && renderer.work().colour_updates==2,"Palette-only fade did not reuse source indices");
     require(pixel(frame.textures[0],200,100)==std::array<unsigned,4>{119,0,0,255},"Native integer brightness/fade mismatch");
+    require(frame.textures[0].source_layers.data()==ownership && frame.textures[0].source_layers[100*464+200]==2,
+        "Palette-only fade re-decoded/reallocated source-layer coverage");
     frame=renderer.prepare(palette,batch,plan,15,10);
     require(pixel(frame.textures[0],200,100)==std::array<unsigned,4>{173,0,0,255},"BG2 native colour subtraction mismatch");
     auto rolled=std::make_shared<simulation::SnesPpuState>(*palette);
@@ -99,6 +103,16 @@ void raster() {
     auto mode1=std::make_shared<simulation::SnesPpuState>(*ppu);mode1->background_mode=1;
     const auto bg3=overlay.prepare(mode1,PpuBatch{{{PpuLayer::bg3}}},plan);
     require(pixel(bg3.textures[0],100,100)==std::array<unsigned,4>{0,0,255,255},"Mode-1 2bpp BG3 artwork lost");
+    require(bg3.textures[0].source_layers[100*256+100]==4,"BG3 lost its distinct colour-math source layer");
+    auto mixed=std::make_shared<simulation::SnesPpuState>(*ppu);
+    for(unsigned y=0;y<32;++y) for(unsigned x=0;x<16;++x) mixed->vram[0xc800+(y*32+x)*2]=0;
+    const auto group=overlay.prepare(mixed,PpuBatch{{{PpuLayer::bg2},{PpuLayer::bg1},{PpuLayer::objects}}},plan);
+    const auto& texture=group.textures[0];
+    require(texture.source_layers[100*256+5]==2 && texture.source_layers[100*256+200]==1
+        && texture.source_layers[93*256+191]==16,"Mixed painter group lost winning BG2/BG1/OBJ provenance");
+    require(pixel(texture,5,100)==std::array<unsigned,4>{0,0,0,255} && texture.source_layers[5]==0,
+        "Opaque black and uncovered vertical guard ownership confused");
+    require(validate_pica_layers(texture)==19,"Mixed PPU group did not retain precisely its occupied source classes");
 }
 void composition() {
     const auto plan=plan_frame(1,true,ScreenUse::world);
@@ -117,12 +131,98 @@ void composition() {
     require(frame.draws[0].texture==0 && frame.draws[1].texture==pica_no_texture && frame.draws[2].texture==1
         && frame.draws[1].first==6 && frame.draws[2].first==9,"Composed source texture/geometry offsets wrong");
     require(frame.textures[0].pixels.data()==backdrop.textures[0].pixels.data(),"Compositor copied/repainted source artwork");
+    require(frame.textures[0].source_layers.data()==backdrop.textures[0].source_layers.data(),"Compositor copied/repainted cached source ownership");
     const std::vector<PicaVertex> saved(frame.vertices.begin(),frame.vertices.end());
     auto wrong=models;wrong.plan.slider=0;
     rejected([&]{compositor.prepare(plan,std::array{backdrop,wrong,overlay},dashboard.view());},"Mismatched eye plans combined");
     require(std::equal(saved.begin(),saved.end(),frame.vertices.begin()),"Failed composition discarded previous native geometry");
     std::array<PicaFrame,8> oversized;oversized.fill(backdrop);
     rejected([&]{compositor.prepare(plan,oversized,dashboard.view());},"Combined padded texture budget not checked");
+}
+void colour_effects() {
+    const auto plan=plan_frame(1,true,ScreenUse::world);Canvas dashboard;PicaColourEffects effects;
+    simulation::CircleEffectState circle;simulation::ColourMathEffectState math;
+    require(effects.prepare(circle,math,15,plan).draws.empty(),"Inactive source effects generated a colour pass");
+    circle.active=true;circle.red=31;circle.green=15;circle.blue=7;circle.affected_layers=3;
+    const auto check=[&](int cx,int cy,unsigned radius,std::optional<PicaClip> clip) {
+        circle.centre_x=std::int16_t(cx);circle.centre_y=std::int16_t(cy);circle.radius=std::uint16_t(radius);
+        const auto frame=effects.prepare(circle,math,15,plan,clip);validate_pica_frame(frame,dashboard.view());
+        require(frame.textures.empty() && frame.draws.size()<=1,"Circle flattened the world or allocated a mask bitmap/per-row draw");
+        if(!frame.draws.empty()) require(frame.draws[0].colour_op==PicaColourOp{false,false,3}
+            && frame.draws[0].source_layer==0 && frame.draws[0].clip==clip,"Circle lost source CGADSUB/clip contract");
+        std::vector<unsigned char> coverage(top_width*screen_height,0);
+        for(unsigned i=0;i<frame.vertices.size();i+=6) {
+            const auto& a=frame.vertices[i];const auto& b=frame.vertices[i+2];
+            const int left=int(a.position[0]),top=int(a.position[1]),right=int(b.position[0]),bottom=int(b.position[1]);
+            require(left>=0 && top>=0 && left<right && top<bottom && right<=400 && bottom<=240,"Colour rectangle outside LCD");
+            for(int y=top;y<bottom;++y) for(int x=left;x<right;++x) ++coverage[y*400+x];
+        }
+        const auto bounds=clip.value_or(PicaClip{});
+        for(int y=0;y<240;++y) for(int x=0;x<400;++x) {
+            const std::int64_t dx=x-cx-72,dy=y-cy-8;
+            const bool inside=radius && dx*dx+dy*dy<=std::int64_t(radius)*radius
+                && x>=bounds.left && x<bounds.right && y>=bounds.top && y<bounds.bottom;
+            require(coverage[y*400+x]==unsigned(inside),"Native disk differs from independent source pixel circle (overlap/edge/clip)");
+        }
+        const auto builds=effects.builds();const auto* vertices=frame.vertices.data();
+        for(float slider:{0.F,.5F,1.F}) {
+            const auto other=effects.prepare(circle,math,15,plan_frame(slider,true,ScreenUse::world),clip);
+            require(other.vertices.data()==vertices && effects.builds()==builds,"Slider/second eye rebuilt colour coverage");
+        }
+    };
+    for(unsigned radius:{0U,1U,2U,31U,96U,240U,65535U}) check(128,112,radius,{});
+    check(-32768,-32768,65535,{});check(32767,32767,1,{});check(-73,-8,30,{});
+    check(128,112,80,PicaClip{140,80,260,180});
+    circle.centre_x=128;circle.centre_y=112;circle.radius=40;
+    math.active=true;math.subtract=true;math.half=true;math.affected_layers=0x2f;math.red=31;math.green=5;math.blue=0;
+    for(unsigned brightness=0;brightness<16;++brightness) {
+        const auto frame=effects.prepare(circle,math,brightness,plan);validate_pica_frame(frame,dashboard.view());
+        require(frame.draws.size()==2 && frame.draws[0].colour_op==PicaColourOp{false,false,3}
+            && frame.draws[1].colour_op==PicaColourOp{true,true,0x2f},"Source circle/global colour math order or add/sub/half semantics lost");
+        for(unsigned channel=0;channel<3;++channel) {
+            const unsigned five=std::array<unsigned,3>{31,15,7}[channel];
+            const auto expanded=((five<<3)|(five>>2))*brightness/15;
+            const auto fixed=expanded>>3;const auto expected=(fixed<<3)|(fixed>>2);
+            require(std::abs(frame.vertices[0].colour[channel]*255-expected)<.001F,"Circle fixed-colour brightness/5-bit conversion mismatch");
+        }
+        require(frame.vertices[frame.draws[1].first].colour[0]==1,"Global fixed-colour fade incorrectly scaled by source brightness");
+        const auto last=frame.draws[1].first;
+        require(frame.vertices[last].position==Point3{0,0,0} && frame.vertices[last+2].position==Point3{400,240,0},
+            "Full-screen source flash/fade left uncovered LCD margins");
+    }
+    for(unsigned flags:{0U,64U,128U,192U}) {
+        circle.affected_layers=std::uint8_t(flags|17);
+        const auto frame=effects.prepare(circle,math,15,plan);
+        require(frame.draws[0].colour_op==PicaColourOp{bool(flags&128),bool(flags&64),17},"Circle CGADSUB high bits not decoded independently");
+    }
+    const auto retained=effects.prepare(circle,math,15,plan);const auto builds=effects.builds();
+    const std::vector<PicaVertex> saved(retained.vertices.begin(),retained.vertices.end());
+    rejected([&]{effects.prepare(circle,math,16,plan);},"Unsupported brightness accepted");
+    rejected([&]{effects.prepare(circle,math,15,plan,PicaClip{0,0,0,240});},"Empty source circle clip accepted");
+    require(effects.builds()==builds && std::equal(saved.begin(),saved.end(),retained.vertices.begin()),"Failed colour preparation discarded last complete native pass");
+    auto bad_draw=retained.draws.front();bad_draw.colour_op->layers=0;
+    PicaFrame bad{plan,std::span(retained.vertices).first(bad_draw.count),std::span(&bad_draw,1),{}};
+    rejected([&]{validate_pica_frame(bad,dashboard.view());},"Colour operation without selected source layers accepted");
+    bad_draw=retained.draws.front();bad_draw.source_layer=1;
+    rejected([&]{validate_pica_frame(bad,dashboard.view());},"Colour operation may not replace source ownership");
+    bad_draw=retained.draws.front();bad_draw.alpha_blend=true;
+    rejected([&]{validate_pica_frame(bad,dashboard.view());},"Ordinary opacity may not silently override colour-math blend");
+    circle.active=false;math.active=false;
+    require(effects.prepare(circle,math,15,plan).vertices.empty(),"Retired source colour math left stale damage/death effects");
+    circle.active=true;circle.affected_layers=128;circle.radius=40;
+    require(effects.prepare(circle,math,15,plan).draws.empty(),"Circle with no affected source layers generated a blend pass");
+    // Exhaust each source-mask selector from a real prepared operation. This
+    // proves the native contract; physical PICA stencil/colour pixels remain
+    // a separate acceptance test, not inferred from this portable oracle.
+    for(unsigned selected=1;selected<64;++selected) {
+        circle.affected_layers=std::uint8_t(selected|128);math.active=false;
+        const auto selected_frame=effects.prepare(circle,math,15,plan);
+        const auto op=*selected_frame.draws[0].colour_op;
+        for(unsigned bit=0;bit<6;++bit) require(bool(op.layers&(1U<<bit))==bool((selected>>bit)&1),
+            "Prepared colour operation included/excluded wrong source layer");
+        require(op.subtract && !op.half && selected_frame.draws[0].source_layer==0,
+            "Prepared subtract operation unexpectedly halves or overwrites source ownership");
+    }
 }
 bool expected_mask(const simulation::WindowWipeState& wipe,WindowCoverage coverage,unsigned x,unsigned y) {
     if(!wipe.active) return false;
@@ -207,5 +307,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();composition();window_masks();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

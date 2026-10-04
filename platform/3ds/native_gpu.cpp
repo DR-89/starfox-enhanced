@@ -39,12 +39,21 @@ void upload_matrix(int location,const PicaMatrix& rows) {
 }
 struct ResidentTexture {
     C3D_Tex texture{};
+    C3D_Tex layers{};
     std::vector<std::uint8_t> pixels;
+    std::vector<std::uint8_t> source_layers;
     unsigned width{},height{},channels{};
+    unsigned layer_width{},layer_height{},layer_classes{};
     bool ready{},repeat{};
+    bool layers_ready{},layer_repeat{};
+    void release_layers() noexcept {
+        if(layers_ready) C3D_TexDelete(&layers);
+        layers={};layers_ready=false;layer_repeat=false;source_layers.clear();layer_width=layer_height=layer_classes=0;
+    }
     void release() noexcept {
         if(ready) C3D_TexDelete(&texture);
         texture={};ready=false;pixels.clear();width=height=channels=0;
+        release_layers();
     }
     bool matches(PicaImage image) const noexcept {
         if(!ready || image.width!=width || image.height!=height || image.channels!=channels || image.repeat!=repeat) return false;
@@ -54,24 +63,66 @@ struct ResidentTexture {
                 image.pixels.begin()+std::size_t(y)*image.pitch+row_bytes,pixels.begin()+y*row_bytes)) return false;
         return true;
     }
-    void update(PicaImage image) {
-        if(matches(image)) return;
-        const auto layout=pica_texture_layout(image);
-        std::vector<std::uint8_t> next(std::size_t(image.width)*image.height*image.channels);
+    bool matches_layers(PicaImage image) const noexcept {
+        if(image.source_layers.empty()) return !layers_ready;
+        if(!layers_ready || image.width!=layer_width || image.height!=layer_height || image.repeat!=layer_repeat) return false;
         for(unsigned y=0;y<image.height;++y)
-            std::copy_n(image.pixels.begin()+std::size_t(y)*image.pitch,std::size_t(image.width)*image.channels,
-                next.begin()+std::size_t(y)*image.width*image.channels);
-        if(!ready || texture.width!=layout.width || texture.height!=layout.height) {
-            release();
-            if(!C3D_TexInit(&texture,layout.width,layout.height,GPU_RGBA8))
-                throw std::runtime_error("3DS GPU texture allocation failed");
-            ready=true;
+            if(!std::equal(image.source_layers.begin()+std::size_t(y)*image.layer_pitch,
+                image.source_layers.begin()+std::size_t(y)*image.layer_pitch+image.width,
+                source_layers.begin()+std::size_t(y)*image.width)) return false;
+        return true;
+    }
+    void update(PicaImage image) {
+        const bool colour_same=matches(image),layers_same=matches_layers(image);
+        if(colour_same && layers_same) return;
+        const auto layout=pica_texture_layout(image);
+        std::vector<std::uint8_t> packed_layers,next_layers;
+        unsigned classes=layer_classes;
+        if(!image.source_layers.empty() && !layers_same) {
+            // Revalidate alpha/ownership on changed RGBA as well. A palette
+            // fade keeps the resident A8 texture and causes no mask upload.
+            packed_layers.resize(layout.width*layout.height);
+            classes=pack_pica_layers(image,packed_layers);
+            next_layers.resize(std::size_t(image.width)*image.height);
+            for(unsigned y=0;y<image.height;++y)
+                std::copy_n(image.source_layers.begin()+std::size_t(y)*image.layer_pitch,image.width,
+                    next_layers.begin()+std::size_t(y)*image.width);
         }
-        pack_pica_texture(image,{static_cast<std::uint8_t*>(texture.data),layout.bytes});
-        C3D_TexSetFilter(&texture,GPU_NEAREST,GPU_NEAREST);
-        C3D_TexSetWrap(&texture,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE);
-        C3D_TexFlush(&texture);
-        width=image.width;height=image.height;channels=image.channels;repeat=image.repeat;pixels=std::move(next);
+        else if(!image.source_layers.empty() && !colour_same) static_cast<void>(validate_pica_layers(image));
+        if(!colour_same) {
+            std::vector<std::uint8_t> next(std::size_t(image.width)*image.height*image.channels);
+            for(unsigned y=0;y<image.height;++y)
+                std::copy_n(image.pixels.begin()+std::size_t(y)*image.pitch,std::size_t(image.width)*image.channels,
+                    next.begin()+std::size_t(y)*image.width*image.channels);
+            if(!ready || texture.width!=layout.width || texture.height!=layout.height) {
+                if(ready) C3D_TexDelete(&texture);
+                texture={};ready=false;
+                if(!C3D_TexInit(&texture,layout.width,layout.height,GPU_RGBA8))
+                    throw std::runtime_error("3DS GPU texture allocation failed");
+                ready=true;
+            }
+            pack_pica_texture(image,{static_cast<std::uint8_t*>(texture.data),layout.bytes});
+            C3D_TexSetFilter(&texture,GPU_NEAREST,GPU_NEAREST);
+            C3D_TexSetWrap(&texture,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE);
+            C3D_TexFlush(&texture);
+            width=image.width;height=image.height;channels=image.channels;repeat=image.repeat;pixels=std::move(next);
+        }
+        if(!layers_same) {
+            if(image.source_layers.empty()) release_layers();
+            else {
+                if(!layers_ready || layers.width!=layout.width || layers.height!=layout.height) {
+                    release_layers();
+                    if(!C3D_TexInit(&layers,layout.width,layout.height,GPU_A8))
+                        throw std::runtime_error("3DS GPU source-layer allocation failed");
+                    layers_ready=true;
+                }
+                std::memcpy(layers.data,packed_layers.data(),packed_layers.size());
+                C3D_TexSetFilter(&layers,GPU_NEAREST,GPU_NEAREST);
+                C3D_TexSetWrap(&layers,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE,image.repeat?GPU_REPEAT:GPU_CLAMP_TO_EDGE);
+                C3D_TexFlush(&layers);
+                source_layers=std::move(next_layers);layer_width=image.width;layer_height=image.height;layer_classes=classes;layer_repeat=image.repeat;
+            }
+        }
     }
 };
 } // namespace
@@ -107,14 +158,17 @@ struct NativeGpu::Impl {
                 throw std::runtime_error("3DS GPU shader uniforms missing");
             top[0]=make_target(top_width,GFX_TOP,GFX_LEFT,true);
             bottom=make_target(bottom_width,GFX_BOTTOM,GFX_LEFT,false);
-            vbo=static_cast<PicaVertex*>(linearAlloc((pica_vertex_limit+6)*sizeof(PicaVertex)));
+            vbo=static_cast<PicaVertex*>(linearAlloc((pica_vertex_limit+12)*sizeof(PicaVertex)));
             if(!vbo) throw std::runtime_error("3DS GPU vertex-buffer allocation failed");
             const std::array<Point3,4> corners{{{0,0,0},{float(bottom_width),0,0},
                 {float(bottom_width),float(screen_height),0},{0,float(screen_height),0}}};
             const std::array<std::array<float,2>,4> uv{{{0,0},{1,0},{1,1},{0,1}}};
             unsigned index=pica_vertex_limit;
             for(auto corner:{0U,1U,2U,0U,2U,3U}) vbo[index++]={corners[corner],{1,1,1,1},uv[corner]};
-            if(R_FAILED(GSPGPU_FlushDataCache(vbo+pica_vertex_limit,6*sizeof(PicaVertex))))
+            const std::array<Point3,4> backdrop{{{0,0,0},{float(top_width),0,0},
+                {float(top_width),float(screen_height),0},{0,float(screen_height),0}}};
+            for(auto corner:{0U,1U,2U,0U,2U,3U}) vbo[index++]={backdrop[corner],{1,1,1,1},{}};
+            if(R_FAILED(GSPGPU_FlushDataCache(vbo+pica_vertex_limit,12*sizeof(PicaVertex))))
                 throw std::runtime_error("3DS GPU HUD vertex flush failed");
         } catch(...) {shutdown();throw;}
     }
@@ -150,6 +204,8 @@ struct NativeGpu::Impl {
     void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false,
         std::array<std::uint8_t,4> odd={}) {
         auto* env=C3D_GetTexEnv(0);C3D_TexEnvInit(env);
+        C3D_TexEnvInit(C3D_GetTexEnv(1));C3D_TexBind(1,nullptr);
+        C3D_AlphaTest(true,GPU_GREATER,0);
         if(texture) {
             texture->texture.param=(texture->texture.param&~GPU_TEXTURE_MODE(7))
                 |GPU_TEXTURE_MODE(screen_dither?GPU_TEX_PROJECTION:GPU_TEX_2D);
@@ -172,6 +228,23 @@ struct NativeGpu::Impl {
         C3D_DepthTest(depth,GPU_GEQUAL,write?GPU_WRITE_ALL:GPU_WRITE_COLOR);
         C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,alpha?GPU_SRC_ALPHA:GPU_ONE,
             alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO,GPU_ONE,alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO);
+    }
+    static void source_layer(unsigned layer) {
+        C3D_StencilTest(true,GPU_ALWAYS,layer,63,63);
+        C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_REPLACE);
+    }
+    static void colour_operation(PicaColourOp op) {
+        // Test the winning pixel's actual source layer, not its palette index
+        // or model bounding box. Colour effects never replace that ownership.
+        C3D_StencilTest(true,GPU_NOTEQUAL,0,op.layers,0);
+        C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_KEEP);
+        // Halve BOTH terms before the saturating add/subtract, not the already
+        // clipped result. PICA's 8-bit blend constant rounds differently from
+        // SNES 5-bit math; physical pixel fidelity remains an explicit gate.
+        C3D_BlendingColor(0x80000000);
+        const auto factor=op.half?GPU_CONSTANT_ALPHA:GPU_ONE;
+        C3D_AlphaBlend(op.subtract?GPU_BLEND_REVERSE_SUBTRACT:GPU_BLEND_ADD,
+            GPU_BLEND_ADD,factor,factor,GPU_ZERO,GPU_ONE);
     }
 };
 NativeGpu::NativeGpu(std::span<const std::uint8_t> shader):impl_(std::make_unique<Impl>(shader)) {}
@@ -198,21 +271,50 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
     for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
         auto* target=impl_->top[eye];C3D_RenderTargetClear(target,C3D_CLEAR_ALL,clear_colour(frame.clear),0);
         if(!C3D_FrameDrawOn(target)) throw std::runtime_error("3DS GPU eye target unavailable");
+        // Seed untouched pixels as the SNES backdrop without depending on an
+        // unverified packed depth/stencil clear word. The reserved six vertices
+        // write only stencil: neither RGB nor reversed-Z depth is changed.
+        C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0);
+        upload_matrix(impl_->transform_location,pica_screen_matrix(top_width));
+        impl_->material(nullptr,false,false,false);Impl::source_layer(32);
+        C3D_DepthTest(false,GPU_ALWAYS,static_cast<GPU_WRITEMASK>(0));
+        C3D_DrawArrays(GPU_TRIANGLES,pica_vertex_limit+6,6);
         for(const auto& draw:frame.draws) {
             if(draw.clip) {
                 const auto bounds=pica_screen_scissor(*draw.clip);
                 C3D_SetScissor(GPU_SCISSOR_NORMAL,bounds[0],bounds[1],bounds[2],bounds[3]);
             } else C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0);
             upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
-            impl_->material(draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture],
+            auto* texture=draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture];
+            impl_->material(texture,
                 draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither,draw.dither_odd);
-            C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
+            if(draw.colour_op) {
+                Impl::colour_operation(*draw.colour_op);
+                C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
+            } else if(texture && texture->layers_ready) {
+                auto* layer_env=C3D_GetTexEnv(1);
+                C3D_TexBind(1,&texture->layers);
+                C3D_TexEnvSrc(layer_env,C3D_Alpha,GPU_TEXTURE1);
+                C3D_TexEnvFunc(layer_env,C3D_Alpha,GPU_REPLACE);
+                // The alpha channel now carries a layer ID, not opacity. PPU
+                // covered texels are opaque; RGB must not blend by that ID.
+                C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
+                for(unsigned layer:{1U,2U,4U,8U,16U,32U}) if(texture->layer_classes&layer) {
+                    C3D_AlphaTest(true,GPU_EQUAL,layer);Impl::source_layer(layer);
+                    C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
+                }
+            } else {
+                Impl::source_layer(draw.source_layer);
+                C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
+            }
         }
     }
     C3D_RenderTargetClear(impl_->bottom,C3D_CLEAR_COLOR,0,0);
     if(!C3D_FrameDrawOn(impl_->bottom)) throw std::runtime_error("3DS GPU HUD target unavailable");
     upload_matrix(impl_->transform_location,pica_screen_matrix(bottom_width));
     C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0); // Never inherit upper-LCD effect masks into the cockpit HUD.
+    C3D_StencilTest(false,GPU_ALWAYS,0,63,0);
+    C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_KEEP);
     impl_->material(&impl_->dashboard,false,false,false);
     C3D_DrawArrays(GPU_TRIANGLES,pica_vertex_limit,6);
 }

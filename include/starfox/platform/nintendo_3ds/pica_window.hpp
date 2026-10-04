@@ -60,6 +60,7 @@ public:
             vertices_.swap(next);wipe_=wipe;coverage_=coverage;initialized_=true;++builds_;
         }
         draw_={0,unsigned(vertices_.size()),pica_no_texture,pica_identity,PicaSpace::screen,false,false,false};
+        draw_.source_layer=0; // Closed windows must remain black during later colour math.
         return {plan,vertices_,vertices_.empty()?std::span<const PicaDraw>{}:std::span<const PicaDraw>(&draw_,1),{}};
     }
     [[nodiscard]] std::uint64_t builds() const noexcept {return builds_;}

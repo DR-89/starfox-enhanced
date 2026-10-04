@@ -42,6 +42,7 @@ private:
     PpuBatch batch_;
     std::unique_ptr<render::Framebuffer> indexed_;
     std::vector<std::uint8_t> rgba_;
+    std::vector<std::uint8_t> layers_;
     std::array<PicaVertex,6> vertices_{};
     std::array<PicaDraw,1> draws_{};
     std::array<PicaImage,1> images_{};

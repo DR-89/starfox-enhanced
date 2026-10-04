@@ -5,6 +5,7 @@
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include "starfox/platform/nintendo_3ds/pica_window.hpp"
+#include "starfox/platform/nintendo_3ds/pica_colour.hpp"
 #include "pica_scene_shader.hpp"
 
 namespace {
@@ -38,21 +39,28 @@ int diagnostic(NativeDisplay& display) {
         {188,72,24},{24,130,132},{82,20,26},{35,52,120},{118,46,132},{38,110,52},
         {82,82,92},{118,118,128},{156,156,166},{202,202,210},{238,238,242},{255,255,255}}};
     starfox::render::SoftwareRenderer source_renderer;PicaShapes source_geometry;
-    PicaRaster source_raster;PicaComposite compositor;PicaWindow source_window;
+    PicaRaster source_raster,source_objects;PicaComposite compositor;PicaWindow source_window;
+    PicaColourEffects source_colour;
     auto sky=std::make_shared<starfox::simulation::SnesPpuState>();
-    sky->main_screen=2;sky->bg2_screen_size=0;
+    sky->main_screen=18;sky->bg2_screen_size=0;
     sky->bg2_character_base=0x4000;sky->bg2_screen_base=0x6000;
     sky->cgram[1]=uint16_t(7|(17<<5)|(28<<10));sky->cgram[2]=uint16_t(25|(28<<5)|(31<<10));
     for(unsigned row=0;row<8;++row) {
         sky->vram[0x8000+row*2]=(row==4)?0:255;
         sky->vram[0x8000+row*2+1]=(row==4)?255:0;
     }
+    // Opaque synthetic OBJ overlaps the circle/blackfade on the upper LCD.
+    // Those source masks exclude OBJ: its red ink should remain unchanged.
+    sky->cgram[129]=31;
+    for(unsigned i=0;i<128;++i) sky->oam[i*4+1]=240;
+    sky->oam[0]=148;sky->oam[1]=104;sky->oam[2]=7;sky->oam[3]=0x20;
+    for(unsigned row=0;row<8;++row) sky->vram[7*32+row*2]=255;
     // Synthetic SNES tiles, not cartridge assets or a gameplay backdrop.
     PpuBatch sky_batch{{{PpuLayer::bg2}},PicaSpace::scenery,true,0,208};
     std::vector<PicaVertex> vertices;
     std::vector<PicaDraw> draws;std::vector<PicaImage> images;
     std::vector<PicaVertex> alpha_vertices;std::vector<PicaDraw> alpha_draws;
-    bool setup=true,caption_dirty=true,wipe_demo=false;unsigned wipe_phase{};float x{},y{};
+    bool setup=true,caption_dirty=true,wipe_demo=false,colour_demo=false;unsigned wipe_phase{},colour_phase{};float x{},y{};
     starfox::input::ButtonMask previous{};
     StereoSettings settings;settings.near_plane=16;
     while(true) {
@@ -61,12 +69,13 @@ int diagnostic(NativeDisplay& display) {
         if((input.held&starfox::input::a) && !(previous&starfox::input::a)) {setup=false;caption_dirty=true;}
         if((input.held&starfox::input::b) && !(previous&starfox::input::b)) {setup=true;caption_dirty=true;}
         if(!setup && (input.held&starfox::input::x) && !(previous&starfox::input::x)) wipe_demo=!wipe_demo;
+        if(!setup && (input.held&starfox::input::y) && !(previous&starfox::input::y)) colour_demo=!colour_demo;
         previous=input.held;
         if(caption_dirty) {
             caption.clear({8,15,28});
             caption.text(12,12,"PICA200 GPU CHECK / NOT THE GAME",{183,224,240});
             if(setup) caption.text(24,56,"A: SOURCE MODELS / DEPTH / SLIDER\n\nB: RETURN TO THIS PAGE\nCIRCLE PAD: MOVE FRONT CUBE\n\nSELECT + START: EXIT\n\nREAL PRE-GAME MENU IS RETAINED\nIN THE SEPARATE GAME PORT",{227,235,242});
-            else caption.text(16,221,"SLIDER: DEPTH / X: WIPE / B: BACK",{213,237,244});
+            else caption.text(8,221,"SLIDER: DEPTH / X: WIPE / Y: COLOUR",{213,237,244});
             caption_dirty=false;
         }
         if(!setup) {
@@ -78,6 +87,7 @@ int diagnostic(NativeDisplay& display) {
         vertices.clear();draws.clear();images.clear();source_geometry.clear();
         quad(vertices,{{{0,0,0},{float(top_width),0,0},{float(top_width),float(screen_height),0},{0,float(screen_height),0}}});
         draws.push_back({0,6,0,pica_identity,PicaSpace::screen,false,false,false});
+        draws.back().source_layer=0; // Synthetic caption is host UI, not a SNES background.
         images.push_back({top.pixels,top.width,top.height,top.pitch,3});
         std::vector<PicaFrame> groups{{plan,vertices,draws,images}};
         if(!setup) {
@@ -95,6 +105,14 @@ int diagnostic(NativeDisplay& display) {
             alpha_draws.push_back({0,6,pica_no_texture,pica_identity,PicaSpace::world,true,false,true});
             alpha_draws.back().clip=PicaClip{185,0,225,240}; // Exercise actual per-draw PICA scissor state.
             groups.push_back({plan,alpha_vertices,alpha_draws,{}});
+            groups.push_back(source_objects.prepare(sky,PpuBatch{{{PpuLayer::objects}}},plan));
+            starfox::simulation::CircleEffectState circle;circle.active=colour_demo;
+            circle.centre_x=128;circle.centre_y=112;circle.radius=std::uint16_t(8+(colour_phase%192));
+            circle.red=31;circle.green=14;circle.blue=5;circle.affected_layers=3; // BG1 models + BG2 scenery, not OBJ.
+            starfox::simulation::ColourMathEffectState math;math.active=colour_demo;
+            math.subtract=true;math.affected_layers=0x2f;
+            math.red=math.green=math.blue=std::uint8_t((colour_phase++/8)%32);
+            groups.push_back(source_colour.prepare(circle,math,15,plan));
             starfox::simulation::WindowWipeState wipe;wipe.active=wipe_demo;wipe.horizontal_opening=true;
             const auto opening=std::abs(192-int(wipe_phase++%384));
             wipe.opening_top=(192-opening)*.5;wipe.opening_bottom=192-wipe.opening_top;

@@ -111,8 +111,73 @@ void projection_and_draws() {
     frame.textures=images;rejects(valid,"Texture budget includes the padded lower-screen upload");frame.textures={};
     frame.vertices={};frame.draws={};valid();require(true,"Clear/dashboard-only native frames are allowed");
 }
+void layer_upload() {
+    constexpr unsigned spread[]{0,1,4,5,16,17,20,21};
+    for(unsigned width:{1U,7U,8U,9U,31U}) for(unsigned height:{1U,7U,17U}) {
+        const unsigned pitch=width*4+3,layer_pitch=width+5;
+        std::vector<std::uint8_t> pixels(pitch*height,0xAA),layers(layer_pitch*height,0xBB);
+        constexpr unsigned classes[]{0,1,2,4,8,16,32};unsigned mask=0;
+        for(unsigned y=0;y<height;++y) for(unsigned x=0;x<width;++x) {
+            const auto layer=classes[(x+y*3)%7];layers[y*layer_pitch+x]=std::uint8_t(layer);mask|=layer;
+            pixels[y*pitch+x*4+3]=layer?255:0;
+        }
+        const PicaImage image{pixels,width,height,pitch,4,false,layers,layer_pitch};
+        const auto layout=pica_texture_layout(image);
+        require(pica_resident_texture_bytes(image)==layout.width*layout.height*5,"PPU budget must include one-byte A8 provenance, not six RGBA copies");
+        std::vector<std::uint8_t> packed(layout.width*layout.height+2,0xCC);
+        require(pack_pica_layers(image,std::span(packed).subspan(1,packed.size()-2))==mask,"Source layer population mask incorrect");
+        require(packed.front()==0xCC && packed.back()==0xCC,"Layer upload crossed allocated storage");
+        for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
+            const auto ty=layout.height-1-y;
+            const auto offset=1+((ty/8)*(layout.width/8)+x/8)*64+spread[x%8]+2*spread[ty%8];
+            require(packed[offset]==layers[std::min(y,height-1)*layer_pitch+std::min(x,width-1)],"A8 Morton/vertical flip/row stride/edge padding differs from colour texture");
+        }
+        if(std::has_single_bit(width) && std::has_single_bit(height)) {
+            auto repeated=image;repeated.repeat=true;
+            pack_pica_layers(repeated,std::span(packed).subspan(1,packed.size()-2));
+            for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
+                const auto ty=layout.height-1-y;
+                const auto offset=1+((ty/8)*(layout.width/8)+x/8)*64+spread[x%8]+2*spread[ty%8];
+                require(packed[offset]==layers[(y%height)*layer_pitch+(x%width)],"Repeated A8 guards disagree with repeated RGBA artwork");
+            }
+        }
+        auto bad=image;bad.layer_pitch=width-1;
+        rejects([&]{pica_texture_layout(bad);},"Short layer pitch accepted");
+        bad=image;bad.source_layers=std::span(layers).first(layer_pitch*(height-1)+width-1);
+        rejects([&]{pica_texture_layout(bad);},"Truncated source ownership accepted");
+        layers[0]=3;pixels[3]=255;
+        rejects([&]{pack_pica_layers(image,std::span(packed).subspan(1,packed.size()-2));},"Ambiguous multi-layer pixel accepted");
+        layers[0]=1;pixels[3]=0;
+        rejects([&]{validate_pica_layers(image);},"Invisible pixel may not overwrite stencil ownership");
+        layers[0]=0;pixels[3]=255;
+        rejects([&]{validate_pica_layers(image);},"Opaque unclassified PPU pixel accepted");
+        layers[0]=1;pixels[3]=128;
+        rejects([&]{validate_pica_layers(image);},"Source layer ID cannot replace translucent alpha");
+    }
+    std::vector<std::uint8_t> rgba(8*8*4),layers(8*8);PicaImage image{rgba,8,8,32,4,false,layers,8};
+    rejects([&]{pack_pica_layers(image,layers);},"A8 upload may not overwrite source provenance");
+    rejects([&]{pack_pica_layers(image,std::span(rgba).first(64));},"A8 upload may not overwrite RGBA input");
+    Canvas dashboard;const auto plan=plan_frame(1,true,ScreenUse::world);
+    std::array<PicaVertex,3> vertices{{{{0,0,0}},{{400,0,0}},{{0,240,0}}}};
+    PicaDraw draw{0,3,0,pica_identity,PicaSpace::screen,false,false,true};
+    PicaFrame frame{plan,vertices,std::span(&draw,1),std::span(&image,1)};
+    validate_pica_frame(frame,dashboard.view());
+    draw.space=PicaSpace::world;
+    rejects([&]{validate_pica_frame(frame,dashboard.view());},"Per-pixel PPU stencil mask accepted on perspective world geometry");
+    draw.space=PicaSpace::screen;vertices[0].colour[3]=.5F;
+    rejects([&]{validate_pica_frame(frame,dashboard.view());},"Per-pixel PPU stencil masks cannot silently discard vertex opacity");
+    vertices[0].colour[3]=1;draw.source_layer=3;
+    rejects([&]{validate_pica_frame(frame,dashboard.view());},"Ambiguous native draw layer accepted");
+    std::vector<std::uint8_t> large_rgba(512*512*4),large_layers(512*512);
+    const PicaImage large{large_rgba,512,512,512*4,4,false,large_layers,512};
+    const std::array<PicaImage,3> images{large,large,large};
+    frame.vertices={};frame.draws={};frame.textures=std::span(images).first(2);
+    validate_pica_frame(frame,dashboard.view());
+    frame.textures=images;
+    rejects([&]{validate_pica_frame(frame,dashboard.view());},"Combined 3DS resident budget omitted A8 provenance bytes");
+}
 }
 int main() try {
-    texture_upload();projection_and_draws();
+    texture_upload();projection_and_draws();layer_upload();
     std::cout<<"3DS PICA upload/projection/pass contracts: "<<checks<<" checks passed\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
