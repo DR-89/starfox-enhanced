@@ -13,6 +13,13 @@ struct GameHudFrame {
     std::array<std::uint16_t,256> palette{};
     std::array<std::uint8_t,3> teammate_health{};
     std::uint8_t lives{},bombs{},brightness{},language{};
+    // Raw cartridge counts. Only EX supplies these; retail must never read
+    // an absent symbol or relabel player-one values as player two.
+    struct PlayerTwo {
+        std::uint8_t lives{},bombs{};
+        bool operator==(const PlayerTwo&) const=default;
+    };
+    std::optional<PlayerTwo> player_two;
     bool paused{};
 };
 class GameHud {
@@ -28,7 +35,7 @@ public:
     [[nodiscard]] static HudState status(const GameHudFrame&) noexcept;
 private:
     render::ScaledTextRenderer text_;
-    std::array<std::uint32_t,3> addresses_{}; // P1 lives/bombs, teammate health.
+    std::array<std::uint32_t,5> addresses_{}; // P1 lives/bombs, allies, EX P2 lives/bombs.
     CockpitDashboard dashboard_;
     render::Framebuffer portrait_{32,40},radio_{284,56};
     std::vector<std::uint8_t> portrait_rgb_,radio_rgb_;

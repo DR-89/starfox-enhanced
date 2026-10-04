@@ -44,8 +44,25 @@ Old SPC archives still load. A public nine-byte synthetic SMP program tests
 different input/output values, repeated read-only snapshots and continuation,
 without Nintendo assets. Actual Original/EX BOOT/stage checks cover all audio
 phases 0/1/2, SD reopen/interrupted generations, retired-owner continuation,
-held-input guards and frozen runtime-options resume. Host checks pass; this
-checkpoint still needs its exact ARM link and original-device acceptance.
+held-input guards and frozen runtime-options resume. Exact source checkpoint
+`6f923360a0336a4b8098e6810b7e0b2543b437c8` passes all 14 host suites,
+6,358 Original/EX session checks each and all three actual ARM links in
+[CI 37192122255](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37192122255).
+The downloaded core 3DSX is 2,179,148 bytes; static sections and packet sizes
+are not runtime peak-memory measurements. Original-device acceptance remains.
+
+## EX player-two lower-screen counters
+
+The cartridge HUD observer now exports EX's actual `LIVESTWO` and `SPECCNTTWO`,
+in addition to the existing player-one and ally values. The original game has
+no player-two symbols and does not read them. Reserve lives follow the source
+zero clamp and active-ship subtraction. When EX activates player two, P1 view
+shows separate P2 reserve/bomb labels; P2 view selects those counts rather than
+relabeling P1 values. Inactive P2 and non-game/menu routing leave them hidden.
+Both count changes and view changes invalidate the owned dashboard cache;
+unchanged counters do not redraw. Capturing them does not mutate VM/open-bus
+state. Host cartridge/status/pixel checks cover the source values and archives;
+this addition still requires its own exact ARM checkpoint and console acceptance.
 
 ## Cartridge dust and connected ground grid
 
@@ -728,8 +745,8 @@ remote CI run, release publication or console installation was performed.
    clipping and transparency. The GameModels stream is already connected to
    the native owner. Feed both eyes from one interpolated snapshot, with the same
    off-axis projection contract as the diagnostic; no screen-space fake depth.
-4. Retain the now-linked `GameHud` bridge in the game presenter, complete EX
-   player-two reserve/bomb export and native overlay routing. Apply split-HUD
+4. Retain the now-linked `GameHud` bridge in the game presenter, verify EX
+   player-two reserve/bomb export and complete native overlay routing. Apply split-HUD
    selection only when `game_routing(...).move_hud` is true.
 5. Profile **original** 3DS memory/CPU/GPU budgets. Reuse buffers; upload static
    geometry/textures once; update the dashboard only when its contents change;

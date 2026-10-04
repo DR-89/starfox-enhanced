@@ -326,6 +326,18 @@ void radio_artwork_cache_tests() {
     require(dashboard.update(state) && !dashboard.update(state),"Player-two health/boost gating was not cached");
     require(pixel(dashboard.view(),35,230)==Rgb{86,208,168},"Player-two shield not shown");
     require(pixel(dashboard.view(),250,216)==Rgb{15,29,42},"Unavailable boost still showed meter");
+    state.counters_enabled=true;state.second_counters=HudCounters{6,2};
+    require(dashboard.update(state) && !dashboard.update(state),"P2 counters were not part of the dashboard cache key");
+    auto with_p2=std::vector<std::uint8_t>(dashboard.view().pixels.begin(),dashboard.view().pixels.end());
+    state.second_counters->bombs=3;
+    require(dashboard.update(state) && !dashboard.update(state),"P2 bomb changes did not update exactly once");
+    require(!std::equal(with_p2.begin(),with_p2.end(),dashboard.view().pixels.begin()),"P2 bomb change was invisible");
+    state.second_counters.reset();
+    require(dashboard.update(state) && !dashboard.update(state),"Retiring P2 counters did not clear cached artwork");
+    state.second_player_view=true;state.lives=6;state.bombs=2;
+    require(dashboard.update(state) && !dashboard.update(state),"Active P2 counter labels were not cached");
+    state.counters_enabled=false;
+    require(dashboard.update(state) && !dashboard.update(state),"Disabling P2 counters left cached labels");
     require(original!=retained,"Radio mutation did not change visible pixels");
 }
 void captures(const std::filesystem::path& directory) {
@@ -334,6 +346,10 @@ void captures(const std::filesystem::path& directory) {
     hud.lives=2;hud.bombs=3;hud.ally_percent={84,58,95};hud.boss_percent=67;
     hud.radio_message="ALL SHIPS CHECK IN\nSLIDER DEPTH / HUD BELOW";
     draw_cockpit(lower,hud);lower.write_bmp((directory/"lower-hud.bmp").string());
+    hud.second_counters=HudCounters{6,2};
+    draw_cockpit(lower,hud);lower.write_bmp((directory/"lower-hud-two-player.bmp").string());
+    hud.second_counters.reset();hud.second_player_view=true;hud.lives=6;hud.bombs=2;
+    draw_cockpit(lower,hud);lower.write_bmp((directory/"lower-hud-p2-view.bmp").string());
     const auto plan=plan_frame(1,true,ScreenUse::world);
     for(unsigned eye=0;eye<2;++eye) {
         Canvas top(top_width);top.clear({8,15,28});

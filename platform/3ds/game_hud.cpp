@@ -36,6 +36,10 @@ GameHud::GameHud(const assets::RomImage& rom,const assets::SymbolMap& symbols):t
     addresses_[0]=ram(symbols,"LIVES");
     addresses_[1]=ram(symbols,!symbols.find("SPECWEPCNTONE").empty()?"SPECWEPCNTONE":"SPECWEPCNT");
     addresses_[2]=ram(symbols,"FRIENDS_HP");
+    if(!symbols.find("SPECWEPCNTONE").empty()) {
+        addresses_[3]=ram(symbols,"LIVESTWO");
+        addresses_[4]=ram(symbols,"SPECCNTTWO");
+    }
 }
 GameHudFrame GameHud::capture(const simulation::GameSimulation& game) const {
     const auto read=[&](std::uint32_t address) {return game.map().peek_ram_byte(address).value_or(0);};
@@ -43,6 +47,7 @@ GameHudFrame GameHud::capture(const simulation::GameSimulation& game) const {
     result.routing=game_routing(game.flow_state(),game.menu_preview());
     result.meters=game.peek_meter_state();result.dialogue=game.dialogue_state();
     result.lives=read(addresses_[0]);result.bombs=read(addresses_[1]);
+    if(addresses_[3]) result.player_two=GameHudFrame::PlayerTwo{read(addresses_[3]),read(addresses_[4])};
     for(unsigned i=0;i<3;++i) result.teammate_health[i]=read(addresses_[2]+i);
     result.palette=game.map().ppu_state().cgram;
     result.brightness=game.map().display_brightness();result.language=game.language();
@@ -53,10 +58,16 @@ HudState GameHud::status(const GameHudFrame& frame) noexcept {
     const auto& m=frame.meters;
     result.meters_enabled=frame.routing.move_hud && m.enabled;
     result.boost_enabled=!m.extended || m.boost_enabled;
-    // Player-two reserve/bomb semantic export is still needed; do not label
-    // the known player-one counts as player two merely because the view changed.
-    result.counters_enabled=frame.routing.move_hud && !(m.extended && m.second_player_view);
+    const bool player_two=m.extended && m.player_two_activated && frame.player_two.has_value();
+    result.second_player_view=m.extended && m.second_player_view;
+    result.counters_enabled=frame.routing.move_hud && (!result.second_player_view || player_two);
     result.lives=frame.lives?unsigned(frame.lives)-1:0;result.bombs=frame.bombs;
+    if(player_two && frame.routing.move_hud) {
+        const auto& counts=*frame.player_two;
+        const HudCounters secondary{counts.lives?unsigned(counts.lives)-1:0,counts.bombs};
+        if(result.second_player_view) {result.lives=secondary.lives;result.bombs=secondary.bombs;}
+        else result.second_counters=secondary;
+    }
     const auto maximum=m.extended?m.player_health_max:36U;
     result.shield_percent=percent(m.extended && m.second_player_view?m.damage_two:m.damage,maximum);
     if(m.extended && m.player_one_dead && !m.second_player_view) result.shield_percent=0;

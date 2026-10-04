@@ -119,8 +119,12 @@ void draw_cockpit(Canvas& c,const HudState& s) {
         if(s.boss_percent) {c.text(119,214,"ENEMY",label);meter(119,226,82,*s.boss_percent,{246,204,75});}
     }
     if(s.counters_enabled) {
-        c.text(12,182,"LIVES "+std::to_string(s.lives),label);
-        c.text(244,182,"BOMBS "+std::to_string(s.bombs),label);
+        c.text(12,182,std::string(s.second_player_view?"P2 LIVES ":"LIVES ")+std::to_string(s.lives),label);
+        c.text(s.second_player_view?212:244,182,std::string(s.second_player_view?"P2 BOMBS ":"BOMBS ")+std::to_string(s.bombs),label);
+        if(s.second_counters) {
+            c.text(12,164,"P2 LIVES "+std::to_string(s.second_counters->lives),label);
+            c.text(212,164,"P2 BOMBS "+std::to_string(s.second_counters->bombs),label);
+        }
     }
 }
 bool CockpitDashboard::update(const HudState& s) {
@@ -147,6 +151,7 @@ bool CockpitDashboard::update(const HudState& s) {
         && s.ally_percent==previous_->ally_percent && s.radio_message==message_
         && s.meters_enabled==previous_->meters_enabled && s.boost_enabled==previous_->boost_enabled
         && s.counters_enabled==previous_->counters_enabled && s.second_shield_percent==previous_->second_shield_percent
+        && s.second_player_view==previous_->second_player_view && s.second_counters==previous_->second_counters
         && same_image(s.portrait,previous_->portrait,portrait_)
         && same_image(s.radio_artwork,previous_->radio_artwork,radio_))
         return false;

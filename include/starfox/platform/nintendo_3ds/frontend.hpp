@@ -136,6 +136,10 @@ private:
     void pixel(int x,int y,Rgb colour);
     unsigned width_;std::vector<std::uint8_t> pixels_;
 };
+struct HudCounters {
+    unsigned lives{},bombs{}; // Reserve lives, not total ships including active one.
+    bool operator==(const HudCounters&) const=default;
+};
 struct HudState {
     unsigned shield_percent{100},boost_percent{100},lives{},bombs{};
     std::optional<unsigned> boss_percent;
@@ -146,6 +150,8 @@ struct HudState {
     ImageView radio_artwork{};
     bool meters_enabled{true},boost_enabled{true},counters_enabled{true};
     std::optional<unsigned> second_shield_percent;
+    bool second_player_view{};
+    std::optional<HudCounters> second_counters;
 };
 // Independent lower-screen drawing. No crop/erase of an already composed
 // world image; source sprites/messages must be routed before composition.
