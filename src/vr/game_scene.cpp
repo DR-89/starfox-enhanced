@@ -25,6 +25,13 @@ GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
         const auto& entries=symbols.find(tracking_names[i]);
         if(!entries.empty()) tracking_strategies_[i]=entries.front();
     }
+    constexpr std::array cockpit_names{"COCKPIT_ISTRAT","COCKPIT_STRAT","COCKPITOUT_ISTRAT","COCKPITOUT_STRAT"};
+    for(size_t i=0;i<cockpit_names.size();++i) {
+        const auto& entries=symbols.find(cockpit_names[i]);
+        if(!entries.empty()) cockpit_strategies_[i]=entries.front();
+    }
+    const auto& cockpit=symbols.find("COCKPIT");
+    if(!cockpit.empty()) cockpit_shape_=static_cast<uint16_t>(cockpit.front());
     constexpr std::array model_names{"M_VANISHX","M_VANISHY","M_DEPTHTABLE","M_DEPTHSTAB",
         "M_WIREMODE","M_WOBBLEMODE","M_WABBLEMODE","M_CELMODE","M_SINEOFFSET","M_COLORWARP","M_PROJPNTS"};
     for(size_t i=0;i<model_names.size();++i) {
@@ -153,6 +160,11 @@ GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
     capture();older_=previous_=current_;
 }
 
+bool GameSceneHistory::is_final_vortex_sky(uint16_t background,unsigned mode) const noexcept {
+    return (mode==1 || mode==2)
+        && std::any_of(final_vortex_backgrounds_.begin(),final_vortex_backgrounds_.end(),
+            [background](uint16_t id){return id && background==id;});
+}
 void GameSceneHistory::capture() {
     if(current_ && current_->revision==std::numeric_limits<uint64_t>::max())
         throw std::overflow_error("VR scene revision exhausted");
@@ -177,12 +189,10 @@ void GameSceneHistory::capture() {
     next->colour_table_override=game_.model_colour_table_override();
     next->meters=game_.peek_meter_state();
     auto presentation_ppu=std::make_shared<simulation::SnesPpuState>(game_.map().ppu_state());
-    // The authored final room switches to the Mode-2 abstract/vortex sky while
+    // The authored final room switches to a Mode-1/2 abstract/vortex sky while
     // INATUNNEL can remain set. Its background is not corridor geometry: only
     // presentation drops the tunnel mask, leaving native gameplay untouched.
-    const bool final_vortex_sky=presentation_ppu->background_mode==2
-        && std::any_of(final_vortex_backgrounds_.begin(),final_vortex_backgrounds_.end(),
-            [&](uint16_t id){return id && game_.map().background()==id;});
+    const bool final_vortex_sky=is_final_vortex_sky(game_.map().background(),presentation_ppu->background_mode);
     if(final_vortex_sky) presentation_ppu->tunnel_scene=false;
     // The colony cross-section is authored with WATER, not INATUNNEL=1.
     // In VR it is still an enclosed center-window scene, unlike open Titania water.
@@ -420,6 +430,14 @@ void GameSceneHistory::capture() {
         const auto pose=next->transforms.find(handle);
         if(pose==next->transforms.end()) continue; // Source invisible flag.
         const auto& object=game_.objects().at(handle);
+        // EX's manual first-person view can spawn a separate animated cockpit
+        // object even though its player ship is already invisible. Do not put
+        // that flat shell in either headset eye or a reflected/ray model pass.
+        // Keep the cartridge object, strategies, camera and all console views.
+        if(camera_policy_==SceneCameraPolicy::headset_tracking && next->meters.extended
+            && ((cockpit_shape_ && object.shape==cockpit_shape_)
+                || std::any_of(cockpit_strategies_.begin(),cockpit_strategies_.end(),
+                    [&](uint32_t strategy){return strategy && object.strategy_address==strategy;}))) continue;
         auto source=common;
         const auto& transform=pose->second.transform;
         const double x=simulation::wrap16(int64_t(transform.x)-next->camera.x);

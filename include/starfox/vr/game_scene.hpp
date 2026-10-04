@@ -148,6 +148,9 @@ public:
     // Capture once after a completed logic tick, including every catch-up
     // tick. Publication is transactional; retained older snapshots stay valid.
     void capture();
+    // Identify from the live source BG/mode, not a possibly older logic-tick
+    // snapshot. Native 60 Hz rasters use this same presentation-only policy.
+    [[nodiscard]] bool is_final_vortex_sky(uint16_t background,unsigned mode) const noexcept;
     // Pause/camera-clock rebases must not replay the previous pose on resume.
     void reset_interpolation() noexcept {older_=previous_=current_;}
     [[nodiscard]] render::GridLineHistory::State grid_history_state() const noexcept {return grid_line_history_.state();}
@@ -174,6 +177,8 @@ private:
     SceneCameraPolicy camera_policy_;
     std::array<uint32_t,13> addresses_{};
     std::array<uint32_t,2> tracking_strategies_{};
+    std::array<uint32_t,4> cockpit_strategies_{};
+    uint16_t cockpit_shape_{};
     std::array<uint32_t,11> model_addresses_{};
     uint32_t depth_tables_{};
     uint16_t ex_title_intro_background_{};

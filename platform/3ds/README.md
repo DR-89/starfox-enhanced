@@ -15,6 +15,23 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## Final-room raster policy and near-wall stereo
+
+The authored final/vortex backgrounds are distant scenery in both Mode 1 and
+Mode 2, even when the cartridge retains INATUNNEL. The native raster now uses
+the same verified background-identity policy as the scene snapshot, while
+retaining the current video phase's VRAM, OAM, HDMA and palette. Only the
+presentation tunnel metadata is cleared; the source VM/SPC remain unchanged.
+
+Controller-driven Original/EX final-tunnel replays each check 61 final-room
+frames at default/maximum optics and slider 1, 0.5 and 0: 10,495,112 canonical
+pixel/ownership/resource checks each. Padded GPU textures including the lower
+LCD peak at 2,097,408 / 2,101,504 bytes. Public corridor regressions now include
+near-wall cameras and individual eyes outside small/medium tubes, selecting
+the nearest bounded wall intersection and checking source texture/depth
+registration. These are host checks, not device pixels, full-route performance
+or proof that every exterior camera/EX corridor is covered.
+
 ## EX orbital/unique-menu stereo
 
 Verified EX menu atlas metadata now enables the physical 3D slider for orbital,

@@ -122,7 +122,16 @@ void GameSession::publish_raster() {
     const auto& ppu=game_.map().ppu_state();
     // At most one immutable PPU copy per host advance, never per eye. Reuse
     // unchanged video storage and completed-model snapshots where possible.
-    if(raster_ && *raster_->ppu==ppu) next->ppu=raster_->ppu;
+    if(ppu.tunnel_scene && history_.is_final_vortex_sky(game_.map().background(),ppu.background_mode)) {
+        // Retain this video phase's VRAM/OAM/HDMA/palette, not the older scene
+        // PPU. The final room's stale INATUNNEL bit must not pin its sky to
+        // screen depth or clamp the surround to corridor edge texels.
+        auto presented=std::make_shared<simulation::SnesPpuState>(ppu);
+        presented->tunnel_scene=false;
+        if(raster_ && *raster_->ppu==*presented) next->ppu=raster_->ppu;
+        else next->ppu=std::move(presented);
+    }
+    else if(raster_ && *raster_->ppu==ppu) next->ppu=raster_->ppu;
     else if(history_.current()->ppu && *history_.current()->ppu==ppu) next->ppu=history_.current()->ppu;
     else next->ppu=std::make_shared<const simulation::SnesPpuState>(ppu);
     next->brightness=game_.map().display_brightness();

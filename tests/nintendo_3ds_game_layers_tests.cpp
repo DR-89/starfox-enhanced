@@ -536,11 +536,8 @@ void corridor_depth() {
 void corridor_eye_coverage() {
     // Independent slab intersections in world axes; never call the production
     // plane/guard helper for expected depth or source texture coordinates.
-    for(int half_width:{60,90,120}) for(int camera_x:{-10,0,10}) for(float convergence:{16.F,1024.F})
+    for(int half_width:{60,90,120}) for(int camera_x:{-55,-10,0,10,55}) for(float convergence:{16.F,1024.F})
         for(float strength:{1.F,2.F}) for(int yaw:{-1,0,1}) {
-        // At strength 2 / 64 separation, an eye is physically outside the
-        // small authored tube. Exterior transition policy is still separate.
-        if(half_width==60 && strength==2) continue;
         auto frame=source(simulation::GameFlowState::gameplay,2);
         auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
         scene->camera.x=camera_x;scene->camera.y=-60;
@@ -584,24 +581,34 @@ void corridor_eye_coverage() {
                     const double scale=32767./32768.,c=cosine/32768.,s=sine/32768.,norm=c*c+s*s;
                     const double ex=camera_x+frame.plan.eyes[eye].x*c/norm;
                     const double rx=(c*(sample[0]-200-frame.plan.eyes[eye].projection_offset)/256+s)/norm,ry=(sample[1]-120)/(256*scale);
+                    // An eye outside the authored cross-section first sees an
+                    // entry face, not an unbounded opposite floor/wall. Test
+                    // all bounded faces, retaining only forward intersections.
                     double z=std::numeric_limits<double>::infinity();
-                    if(rx!=0) z=std::min(z,((rx>0?half_width:-half_width)-ex)/rx);
-                    if(ry!=0) z=std::min(z,((ry>0?0:-120)+60)/ry);
+                    if(rx!=0) for(double wall:{-double(half_width),double(half_width)}) {
+                        const double t=(wall-ex)/rx,world_y=-60+ry*t;
+                        if(t>0 && world_y>=-120 && world_y<=0) z=std::min(z,t);
+                    }
+                    if(ry!=0) for(double wall:{-120.,0.}) {
+                        const double t=(wall+60)/ry,world_x=ex+rx*t;
+                        if(t>0 && world_x>=-half_width && world_x<=half_width) z=std::min(z,t);
+                    }
                     if(z<frame.plan.near_plane || z>frame.plan.far_plane) continue;
                     const double expected_x=std::clamp(sample[0]-frame.plan.eyes[eye].projection_offset
                         +256.*frame.plan.eyes[eye].x/z,-double(artwork.coverage_guard()),400.+artwork.coverage_guard());
-                    bool covered=false;
+                    bool covered=false;double nearest_q=0,nearest_x=0,nearest_y=0;
                     for(const auto& triangle:triangles) {
                         const std::array weights{cross(triangle.p[1],triangle.p[2],sample)/triangle.area,
                             cross(triangle.p[2],triangle.p[0],sample)/triangle.area,cross(triangle.p[0],triangle.p[1],sample)/triangle.area};
                         if(std::any_of(weights.begin(),weights.end(),[](double w){return w< -1.e-6;})) continue;
                         double q=0,sx=0,sy=0;
                         for(unsigned k=0;k<3;++k) {q+=weights[k]*triangle.q[k];sx+=weights[k]*triangle.uv[k][0];sy+=weights[k]*triangle.uv[k][1];}
-                        require(std::abs(q-1./z)<1.e-5 && std::abs(sx-expected_x)<.05 && std::abs(sy-sample[1])<.05,
-                            "Corridor eye sees wrong physical wall depth or source UV registration");
+                        if(q>nearest_q) {nearest_q=q;nearest_x=sx;nearest_y=sy;}
                         covered=true;
                     }
                     require(covered,"Finite corridor left an uncovered active-eye edge/corner");
+                    require(std::abs(nearest_q-1./z)<1.e-5 && std::abs(nearest_x-expected_x)<.05 && std::abs(nearest_y-sample[1])<.05,
+                        "Nearest bounded corridor face has wrong physical depth or source UV registration");
                 }
             }
         }

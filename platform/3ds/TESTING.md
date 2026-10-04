@@ -12,6 +12,12 @@ background into depth while the native menu text remains at screen depth.
 Other menu/map/Controls routing remains unchanged. Source checks pass; the
 physical LCD result still needs testing.
 
+The source follow-up also fixes final-room panorama depth when the cartridge
+retains its tunnel flag. Check final-tunnel exits and near-wall stereo at slider
+maximum, including camera banks. Host canonical/resource tests do not replace
+physical LCD checks. Older R3 packages predate this production follow-up and
+must not be relabeled as containing it.
+
 ## Install
 
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.
