@@ -35,10 +35,10 @@ void composite_transparent_layer(const Framebuffer& source,
         (settings.mosaic >> 4U) + 1U);
     if(auto* commands=destination.command_buffer()) {
         RasterCommand c;const int scale=destination.draw_scale();
-        c.left=std::max({0,settings.offset_x,settings.clip_left})*scale;
-        c.top=std::max({0,settings.offset_y,settings.clip_top})*scale;
-        c.right=std::min({int(destination.width()),settings.offset_x+int(source.width()),settings.clip_right})*scale;
-        c.bottom=std::min({int(destination.height()),settings.offset_y+int(source.height()),settings.clip_bottom})*scale;
+        c.left=std::max<std::int32_t>({0,settings.offset_x,settings.clip_left})*scale;
+        c.top=std::max<std::int32_t>({0,settings.offset_y,settings.clip_top})*scale;
+        c.right=std::min<std::int32_t>({int(destination.width()),settings.offset_x+int(source.width()),settings.clip_right})*scale;
+        c.bottom=std::min<std::int32_t>({int(destination.height()),settings.offset_y+int(source.height()),settings.clip_bottom})*scale;
         if(c.left>=c.right || c.top>=c.bottom) return;
         c.textured=5;c.texture_offset=commands->snapshot(source.pixels());
         c.u_mask=source.stored_width();c.v_mask=source.stored_height();
@@ -57,8 +57,8 @@ void composite_transparent_layer(const Framebuffer& source,
         // for every source pixel. This is particularly important for Render
         // Upscale: the old generic path repeated that machinery nine times
         // per logical pixel at 3x even though no resampling was required.
-        auto source_left = std::max(0, -settings.offset_x);
-        auto source_top = std::max(0, -settings.offset_y);
+        auto source_left = std::max<std::int32_t>(0, -settings.offset_x);
+        auto source_top = std::max<std::int32_t>(0, -settings.offset_y);
         auto source_right = std::min(
             static_cast<std::int32_t>(source.width()),
             static_cast<std::int32_t>(destination.width())

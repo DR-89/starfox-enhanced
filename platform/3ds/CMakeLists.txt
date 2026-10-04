@@ -25,13 +25,14 @@ if(STARFOX_3DS_BUILD_NATIVE)
     endif()
     find_path(STARFOX_CTRU_INCLUDE 3ds.h HINTS "${DEVKITPRO}/libctru/include" "$ENV{DEVKITPRO}/libctru/include" REQUIRED)
     find_library(STARFOX_CTRU_LIBRARY ctru HINTS "${DEVKITPRO}/libctru/lib" "$ENV{DEVKITPRO}/libctru/lib" REQUIRED)
-    # Compile the actual cartridge model adapter/interpolation on ARM too.
-    # Until the whole game core/compositor is linked this is explicitly an
-    # object-library ABI check, not a playable target or native game acceptance.
-    add_library(starfox_3ds_game_models_arm_syntax OBJECT game_models.cpp
-        ../../src/vr/source_pose_interpolation.cpp)
-    target_include_directories(starfox_3ds_game_models_arm_syntax PRIVATE ../../include)
-    target_compile_features(starfox_3ds_game_models_arm_syntax PRIVATE cxx_std_20)
+    # The lean-core target compiles/links these actual sources. Retain the
+    # limited ABI-only check when explicitly building without the VM/SPC core.
+    if(NOT STARFOX_3DS_BUILD_GAME_CORE)
+        add_library(starfox_3ds_game_models_arm_syntax OBJECT game_models.cpp
+            ../../src/vr/source_pose_interpolation.cpp)
+        target_include_directories(starfox_3ds_game_models_arm_syntax PRIVATE ../../include)
+        target_compile_features(starfox_3ds_game_models_arm_syntax PRIVATE cxx_std_20)
+    endif()
     add_library(starfox_3ds_native_audio STATIC native_audio.cpp)
     target_link_libraries(starfox_3ds_native_audio PUBLIC starfox_3ds_frontend PRIVATE "${STARFOX_CTRU_LIBRARY}")
     target_include_directories(starfox_3ds_native_audio SYSTEM PRIVATE "${STARFOX_CTRU_INCLUDE}")
