@@ -39,7 +39,7 @@ Rgb right_margin(const GameLayerFrames& layers) {
 bool native_panorama_scene(const GamePresentation& frame) noexcept {
     if(!frame.current || !frame.raster || !frame.raster->ppu || frame.raster->boss_roll) return false;
     const auto& scene=*frame.current;const auto& ppu=*frame.raster->ppu;
-    if(ppu.background_mode<1 || ppu.background_mode>2 || ppu.tunnel_scene) return false;
+    if(ppu.background_mode<1 || ppu.background_mode>2 || ppu.tunnel_scene || native_corridor_scene(frame)) return false;
     using enum simulation::GameFlowState;
     // The verified EX atlas choice belongs to the scenery, not to its BG1
     // menu text. Keep the original setup page; only its explicitly identified
@@ -155,6 +155,7 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
                     || groups.back().corridor_receiver!=tunnel) {
                     PpuBatch group;group.space=space;group.expand_horizontal=true;group.water_receiver=receiver;
                     group.corridor_receiver=tunnel;group.compact_strips=(water || corridor) && space==PicaSpace::scenery;
+                    group.corridor_open_left=tunnel && scene.background_corridor->walls==14;
                     group.visible_scenery_only=!water && !corridor && space==PicaSpace::scenery;
                     groups.push_back(std::move(group));
                 }

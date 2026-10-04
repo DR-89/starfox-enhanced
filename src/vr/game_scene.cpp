@@ -6,6 +6,39 @@
 #include <stdexcept>
 
 namespace starfox::vr {
+std::array<std::optional<SourceCorridor>,source_corridor_count> source_corridors(const assets::SymbolMap& symbols) {
+    // BGS/PSTRATS use LTUNNEL for both Gekkou states: BG_5_2Z's entry
+    // continues into BG_5_2A through WASHENT3. The scripted entry camera can
+    // be outside these bounds; native_corridor_scene handles that separately.
+    struct Definition {const char* name;const char* prefix;std::uint8_t walls{15};};
+    constexpr std::array<Definition,source_corridor_count> definitions{{
+        {"BG_1_1I","LTUNNEL_"},{"BG_1_3B","MTUNNEL_"},{"BG_2_3C","STUNNEL_"},
+        {"BG_1_6B","LTUNNEL_"},{"BG_1_7A","LTUNNEL_"},{"BG_2_6B","LTUNNEL_"},
+        {"BG_2_6C","LTUNNEL_"},{"BG_3_4C","LTUNNEL_"},
+        {"BG_5_2A","LTUNNEL_"},{"BG_5_2Z","LTUNNEL_"},
+        {"BG_2_6A","COLONY_",14}}};
+    std::array<std::optional<SourceCorridor>,source_corridor_count> result{};
+    const auto& lists=symbols.find("BGLISTS");
+    if(lists.empty()) return result;
+    for(std::size_t i=0;i<definitions.size();++i) {
+        const auto [name,prefix,walls]=definitions[i];const auto& value=symbols.find(name);
+        if(value.empty() || (value.front()&0xff0000U)!=(lists.front()&0xff0000U)
+            || value.front()<=lists.front()) continue;
+        std::array<int16_t,4> bounds{};bool complete=true;
+        constexpr std::array suffixes{"MINX","MAXX","MINY","MAXY"};
+        for(std::size_t axis=0;axis<bounds.size();++axis) {
+            const auto& constant=symbols.find(std::string(prefix)+suffixes[axis]);
+            if(constant.empty()) {complete=false;break;}
+            bounds[axis]=starfox::bit_cast<int16_t>(uint16_t(constant.front()));
+        }
+        if(!complete) continue; // Do not invent dimensions for other source revisions.
+        if(bounds[0]>=bounds[1] || bounds[2]>=bounds[3])
+            throw std::runtime_error("Invalid authored corridor dimensions");
+        result[i]=SourceCorridor{static_cast<uint16_t>(value.front()-lists.front()),
+            {bounds[0],bounds[1],bounds[2],bounds[3],walls}};
+    }
+    return result;
+}
 GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
     const assets::RomImage& rom,const assets::SymbolMap& symbols,SceneCameraPolicy camera_policy)
     :game_(game),rom_(rom),trig_(simulation::TrigTables::load(rom,symbols)),camera_policy_(camera_policy) {
@@ -91,25 +124,10 @@ GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
     }
     constexpr std::array landscape_names{"BG_1_1C","BG_TRAINING","BG_2_3A","BG_1_6A","BG_3_7A","BG_3_3A","BG_3_5","BG_3_1C","BG_1_4","BG_7_1","BG_7_2","BG_7_3","BG_7_4","BG_5_4","BG_5_1","BG_6_1","BG_6_5","BG_6_2","BG_6_4","BG_5_5","BG_7_5","BG_6_6","BG_5_2","BG_1_14","BG_1_7B"};
     const auto& water=symbols.find("BG_2_3B");
-    constexpr std::array corridor_names{"BG_1_1I","BG_1_3B","BG_2_3C","BG_1_6B",
-        "BG_1_7A","BG_2_6B","BG_2_6C","BG_3_4C"};
-    for(size_t i=0;i<corridor_names.size();++i) {
-        const auto& value=symbols.find(corridor_names[i]);
-        if(value.empty() || background_lists.empty()
-            || (value.front()&0xff0000U)!=(background_lists.front()&0xff0000U)) continue;
-        const std::string prefix=i==1?"MTUNNEL_":i==2?"STUNNEL_":"LTUNNEL_";
-        std::array<int16_t,4> bounds{};bool complete=true;
-        constexpr std::array suffixes{"MINX","MAXX","MINY","MAXY"};
-        for(size_t axis=0;axis<bounds.size();++axis) {
-            const auto& constant=symbols.find(prefix+suffixes[axis]);
-            if(constant.empty()) {complete=false;break;}
-            bounds[axis]=starfox::bit_cast<int16_t>(uint16_t(constant.front()));
-        }
-        if(!complete) continue; // Do not invent dimensions for other source revisions.
-        if(bounds[0]>=bounds[1] || bounds[2]>=bounds[3])
-            throw std::runtime_error("Invalid authored corridor dimensions");
-        corridor_backgrounds_[i]=static_cast<uint16_t>(value.front()-background_lists.front());
-        corridor_bounds_[i]=SourceCorridorBounds{bounds[0],bounds[1],bounds[2],bounds[3]};
+    const auto corridors=source_corridors(symbols);
+    for(size_t i=0;i<corridors.size();++i) if(corridors[i]) {
+        corridor_backgrounds_[i]=corridors[i]->background;
+        corridor_bounds_[i]=corridors[i]->bounds;
     }
     const auto& colony=symbols.find("BG_2_6A");
     if(!colony.empty() && !background_lists.empty()
@@ -195,7 +213,8 @@ void GameSceneHistory::capture() {
     const bool final_vortex_sky=is_final_vortex_sky(game_.map().background(),presentation_ppu->background_mode);
     if(final_vortex_sky) presentation_ppu->tunnel_scene=false;
     // The colony cross-section is authored with WATER, not INATUNNEL=1.
-    // In VR it is still an enclosed center-window scene, unlike open Titania water.
+    // Retain VR's center-window raster policy; native consoles use the explicit
+    // three-wall source metadata without changing this raw WATER PPU flag.
     if(presentation_ppu->background_mode==1 && colony_background_
         && game_.map().background()==colony_background_) presentation_ppu->tunnel_scene=true;
     // Presentation-only reticle palette; never mutate source CGRAM. Preserve
@@ -218,7 +237,9 @@ void GameSceneHistory::capture() {
         presentation_ppu->cgram[207]=pack_colour(tint[0],tint[1],tint[2]);
     next->ppu=std::move(presentation_ppu);
     next->background_id=game_.map().background();
-    if(next->ppu->tunnel_scene) for(size_t i=0;i<corridor_backgrounds_.size();++i)
+    // Resolve geometry by source identity, not the previous logic phase's
+    // raster flag. Native receiver selection still checks the fresh video PPU.
+    for(size_t i=0;i<corridor_backgrounds_.size();++i)
         if(corridor_backgrounds_[i] && next->background_id==corridor_backgrounds_[i])
             next->background_corridor=corridor_bounds_[i];
     next->wipe=game_.window_wipe_state();

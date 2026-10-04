@@ -52,7 +52,9 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
         || (batch.water_receiver && (ppu.background_mode!=1 || batch.space!=PicaSpace::scenery
             || batch.passes.empty() || std::any_of(batch.passes.begin(),batch.passes.end(),
                 [](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
-        || (batch.corridor_receiver && (batch.water_receiver || ppu.background_mode>2 || !ppu.tunnel_scene
+        || (batch.corridor_open_left && (!batch.corridor_receiver || ppu.background_mode!=1))
+        || (batch.corridor_receiver && (batch.water_receiver || ppu.background_mode>2
+            || (!ppu.tunnel_scene && !batch.corridor_open_left)
             || batch.space!=PicaSpace::scenery || batch.passes.empty()
             || std::any_of(batch.passes.begin(),batch.passes.end(),[](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
         || (batch.visible_scenery_only && (batch.space!=PicaSpace::scenery || !batch.expand_horizontal

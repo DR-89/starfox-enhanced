@@ -459,6 +459,39 @@ void water_eye_coverage() {
             "Reducing water slider reran cartridge decoding or palette colour conversion");
     }
 }
+void corridor_source_symbols() {
+    const std::string constants=
+        "LTUNNEL_MINX $ffff88\nLTUNNEL_MAXX $000078\nLTUNNEL_MINY $ffff88\nLTUNNEL_MAXY $000000\n"
+        "MTUNNEL_MINX $ffffa6\nMTUNNEL_MAXX $00005a\nMTUNNEL_MINY $ffff88\nMTUNNEL_MAXY $000000\n"
+        "STUNNEL_MINX $ffffc4\nSTUNNEL_MAXX $00003c\nSTUNNEL_MINY $ffff88\nSTUNNEL_MAXY $000000\n"
+        "COLONY_MINX $ffff56\nCOLONY_MAXX $000078\nCOLONY_MINY $ffff88\nCOLONY_MAXY $000000\n"
+        "KTUNNEL_MINX $ffff38\nKTUNNEL_MAXX $0000c8\nKTUNNEL_MINY $fffeca\nKTUNNEL_MAXY $000000\n";
+    const std::string backgrounds=
+        "BGLISTS $108000\nBG_1_1I $108003\nBG_1_3B $108006\nBG_2_3C $108009\n"
+        "BG_1_6B $10800c\nBG_1_7A $10800f\nBG_2_6B $108012\nBG_2_6C $108015\n"
+        "BG_3_4C $108018\nBG_5_2A $10801b\nBG_5_2Z $10801e\nBG_2_6A $108021\n";
+    const auto resolved=vr::source_corridors(assets::SymbolMap::parse(backgrounds+constants));
+    for(unsigned i=0;i<10;++i) {
+        const int width=i==1?90:i==2?60:120;
+        require(resolved[i] && resolved[i]->background==(i+1)*3
+            && resolved[i]->bounds==vr::SourceCorridorBounds{std::int16_t(-width),std::int16_t(width),-120,0},
+            "Source-linked corridor dimensions changed or Gekkou incorrectly used unused KTUNNEL bounds");
+    }
+    require(resolved[10] && resolved[10]->background==33
+        && resolved[10]->bounds==vr::SourceCorridorBounds{-170,120,-120,0,14},
+        "Colony movement limit was incorrectly treated as a physical left wall");
+    const auto incomplete=vr::source_corridors(assets::SymbolMap::parse(backgrounds+
+        "KTUNNEL_MINX $ffff38\nKTUNNEL_MAXX $0000c8\nKTUNNEL_MINY $fffeca\nKTUNNEL_MAXY $000000\n"));
+    for(const auto& entry:incomplete) require(!entry,"Missing authored tunnel symbols fabricated a receiver");
+    const auto unrelated=vr::source_corridors(assets::SymbolMap::parse(constants+
+        "BGLISTS $108000\nBG_5_2A $118003\nBG_5_2Z $107fff\nBG_6_6C $108009\n"));
+    for(const auto& entry:unrelated) require(!entry,"Foreign-bank/pre-list/final-room symbols became closed corridors");
+    bool rejected=false;
+    try {static_cast<void>(vr::source_corridors(assets::SymbolMap::parse(backgrounds+
+        "LTUNNEL_MINX $000078\nLTUNNEL_MAXX $000078\nLTUNNEL_MINY $ffff88\nLTUNNEL_MAXY $000000\n")));}
+    catch(const std::runtime_error&) {rejected=true;}
+    require(rejected,"Degenerate source corridor bounds were accepted");
+}
 void corridor_depth() {
     using enum simulation::GameFlowState;
     for(unsigned mode:{1U,2U}) for(int half_width:{60,90,120}) {
@@ -533,24 +566,26 @@ void corridor_depth() {
         require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,"Corridor presentation mutated cartridge artwork");
     }
 }
-void corridor_eye_coverage() {
+void corridor_eye_coverage(bool open_left=false) {
     // Independent slab intersections in world axes; never call the production
     // plane/guard helper for expected depth or source texture coordinates.
-    for(int half_width:{60,90,120}) for(int camera_x:{-55,-10,0,10,55}) for(float convergence:{16.F,1024.F})
+    const std::array camera_positions=open_left?std::array{-4000,-170,-10,10,55}:std::array{-55,-10,0,10,55};
+    for(int half_width:{60,90,120}) for(int camera_x:camera_positions) for(float convergence:{16.F,1024.F})
         for(float strength:{1.F,2.F}) for(int yaw:{-1,0,1}) {
-        auto frame=source(simulation::GameFlowState::gameplay,2);
+        auto frame=source(simulation::GameFlowState::gameplay,open_left?1:2);
         auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
         scene->camera.x=camera_x;scene->camera.y=-60;
         const std::int16_t sine=std::int16_t(yaw*12539),cosine=yaw?30273:32767;
         scene->view_matrix={cosine,0,sine,0,32767,0,std::int16_t(-sine),0,cosine};
-        scene->background_corridor=vr::SourceCorridorBounds{std::int16_t(-half_width),std::int16_t(half_width),-120,0};
+        scene->background_corridor=vr::SourceCorridorBounds{std::int16_t(-half_width),std::int16_t(half_width),-120,0,
+            std::uint8_t(open_left?14:15)};
         frame.current=frame.previous=scene;
-        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);ppu->tunnel_scene=true;
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);ppu->tunnel_scene=!open_left;
         for(unsigned i=0;i<1024;++i) {ppu->vram[0x6400+i*2]=1;ppu->vram[0x6401+i*2]=8;}
         auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
         StereoSettings settings;settings.separation=64;settings.convergence=convergence;settings.strength=strength;
         PicaRaster artwork;GameScenery receiver;Canvas lower;
-        PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};batch.corridor_receiver=true;
+        PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};batch.corridor_receiver=true;batch.corridor_open_left=open_left;
         for(float slider:{1.F,.5F,0.F}) {
             frame.plan=plan_frame(slider,true,ScreenUse::world,settings);
             const auto decoded=artwork.prepare(ppu,batch,frame.plan,15,0,source_corridor_guard(frame),true);
@@ -586,12 +621,13 @@ void corridor_eye_coverage() {
                     // all bounded faces, retaining only forward intersections.
                     double z=std::numeric_limits<double>::infinity();
                     if(rx!=0) for(double wall:{-double(half_width),double(half_width)}) {
+                        if(open_left && wall<0) continue;
                         const double t=(wall-ex)/rx,world_y=-60+ry*t;
                         if(t>0 && world_y>=-120 && world_y<=0) z=std::min(z,t);
                     }
                     if(ry!=0) for(double wall:{-120.,0.}) {
                         const double t=(wall+60)/ry,world_x=ex+rx*t;
-                        if(t>0 && world_x>=-half_width && world_x<=half_width) z=std::min(z,t);
+                        if(t>0 && (open_left || world_x>=-half_width) && world_x<=half_width) z=std::min(z,t);
                     }
                     if(z<frame.plan.near_plane || z>frame.plan.far_plane) continue;
                     const double expected_x=std::clamp(sample[0]-frame.plan.eyes[eye].projection_offset
@@ -614,6 +650,43 @@ void corridor_eye_coverage() {
         }
         require(artwork.work().decodes==1 && artwork.work().colour_updates==1,"Corridor slider redecoded edge-clamped artwork");
     }
+}
+void colony_depth() {
+    auto frame=source(simulation::GameFlowState::gameplay,1);
+    auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    scene->background_corridor=vr::SourceCorridorBounds{-170,120,-120,0,14};
+    scene->camera.x=-400;scene->camera.y=-60;scene->view_matrix={32767,0,0,0,32767,0,0,0,32767};
+    frame.current=frame.previous=scene;const auto unchanged=*frame.raster->ppu;
+    require(native_corridor_scene(frame) && !native_panorama_scene(frame) && !native_water_scene(frame),
+        "Source WATER colony became a flat panorama/water plane or rejected an open-side camera");
+    require(source_corridor_planes(frame)[0]==std::array<double,3>{},"Colony's nonexistent left wall has finite depth");
+    auto previous=std::make_shared<vr::GameSceneSnapshot>(*scene);previous->camera.x=-800;
+    frame.previous=previous;frame.interpolation_alpha=.5;
+    require(std::abs(source_corridor_planes(frame)[1][0]-32768./32767/(720*256.))<1.e-9,
+        "Continuous open-side camera travel was not interpolated with the source model clock");
+    ++previous->scene_epoch;
+    require(std::abs(source_corridor_planes(frame)[1][0]-32768./32767/(520*256.))<1.e-9,
+        "Open colony interpolated across a source scene handoff");
+    frame.previous=scene;frame.interpolation_alpha=1;
+    const auto policy=game_layer_plan(frame);GameLayers layers;PicaRaster before,after;Canvas lower;
+    for(const auto& batch:policy.before_model_groups) for(const auto& pass:batch.passes)
+        require(batch.corridor_receiver==(pass.layer==PpuLayer::bg2),"Open colony receiver reordered screen-space OBJ/BG3");
+    for(float slider:{0.F,.5F,1.F}) {
+        frame.plan=plan_frame(slider,true,ScreenUse::world);
+        const auto actual=layers.prepare(frame);validate_pica_frame(actual.before_models,lower.view());
+        const auto expected_before=before.prepare(frame.raster->ppu,policy.before_models,frame.plan,15);
+        const auto expected_after=after.prepare(frame.raster->ppu,policy.after_models,frame.plan,15);
+        for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x) {
+            require(mono_receiver_pixel(actual.before_models,x,y)==pixel(expected_before,x,y),
+                "Open colony changed canonical background/OBJ colors, black opacity or painter ownership");
+            require(mono_receiver_pixel(actual.after_models,x,y)==pixel(expected_after,x,y),
+                "Open colony changed canonical foreground ownership");
+        }
+    }
+    require(*frame.raster->ppu==unchanged,"Open colony presentation changed the raw source WATER flag or palette");
+    scene->camera.x=-170;require(native_corridor_scene(frame),"Camera on absent left wall was rejected");
+    scene->camera.x=120;require(!native_corridor_scene(frame),"Camera on physical right wall fabricated a receiver");
+    scene->camera.x=-400;scene->camera.y=0;require(!native_corridor_scene(frame),"Camera on physical colony floor fabricated a receiver");
 }
 void panorama_depth() {
     using enum simulation::GameFlowState;
@@ -842,6 +915,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_source_symbols();corridor_depth();corridor_eye_coverage();corridor_eye_coverage(true);colony_depth();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

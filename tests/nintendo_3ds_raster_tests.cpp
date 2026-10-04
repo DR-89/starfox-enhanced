@@ -360,7 +360,7 @@ void corridor_batch_contract() {
     PicaRaster owner;const auto plan=plan_frame(0,true,ScreenUse::world);
     const auto prepared=owner.prepare(ppu,batch,plan);
     const auto work=owner.work();const std::vector<PicaVertex> saved(prepared.vertices.begin(),prepared.vertices.end());
-    for(unsigned failure=0;failure<6;++failure) {
+    for(unsigned failure=0;failure<8;++failure) {
         auto bad=batch;auto invalid=std::make_shared<simulation::SnesPpuState>(*ppu);
         if(failure==0) bad.water_receiver=true;
         if(failure==1) invalid->tunnel_scene=false;
@@ -368,10 +368,17 @@ void corridor_batch_contract() {
         if(failure==3) bad.passes[0].layer=PpuLayer::bg3;
         if(failure==4) bad.space=PicaSpace::screen;
         if(failure==5) bad.passes.clear();
+        if(failure==6) {bad.corridor_open_left=true;bad.corridor_receiver=false;}
+        if(failure==7) {bad.corridor_open_left=true;invalid->background_mode=2;}
         rejected([&]{owner.prepare(invalid,bad,plan);},"Invalid corridor painter batch was accepted");
         require(owner.work().decodes==work.decodes && owner.work().colour_updates==work.colour_updates
             && std::equal(saved.begin(),saved.end(),prepared.vertices.begin()),"Invalid corridor batch published partial cache/geometry state");
     }
+    auto colony=std::make_shared<simulation::SnesPpuState>(*ppu);colony->tunnel_scene=false;
+    auto open=batch;open.corridor_open_left=true;
+    const auto unchanged=*colony;const auto artwork=owner.prepare(colony,open,plan);
+    require(!artwork.draws.empty() && *colony==unchanged,
+        "Explicit open colony failed to decode without changing source WATER metadata");
 }
 void compact_strip_contract() {
     auto ppu=source();ppu->background_mode=1;

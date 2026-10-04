@@ -23,8 +23,21 @@ struct SourceCorridorBounds {
     // Cartridge world axes (Y down). Authored tunnel constants, not the
     // narrower player collision limits used by entrance/exit strategies.
     std::int16_t left{},right{},top{},bottom{};
+    // Left/right/ceiling/floor bits. The colony's left movement limit is NOT
+    // a wall: its source cross-section is open on that side.
+    std::uint8_t walls{15};
     bool operator==(const SourceCorridorBounds&) const=default;
 };
+
+struct SourceCorridor {
+    std::uint16_t background{};
+    SourceCorridorBounds bounds;
+};
+inline constexpr std::size_t source_corridor_count=11;
+// Resolve only source-linked background/flight-mode pairs. In particular,
+// unused KTUNNEL constants do not describe EX's Gekkou tunnel artwork.
+[[nodiscard]] std::array<std::optional<SourceCorridor>,source_corridor_count>
+    source_corridors(const assets::SymbolMap&);
 
 // Owned source-tick data, not references into the mutable object pool. Retain
 // one shared snapshot for both eyes and for asynchronous GPU fence retries.
@@ -199,8 +212,8 @@ private:
     std::array<uint16_t,25> landscape_backgrounds_{};
     uint16_t water_background_{};
     uint16_t colony_background_{};
-    std::array<uint16_t,8> corridor_backgrounds_{};
-    std::array<std::optional<SourceCorridorBounds>,8> corridor_bounds_{};
+    std::array<uint16_t,source_corridor_count> corridor_backgrounds_{};
+    std::array<std::optional<SourceCorridorBounds>,source_corridor_count> corridor_bounds_{};
     std::array<uint32_t,3> dust_addresses_{};
     std::shared_ptr<const GameSceneSnapshot> older_,previous_,current_;
     render::GridLineHistory grid_line_history_;

@@ -62,6 +62,10 @@ stage/scene, render FPS setting and stereo separation/convergence.
   must retain the real pre-game options.
 - Play Corneria and Training, then an Armada tunnel and Titania water section.
   Check both slider extremes, LCD edges, sprite/model overlap and palette fades.
+- In source builds after R4, check the Original/EX colony's open left side and
+  EX Gekkou's entry/inner tunnels. The colony must not acquire a left wall;
+  Gekkou's inside camera must have tunnel depth. Its outside-camera entry still
+  needs a dedicated exterior policy. R4 does not include these receiver changes.
 - Check pause/resume, portrait/dialogue and meters on the lower LCD, fades,
   explosions/death, stage results, map, Controls, game over and end/credits.
 - Check audio, remapping, HUD editing, save/load, clean exit, SD persistence,

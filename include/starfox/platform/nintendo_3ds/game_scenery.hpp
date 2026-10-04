@@ -15,7 +15,8 @@ bool native_water_scene(const GamePresentation&) noexcept;
 double source_water_height(const GamePresentation&);
 unsigned source_water_guard(const GamePresentation&);
 bool native_corridor_scene(const GamePresentation&) noexcept;
-// Four camera-ray reciprocal-depth planes q=a*x+b*y+c, in LCD coordinates.
+// Camera-ray reciprocal-depth planes q=a*x+b*y+c, in LCD coordinates.
+// Absent source walls have q=0 and never produce a finite receiver.
 std::array<std::array<double,3>,4> source_corridor_planes(const GamePresentation&);
 unsigned source_corridor_guard(const GamePresentation&);
 

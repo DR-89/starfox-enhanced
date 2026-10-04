@@ -32,6 +32,7 @@ struct PpuBatch {
     bool water_receiver{}; // Isolated BG2; GameLayers supplies finite surface geometry.
     bool compact_strips{}; // Preserve pixels while reducing power-of-two GPU padding.
     bool corridor_receiver{}; // Isolated BG2, not every source INATUNNEL scene.
+    bool corridor_open_left{}; // Explicit source WATER colony, not a generic flag bypass.
     // Infinity-only painter groups can have disjoint eye-visible columns at
     // large separation. Borrow their visible rectangles plus the canonical
     // mono LCD, rather than uploading the unseen gap. Never use for finite

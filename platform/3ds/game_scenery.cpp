@@ -3,17 +3,27 @@
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 
 namespace starfox::platform::nintendo_3ds {
+namespace {
+bool inside_corridor(const vr::SourceCorridorBounds& box,double x,double y) noexcept {
+    if(!box.walls || (box.walls&~15U) || box.left>=box.right || box.top>=box.bottom) return false;
+    return (!(box.walls&1) || x>box.left) && (!(box.walls&2) || x<box.right)
+        && (!(box.walls&4) || y>box.top) && (!(box.walls&8) || y<box.bottom);
+}
+}
 bool native_corridor_scene(const GamePresentation& source) noexcept {
     if(!source.current || !source.raster || !source.raster->ppu || source.raster->boss_roll
-        || !source.raster->ppu->tunnel_scene || source.raster->ppu->background_mode<1
+        || source.raster->ppu->background_mode<1
         || source.raster->ppu->background_mode>2) return false;
     const auto& scene=*source.current;
     if(!scene.background_corridor) return false;
     const auto& box=*scene.background_corridor;
+    // The known open-left colony uses WATER/Mode 1, not INATUNNEL. Never
+    // infer an enclosed tube from that flag or its asymmetric movement limit.
+    if(!source.raster->ppu->tunnel_scene
+        && !(box.walls==14 && source.raster->ppu->background_mode==1)) return false;
     // An exit camera outside the authored tube is a different surround policy,
     // not a negative-height plane or a reason to silently clamp stereo optics.
-    if(scene.camera.x<=box.left || scene.camera.x>=box.right
-        || scene.camera.y<=box.top || scene.camera.y>=box.bottom) return false;
+    if(!inside_corridor(box,scene.camera.x,scene.camera.y)) return false;
     using enum simulation::GameFlowState;
     return scene.flow==gameplay || scene.flow==training || scene.flow==intro || scene.flow==planet_travel
         || scene.flow==stage_results || scene.flow==game_over || scene.flow==finished || scene.flow==credits;
@@ -26,8 +36,7 @@ std::array<std::array<double,3>,4> source_corridor_planes(const GamePresentation
     if(source.previous && source.previous->flow==now.flow && source.previous->scene_epoch==now.scene_epoch
         && source.previous->background_id==now.background_id && source.previous->background_corridor==now.background_corridor
         && !timing::camera_transform_is_discontinuous(source.previous->camera,now.camera)
-        && source.previous->camera.x>box.left && source.previous->camera.x<box.right
-        && source.previous->camera.y>box.top && source.previous->camera.y<box.bottom)
+        && inside_corridor(box,source.previous->camera.x,source.previous->camera.y))
         alpha=std::clamp(source.interpolation_alpha,0.,1.);
     const auto camera=source.previous?timing::interpolate(source.previous->camera,now.camera,alpha)
         :timing::interpolate(now.camera,now.camera,1);
@@ -52,6 +61,7 @@ std::array<std::array<double,3>,4> source_corridor_planes(const GamePresentation
     const std::array distances{camera.x-box.left,box.right-camera.x,camera.y-box.top,box.bottom-camera.y};
     std::array<std::array<double,3>,4> result{};
     for(unsigned wall=0;wall<4;++wall) {
+        if(!(box.walls&(1U<<wall))) continue;
         const unsigned axis=wall/2;const double sign=(wall&1)?1.:-1.,d=distances[wall];
         const std::array normal{sign*inverse[axis][3],-sign*inverse[axis][4],sign*inverse[axis][5]};
         result[wall]={normal[0]/(d*source.plan.focal_x),-normal[1]/(d*source.plan.focal_y),
@@ -298,6 +308,7 @@ PicaFrame GameScenery::prepare_corridor(const GamePresentation& source,const Pic
         mesh_guard=std::max(mesh_guard,std::abs(double(source.plan.eyes[eye].projection_offset))
             +std::abs(double(source.plan.focal_x)*source.plan.eyes[eye].x)/source.plan.near_plane);
     for(unsigned surface=0;surface<5;++surface) for(unsigned strip=0;strip<images.size();++strip) for(int edge:{-1,0,1}) {
+        if(surface && !(source.current->background_corridor->walls&(1U<<(surface-1)))) continue;
         const auto& image=images[strip];const auto& origin=bg2.vertices[strip*6].position;
         const double left=origin[0],top=origin[1],right=left+image.width;
         if(edge<0 && (strip!=0 || left> -double(available_guard))) continue;

@@ -1072,3 +1072,23 @@ devkitARM/libctru/Citro3D remains the intended native stack.
 - [libctru NDSP channel/buffer API](https://github.com/devkitPro/libctru/blob/master/libctru/include/3ds/ndsp/channel.h)
 - [libctru DSP lifecycle and component loading](https://github.com/devkitPro/libctru/blob/master/libctru/source/ndsp/ndsp.c)
 - [Citro3D's rotated PICA projection and depth conventions](https://github.com/devkitPro/citro3d/blob/master/source/maths/mtx_persptilt.c)
+## Native EX corridor and open-colony follow-up
+
+Gekkou's `BG_5_2Z` and `BG_5_2A` now use their source-linked `LTUNNEL_`
+dimensions. The unused `KTUNNEL_` constants are not substituted for those
+backgrounds. Scripted cameras outside the physical tube remain an explicit
+unfinished exterior policy, without clamping the camera or stereo controls.
+
+`BG_2_6A` now has its own open-left colony receiver. `COLONY_MINX` is a player
+movement limit, not a wall: only the right wall, ceiling and floor receive
+finite depth. The source Mode-1 WATER flag, native pixels, OBJ/BG3 priorities
+and source camera are retained. Only the explicitly identified colony painter
+batch can decode this receiver without INATUNNEL; malformed generic batches
+still fail validation. Camera interpolation tests allow travel out of the open
+side and reject a camera on a physical wall. Infinity remains in the opening.
+
+Public source-symbol, nearest-surface/UV and canonical painter tests cover both
+closed and open-left geometry, including maximum optics, both eyes and slider
+0/.5/1. The eighteen root host suites and six changed-source strict warning
+checks pass. These are host tests, not physical LCD, sustained FPS, full-flow
+RAM or a finished native port. R4 predates this follow-up.
