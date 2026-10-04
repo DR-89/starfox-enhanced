@@ -699,6 +699,32 @@ void panorama_depth() {
     raster->boss_roll=false;auto ppu=std::make_shared<simulation::SnesPpuState>(*raster->ppu);raster->ppu=ppu;ppu->tunnel_scene=true;
     require(!native_panorama_scene(frame),"Corridor artwork was projected at infinity");
 }
+void offscreen_landscape_receiver() {
+    Canvas lower;
+    for(int horizon:{241,230,120,-7}) {
+        auto frame=source(simulation::GameFlowState::gameplay,2);
+        auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->background_landscape=true;scene->landscape_grid_height=-145;scene->landscape_atlas_origin=232;
+        scene->background_scroll_override=std::array<std::int16_t,2>{0,std::int16_t(352-horizon)};
+        frame.current=frame.previous=scene;
+        require(source_landscape_plane(frame).centre==horizon,"Offscreen source horizon fixture was misregistered");
+        GameLayers layers;PicaRaster oracle;
+        for(auto optics:{StereoSettings{},StereoSettings{2,64,16}}) {
+            frame.plan=plan_frame(1,true,ScreenUse::world,optics);
+            const auto prepared=layers.prepare(frame);validate_pica_frame(prepared.before_models,lower.view());
+            unsigned receivers=0;
+            for(const auto& draw:prepared.before_models.draws) if(draw.space==PicaSpace::world) {
+                ++receivers;require(draw.source_layer==2 && draw.projected_uv && draw.depth_test,
+                    "Partially offscreen terrain lost finite source-owned geometry");
+            }
+            require((receivers!=0)==(horizon<240),"Terrain outside the LCD invented a receiver or visible terrain lost it");
+            const auto expected=oracle.prepare(frame.raster->ppu,game_layer_plan(frame).before_models,frame.plan);
+            for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+                require(mono_receiver_pixel(prepared.before_models,x,y)==pixel(expected,x,y),
+                    "An offscreen/partially visible receiver changed canonical source pixels");
+        }
+    }
+}
 void ex_menu_panorama_depth() {
     Canvas lower;
     for(unsigned mode:{1U,2U}) for(unsigned kind=0;kind<5;++kind) {
@@ -809,6 +835,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();ex_menu_panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

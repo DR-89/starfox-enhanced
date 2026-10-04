@@ -164,9 +164,31 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             ++outdoor_frames;
             require(!ordered.before_models.draws.empty() && ordered.before_models.draws[0].space==PicaSpace::scenery,
                 "Actual outdoor cartridge background stayed at HUD depth");
-            require(ordered.before_models.draws.size()==2 && ordered.before_models.draws[1].projected_uv
-                && ordered.before_models.draws[1].depth_test && ordered.before_models.draws[1].source_layer==2,
-                "Actual cartridge terrain lost its finite source-owned receiver");
+            const auto plane=source_landscape_plane(source);
+            const double distance=plane.height*source.plan.focal_y;
+            unsigned sky_count=0,receiver_count=0;bool receiver_visible=false;
+            for(const auto& draw:ordered.before_models.draws) {
+                require(draw.source_layer==2,"Actual cartridge terrain lost source ownership");
+                if(draw.space==PicaSpace::scenery) {
+                    ++sky_count;double low=std::numeric_limits<double>::max(),high=-low;
+                    for(unsigned i=draw.first;i<draw.first+draw.count;++i) {
+                        const auto& p=ordered.before_models.vertices[i].position;
+                        const double d=p[1]-plane.centre-plane.slope*(p[0]-200);
+                        low=std::min(low,d);high=std::max(high,d);
+                    }
+                    receiver_visible|=high>distance/source.plan.far_plane && low<distance/source.plan.near_plane;
+                } else {
+                    ++receiver_count;
+                    require(draw.space==PicaSpace::world && draw.projected_uv && draw.depth_test,
+                        "Actual cartridge terrain lost its finite source-owned receiver");
+                }
+            }
+            // A source horizon below the LCD correctly emits sky only; broad
+            // guarded receivers can also use more than one borrowed strip.
+            // Require finite geometry exactly when the source domain intersects
+            // the near/far receiver, not an unconditional two-draw screenshot.
+            require(sky_count==ordered.before_models.textures.size() && (receiver_count!=0)==receiver_visible,
+                "Actual cartridge finite terrain coverage disagrees with its source plane");
             if(source.current->background_landscape_unique_half || source.current->background_landscape_unique_right_half) {
                 const bool right=source.current->background_landscape_unique_right_half;
                 auto policy=game_layer_plan(source);
