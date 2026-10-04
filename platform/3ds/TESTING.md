@@ -6,6 +6,12 @@ slider-controlled stereoscopic top screen and configurable lower-screen HUD.
 It does not require a New 3DS. Original 3DS/XL performance and device behavior
 have not been established; source scenery/effect transitions still need testing.
 
+For EX menu testing, also try Background choices 21, 25 and 35 (orbital),
+19/27/28/31 (unique space) and 2 (stars). The 3D slider should move their
+background into depth while the native menu text remains at screen depth.
+Other menu/map/Controls routing remains unchanged. Source checks pass; the
+physical LCD result still needs testing.
+
 ## Install
 
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.

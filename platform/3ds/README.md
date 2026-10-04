@@ -15,6 +15,24 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## EX orbital/unique-menu stereo
+
+Verified EX menu atlas metadata now enables the physical 3D slider for orbital,
+unique-space and star-surround backgrounds. Only the separate BG2 scenery
+groups use infinity disparity and guarded eye coverage; the retained cartridge
+BG1 menu text, OBJ and other frontend layers stay at screen depth and keep their
+native width and painter order. Ordinary menus, planet maps and Controls are
+unchanged. This does not move menu UI onto world geometry or remove setup.
+
+Public regressions cover ordinary/thin/entry orbital metadata, unique space and
+star surrounds in both source PPU modes, default/maximum optics and fractional
+slider positions. A private real-EX source probe navigates from title through
+the shoulder/page/background controls without writing cartridge state. Choices
+21, 25, 35, 19, 27, 28, 31 and 2 retain exact canonical foreground/background
+pixels and VM/SPC state; landscape choice 0 retains its flat frontend policy.
+These are source/resource checks, not native LCD pixels or device performance.
+Dedicated orbital hemisphere/body geometry and exterior policies remain open.
+
 ## Distant-sky residency at maximum 3D strength
 
 Infinity-only background groups retain the union of both eye-visible source

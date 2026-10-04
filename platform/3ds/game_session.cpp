@@ -2,6 +2,7 @@
 #include "starfox/audio/stem_mixer.hpp"
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
+#include "starfox/platform/nintendo_3ds/game_layers.hpp"
 #include <cctype>
 
 namespace starfox::platform::nintendo_3ds {
@@ -293,8 +294,14 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
 }
 GamePresentation GameSession::presentation(float slider,bool hardware,const StereoSettings& settings) const {
     if(failed_) throw std::runtime_error("Cannot present a failed 3DS game session");
-    return {plan_frame(slider,hardware,hud_frame_.routing.screen,settings),
+    GamePresentation result{plan_frame(slider,hardware,hud_frame_.routing.screen,settings),
         history_.previous(),history_.current(),raster_,game_.logic_interpolation_alpha(fraction_),
         GameHud::top_selection(hud_frame_),hud_.view()};
+    // The source menu/HUD routing remains intact. A verified EX surround may
+    // use the physical slider, while its separate screen-space text stays at
+    // zero disparity. Use the same source policy as the actual painter owner.
+    if(result.current->flow==simulation::GameFlowState::ex_pregame_menu && native_panorama_scene(result))
+        result.plan=plan_frame(slider,hardware,ScreenUse::menu_preview,settings);
+    return result;
 }
 } // namespace starfox::platform::nintendo_3ds

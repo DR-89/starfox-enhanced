@@ -699,6 +699,61 @@ void panorama_depth() {
     raster->boss_roll=false;auto ppu=std::make_shared<simulation::SnesPpuState>(*raster->ppu);raster->ppu=ppu;ppu->tunnel_scene=true;
     require(!native_panorama_scene(frame),"Corridor artwork was projected at infinity");
 }
+void ex_menu_panorama_depth() {
+    Canvas lower;
+    for(unsigned mode:{1U,2U}) for(unsigned kind=0;kind<5;++kind) {
+        auto frame=source(simulation::GameFlowState::ex_pregame_menu,mode);
+        auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->meters.extended=true;
+        scene->background_orbital_planet=kind<3;
+        scene->background_orbital_thin=kind==1;scene->background_orbital_entry=kind==2;
+        scene->background_unique_space=kind==3;scene->background_star_sphere=kind==4;
+        frame.current=frame.previous=scene;
+        const auto policy=game_layer_plan(frame);
+        require(native_panorama_scene(frame),"Verified EX menu surround stayed at screen depth");
+        std::vector<PpuPass> flattened;
+        for(const auto& group:policy.before_model_groups) for(const auto& pass:group.passes) {
+            require((group.space==PicaSpace::scenery)==(pass.layer==PpuLayer::bg2),
+                "EX orbital projection moved menu text or OBJ to world depth");
+            require(group.visible_scenery_only==(group.space==PicaSpace::scenery),
+                "EX menu infinity artwork lost bounded disjoint-eye coverage");
+            require(pass.extend_horizontal==(pass.layer==PpuLayer::bg2),
+                "EX menu widened screen text/OBJ or left scenery at native 256 columns");
+            flattened.push_back(pass);
+        }
+        require(flattened==policy.before_models.passes,"EX menu depth split changed source painter priorities");
+        PicaRaster oracle;GameLayers layers;
+        const auto expected=oracle.prepare(frame.raster->ppu,policy.before_models,frame.plan);
+        for(auto optics:{StereoSettings{},StereoSettings{2,64,16}}) for(float slider:{1.F,.123F,0.F,1.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world,optics);const auto prepared=layers.prepare(frame);
+            validate_pica_frame(prepared.before_models,lower.view());
+            for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+                require(pixel(prepared.before_models,x,y)==pixel(expected,x,y),
+                    "EX orbital menu changed canonical colour, text, priority or opaque black");
+            for(const auto& draw:prepared.before_models.draws) {
+                const auto point=prepared.before_models.vertices[draw.first].position;
+                std::array<double,2> xs{};
+                for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
+                    const auto matrix=pica_draw_matrix(frame.plan,eye,draw);std::array<double,4> clip{};
+                    for(unsigned row=0;row<4;++row) {
+                        clip[row]=matrix[row][3];
+                        for(unsigned axis=0;axis<3;++axis) clip[row]+=matrix[row][axis]*point[axis];
+                    }
+                    xs[eye]=(1-clip[1]/clip[3])*200;
+                }
+                if(frame.plan.eye_count==2) require(std::abs(xs[0]-xs[1]-(draw.space==PicaSpace::scenery
+                    ?background_offset(frame.plan,0)-background_offset(frame.plan,1):0))<.001,
+                    "EX menu eye projection moved UI or gave screen-depth disparity to the surround");
+            }
+        }
+        scene->meters.extended=false;
+        require(!native_panorama_scene(frame),"An Original menu inherited EX orbital projection");
+        scene->meters.extended=true;scene->flow=simulation::GameFlowState::planet_select;
+        require(!native_panorama_scene(frame),"An orbital menu metadata flag changed the planet-map projection");
+        scene->flow=simulation::GameFlowState::controls_type;
+        require(!native_panorama_scene(frame),"An orbital menu metadata flag changed Controls projection");
+    }
+}
 void receiver_eye_coverage() {
     auto frame=source(simulation::GameFlowState::gameplay,2);
     auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
@@ -754,6 +809,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();ex_menu_panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

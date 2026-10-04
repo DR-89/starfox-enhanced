@@ -39,9 +39,16 @@ Rgb right_margin(const GameLayerFrames& layers) {
 bool native_panorama_scene(const GamePresentation& frame) noexcept {
     if(!frame.current || !frame.raster || !frame.raster->ppu || frame.raster->boss_roll) return false;
     const auto& scene=*frame.current;const auto& ppu=*frame.raster->ppu;
-    if(ppu.background_mode<1 || ppu.background_mode>2 || ppu.tunnel_scene
-        || scene.background_water_surround || scene.background_landscape) return false;
+    if(ppu.background_mode<1 || ppu.background_mode>2 || ppu.tunnel_scene) return false;
     using enum simulation::GameFlowState;
+    // The verified EX atlas choice belongs to the scenery, not to its BG1
+    // menu text. Keep the original setup page; only its explicitly identified
+    // orbital/unique/star surround gets the distant-eye projection. Do not
+    // promote generic title, Controls, map or menu artwork to world depth.
+    if(scene.flow==ex_pregame_menu)
+        return scene.meters.extended && (scene.background_orbital_planet
+            || scene.background_unique_space || scene.background_star_sphere);
+    if(scene.background_water_surround || scene.background_landscape) return false;
     return scene.flow==gameplay || scene.flow==training || scene.flow==intro
         || scene.flow==planet_travel || scene.flow==stage_results || scene.flow==game_over
         || scene.flow==finished || scene.flow==credits;
@@ -53,6 +60,7 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     const bool world_hud=scene.flow==gameplay || scene.flow==training;
     const bool title_screen=scene.flow==title;
     const bool ex_menu=scene.flow==ex_pregame_menu;
+    const bool menu_panorama=ex_menu && native_panorama_scene(frame);
     const bool controls=scene.flow==controls_type || scene.flow==controls_choice;
     const bool extend=world_hud || scene.flow==intro || scene.flow==planet_travel
         || scene.flow==stage_results || scene.flow==game_over || scene.flow==finished
@@ -88,17 +96,17 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
         back.push_back(pass(PpuLayer::objects,0,extend));
         if(!ppu.bg3_high_priority) back.push_back(pass(PpuLayer::bg3,1,extend));
         back.push_back(pass(PpuLayer::objects,1,extend));
-        back.push_back(bg2(0,extend || ex_title,!ex_title));
+        back.push_back(bg2(0,extend || ex_title || menu_panorama,!ex_title));
         if(ex_menu) back.push_back(native_menu(0));
         back.push_back(pass(PpuLayer::objects,2,extend));
-        back.push_back(bg2(1,extend || ex_title,!ex_title));
+        back.push_back(bg2(1,extend || ex_title || menu_panorama,!ex_title));
         if(ex_menu) back.push_back(native_menu(1));
     } else if(ppu.background_mode==2) {
         if(world_hud) back.push_back(bg2(-1,true));
         else {
-            back.push_back(bg2(0,extend));back.push_back(pass(PpuLayer::objects,0,extend));
+            back.push_back(bg2(0,extend || menu_panorama));back.push_back(pass(PpuLayer::objects,0,extend));
             if(ex_menu) back.push_back(native_menu(0));
-            back.push_back(pass(PpuLayer::objects,1,extend));back.push_back(bg2(1,extend));
+            back.push_back(pass(PpuLayer::objects,1,extend));back.push_back(bg2(1,extend || menu_panorama));
             back.push_back(pass(PpuLayer::objects,2,extend));
             if(ex_menu) back.push_back(native_menu(1));
         }
