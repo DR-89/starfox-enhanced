@@ -29,9 +29,16 @@ GamePresentation source(simulation::GameFlowState flow,unsigned mode) {
     frame.plan=plan_frame(0,true,ScreenUse::front_end);return frame;
 }
 std::pair<std::array<std::uint8_t,4>,unsigned> pixel(const PicaFrame& group,unsigned x,unsigned y) {
-    if(group.textures.empty()) return {};
-    const auto& image=group.textures.front();const auto at=(std::size_t(y+8)*image.width+(image.width-256)/2+x);
-    return {{{image.pixels[at*4],image.pixels[at*4+1],image.pixels[at*4+2],image.pixels[at*4+3]}},image.source_layers[at]};
+    std::pair<std::array<std::uint8_t,4>,unsigned> result{};
+    for(const auto& draw:group.draws) {
+        if(draw.texture==pica_no_texture) continue;
+        const auto& image=group.textures[draw.texture];
+        const auto at=std::size_t(y+8)*image.width+(image.width-256)/2+x;
+        if(image.pixels[at*4+3]) result={
+            {image.pixels[at*4],image.pixels[at*4+1],image.pixels[at*4+2],image.pixels[at*4+3]},
+            image.source_layers.empty()?draw.source_layer:image.source_layers[at]};
+    }
+    return result;
 }
 bool has(const PpuBatch& batch,PpuLayer layer,int priority) {
     return std::any_of(batch.passes.begin(),batch.passes.end(),[&](const auto& pass){return pass.layer==layer && pass.priority==priority;});
@@ -204,8 +211,97 @@ void landscape_depth() {
     auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
     require(!native_landscape_scene(frame),"Tunnel artwork was misclassified as outdoor ground");
 }
+void panorama_depth() {
+    using enum simulation::GameFlowState;
+    Canvas lower;
+    for(unsigned mode:{1U,2U}) for(auto flow:{intro,gameplay,training,planet_travel,stage_results,game_over,finished,credits}) {
+        auto frame=source(flow,mode);
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);
+        for(unsigned object=0;object<3;++object) {
+            ppu->oam[object*4]=std::uint8_t(56+object*4);ppu->oam[object*4+1]=40;
+            ppu->oam[object*4+2]=1;ppu->oam[object*4+3]=std::uint8_t(object<<4);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+        const auto unchanged=*ppu;const auto plan=game_layer_plan(frame);
+        require(native_panorama_scene(frame) && !plan.before_model_groups.empty(),"Distant world artwork was left at screen depth");
+        std::vector<PpuPass> flattened;
+        for(const auto& batch:plan.before_model_groups) {
+            for(const auto& pass:batch.passes) {
+                require((batch.space==PicaSpace::scenery)==(pass.layer==PpuLayer::bg2),"Screen-space sprite/BG3 moved into the distant sky");
+                flattened.push_back(pass);
+            }
+        }
+        require(flattened==plan.before_models.passes,"Coordinate-space split reordered authored low/high OBJ/BG priorities");
+        GameLayers layers;PicaRaster mono_oracle;
+        auto prepared=layers.prepare(frame);
+        const auto expected=mono_oracle.prepare(ppu,plan.before_models,frame.plan,15);
+        validate_pica_frame(prepared.before_models,lower.view());
+        for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+            require(pixel(prepared.before_models,x,y)==pixel(expected,x,y),"Split panorama changed native mono colour/opaque-black/priority pixels");
+        const auto cached=layers.work();
+        std::vector<std::vector<std::uint8_t>> pixels;
+        for(const auto& image:prepared.before_models.textures) pixels.emplace_back(image.pixels.begin(),image.pixels.end());
+        unsigned resident=512U*256U*4U;
+        for(const auto& image:prepared.before_models.textures) resident+=pica_resident_texture_bytes(image);
+        require(resident<=3U*1024U*1024U,"Contiguous panorama consumed more than its bounded LCD/artwork residency");
+        for(float slider:{0.F,.5F,1.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world);prepared=layers.prepare(frame);
+            validate_pica_frame(prepared.before_models,lower.view());
+            require(layers.work()[0].decodes==cached[0].decodes && layers.work()[0].colour_updates==cached[0].colour_updates,
+                "3D slider reran source panorama raster/colour traversal");
+            require(prepared.before_models.textures.size()==pixels.size(),"Slider rebuilt a different artwork sequence");
+            for(unsigned i=0;i<pixels.size();++i)
+                require(std::equal(pixels[i].begin(),pixels[i].end(),prepared.before_models.textures[i].pixels.begin()),"Slider changed source artwork bytes");
+            for(const auto& draw:prepared.before_models.draws) {
+                if(draw.space==PicaSpace::scenery) require(draw.source_layer==2
+                    && prepared.before_models.textures[draw.texture].source_layers.empty(),"Isolated BG2 retained mixed ownership or redundant resident A8");
+                std::array<float,2> xs{},ys{};
+                for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
+                    const auto matrix=pica_draw_matrix(frame.plan,eye,draw);
+                    const auto& point=prepared.before_models.vertices[draw.first].position;
+                    std::array<float,4> clip{};
+                    for(unsigned row=0;row<4;++row) {
+                        clip[row]=matrix[row][3];
+                        for(unsigned axis=0;axis<3;++axis) clip[row]+=matrix[row][axis]*point[axis];
+                    }
+                    xs[eye]=(1-clip[1]/clip[3])*200;ys[eye]=(1-clip[0]/clip[3])*120;
+                }
+                if(frame.plan.eye_count==2) {
+                    const float disparity=draw.space==PicaSpace::scenery?
+                        background_offset(frame.plan,0)-background_offset(frame.plan,1):0;
+                    require(std::abs(xs[0]-xs[1]-disparity)<.0001 && std::abs(ys[0]-ys[1])<.0001,
+                        "Native eye matrices put distant artwork at screen depth or displaced screen sprites/vertical alignment");
+                }
+            }
+        }
+        raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->brightness=0;frame.raster=raster;
+        prepared=layers.prepare(frame);
+        require(layers.work()[0].decodes==cached[0].decodes,"Palette fade redecoded panorama priorities");
+        for(const auto& image:prepared.before_models.textures) for(unsigned i=0;i<image.pixels.size();i+=4)
+            require(image.pixels[i]==0 && image.pixels[i+1]==0 && image.pixels[i+2]==0,"Fade left stale illuminated panorama pixels");
+        require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,"Panorama preparation mutated source PPU");
+        const auto monotonic=layers.work()[0];
+        frame=source(controls_type,1);prepared=layers.prepare(frame);
+        require(layers.work()[0].decodes>=monotonic.decodes && game_layer_plan(frame).before_model_groups.empty(),
+            "Leaving panorama retained split UI policy or reset cumulative work evidence");
+    }
+    for(unsigned mode:{1U,2U,3U}) for(auto flow:{title,ex_pregame_menu,planet_select,controls_type,controls_choice,continue_choice}) {
+        const auto frame=source(flow,mode);
+        require(!native_panorama_scene(frame) && game_layer_plan(frame).before_model_groups.empty(),"Menu/map artwork was incorrectly assigned world infinity");
+    }
+    auto frame=source(gameplay,1);auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    frame.current=scene;scene->background_water_surround=true;
+    require(!native_panorama_scene(frame),"Water cross-section was mistaken for a distant panorama");
+    scene->background_water_surround=false;scene->background_landscape=true;
+    require(!native_panorama_scene(frame),"Finite landscape was flattened into distant panorama");
+    scene->background_landscape=false;
+    auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);frame.raster=raster;raster->boss_roll=true;
+    require(!native_panorama_scene(frame),"Boss-roll frame was treated as world scenery");
+    raster->boss_roll=false;auto ppu=std::make_shared<simulation::SnesPpuState>(*raster->ppu);raster->ppu=ppu;ppu->tunnel_scene=true;
+    require(!native_panorama_scene(frame),"Corridor artwork was projected at infinity");
+}
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();panorama_depth();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

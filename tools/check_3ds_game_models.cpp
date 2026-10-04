@@ -26,6 +26,17 @@ bool same_draws(std::span<const PicaDraw> a,std::span<const PicaDraw> b) {
     }
     return true;
 }
+std::array<unsigned,5> source_pixel(const PicaFrame& frame,unsigned x,unsigned y) {
+    std::array<unsigned,5> result{};
+    for(const auto& draw:frame.draws) {
+        if(draw.texture==pica_no_texture) continue;
+        const auto& image=frame.textures[draw.texture];
+        const auto at=std::size_t(y+8)*image.width+(image.width-256)/2+x;
+        if(image.pixels[at*4+3]) result={image.pixels[at*4],image.pixels[at*4+1],image.pixels[at*4+2],255,
+            image.source_layers.empty()?draw.source_layer:image.source_layers[at]};
+    }
+    return result;
+}
 void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
     context="Synthetic particle/transaction fixture using actual cartridge assets";
     GameSession session(rom,symbols,[](auto){},"LEVEL1_1");GameModels models(session.rom(),session.symbols());
@@ -73,10 +84,12 @@ void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbo
 }
 void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map) {
     GameSession session(rom,symbols,[](auto){},map);GameModels models(session.rom(),session.symbols());
-    PicaRaster background,objects,native_bitmap;PicaComposite composite;PicaWindow window;
+    PicaRaster background,objects,native_bitmap,priority_oracle;PicaComposite composite;PicaWindow window;
     PicaColourEffects colour;GameLayers cartridge_layers;GameDots dots(session.rom(),session.symbols());
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
+    unsigned panorama_frames{},combined_resident_bytes{};
+    std::array<bool,4> panorama_modes_checked{};
     session.advance(0,0);
     const unsigned phases=map=="BOOT"?240:1440;unsigned outdoor_frames=0;
     for(unsigned phase=1;phase<=phases;++phase) {
@@ -108,6 +121,25 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             && std::equal(frame.vertices.begin(),frame.vertices.end(),composed.vertices.begin()+back.vertices.size()),
             "Native layer composition lost/reprojected cartridge model geometry");
         const auto ordered=cartridge_layers.prepare(source);
+        if(native_panorama_scene(source)) {
+            ++panorama_frames;
+            const auto policy=game_layer_plan(source);std::vector<PpuPass> flattened;
+            for(const auto& group:policy.before_model_groups)
+                flattened.insert(flattened.end(),group.passes.begin(),group.passes.end());
+            require(flattened==policy.before_models.passes,"Actual source panorama reordered interleaved sprite/background priorities");
+            for(const auto& draw:ordered.before_models.draws) if(draw.space==PicaSpace::scenery)
+                require(draw.source_layer==2 && ordered.before_models.textures[draw.texture].source_layers.empty(),
+                    "Actual source panorama pulled mixed sprite ownership into infinity or duplicated A8 residency");
+            const auto mode=source.raster->ppu->background_mode;
+            if(!panorama_modes_checked[mode] && !ordered.before_models.draws.empty()) {
+                const auto mono=priority_oracle.prepare(source.raster->ppu,policy.before_models,source.plan,
+                    source.raster->brightness,source.current->background_colour_subtract);
+                for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+                    require(source_pixel(ordered.before_models,x,y)==source_pixel(mono,x,y),
+                        "Actual cartridge split scenery changed canonical mono pixels or source ownership");
+                panorama_modes_checked[mode]=true;
+            }
+        }
         if(native_landscape_scene(source)) {
             ++outdoor_frames;
             require(!ordered.before_models.draws.empty() && ordered.before_models.draws[0].space==PicaSpace::scenery,
@@ -127,6 +159,10 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         combined_vertices=std::max(combined_vertices,unsigned(ordered_frame.vertices.size()));
         combined_draws=std::max(combined_draws,unsigned(ordered_frame.draws.size()));
         combined_textures=std::max(combined_textures,unsigned(ordered_frame.textures.size()));
+        unsigned resident=512U*256U*4U;
+        for(const auto& image:ordered_frame.textures) resident+=pica_resident_texture_bytes(image);
+        combined_resident_bytes=std::max(combined_resident_bytes,resident);
+        require(resident<=pica_texture_budget,"Actual source painter separation exceeded total padded native residency including lower LCD");
         const auto dot_coverage=dots.coverage();dust_points+=dot_coverage.dust;
         grid_points+=dot_coverage.grid;connected_points+=dot_coverage.connections;
         const auto ordered_work=cartridge_layers.work();
@@ -185,6 +221,7 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         <<particles<<" particles, "<<outdoor_frames<<" terrain frames; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
     std::cout<<map<<": dust/grid/connected points "<<dust_points<<" / "<<grid_points<<" / "<<connected_points
         <<"; combined peak "<<combined_vertices<<" vertices / "<<combined_draws<<" draws / "<<combined_textures<<" textures\n";
+    std::cout<<map<<": "<<panorama_frames<<" panorama frames; padded texture residency peak "<<combined_resident_bytes<<" bytes including lower LCD\n";
 }
 }
 int main(int argc,char** argv) try {

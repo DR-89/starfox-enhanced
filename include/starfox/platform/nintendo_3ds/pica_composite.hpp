@@ -18,10 +18,23 @@ class PicaComposite {
 public:
     PicaFrame prepare(const FramePlan& plan,std::span<const PicaFrame> groups,
         ImageView dashboard,Rgb clear={8,15,28}) {
+        if(!valid_image(dashboard,bottom_width,screen_height) || !dashboard.pixels.data())
+            throw std::invalid_argument("Invalid 3DS composition dashboard");
+        return prepare_groups(plan,groups,pica_texture_layout(
+            {dashboard.pixels,dashboard.width,dashboard.height,dashboard.pitch,3}).bytes,clear);
+    }
+    // Artwork adapters run independently of the dashboard owner. Reserve its
+    // actual fixed padded LCD allocation without manufacturing a fake image.
+    PicaFrame prepare_layers(const FramePlan& plan,std::span<const PicaFrame> groups,Rgb clear={8,15,28}) {
+        return prepare_groups(plan,groups,512U*256U*4U,clear);
+    }
+private:
+    PicaFrame prepare_groups(const FramePlan& plan,std::span<const PicaFrame> groups,
+        unsigned reserved_texture_bytes,Rgb clear) {
         std::size_t vertex_count=0,draw_count=0,texture_count=0;
         for(const auto& group:groups) {
             if(!same_pica_plan(plan,group.plan)) throw std::invalid_argument("3DS painter groups belong to different eye plans");
-            validate_pica_frame(group,dashboard);
+            validate_pica_group(group,reserved_texture_bytes);
             vertex_count+=group.vertices.size();draw_count+=group.draws.size();texture_count+=group.textures.size();
             if(vertex_count>pica_vertex_limit || draw_count>pica_draw_limit || texture_count>pica_texture_limit)
                 throw std::length_error("3DS composed geometry/draw budget exceeded");
@@ -38,11 +51,10 @@ public:
             }
             textures.insert(textures.end(),group.textures.begin(),group.textures.end());
         }
-        validate_pica_frame({plan,vertices,draws,textures,clear},dashboard);
+        validate_pica_group({plan,vertices,draws,textures,clear},reserved_texture_bytes);
         vertices_.swap(vertices);draws_.swap(draws);textures_.swap(textures);
         return {plan,vertices_,draws_,textures_,clear};
     }
-private:
     std::vector<PicaVertex> vertices_;
     std::vector<PicaDraw> draws_;
     std::vector<PicaImage> textures_;

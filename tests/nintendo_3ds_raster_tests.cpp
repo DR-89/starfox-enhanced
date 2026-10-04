@@ -138,6 +138,12 @@ void composition() {
     require(std::equal(saved.begin(),saved.end(),frame.vertices.begin()),"Failed composition discarded previous native geometry");
     std::array<PicaFrame,8> oversized;oversized.fill(backdrop);
     rejected([&]{compositor.prepare(plan,oversized,dashboard.view());},"Combined padded texture budget not checked");
+    const auto layers=compositor.prepare_layers(plan,groups);
+    validate_pica_frame(layers,dashboard.view());
+    require(layers.vertices.size()==saved.size() && std::equal(saved.begin(),saved.end(),layers.vertices.begin())
+        && layers.textures[0].pixels.data()==backdrop.textures[0].pixels.data(),"Dashboard-independent composition copied or flattened painter groups");
+    rejected([&]{compositor.prepare_layers(plan,oversized);},"Artwork-only composition forgot the reserved lower LCD texture");
+    rejected([&]{validate_pica_group(models,pica_texture_budget+1);},"Group validator accepted overflowing reserved residency");
 }
 void colour_effects() {
     const auto plan=plan_frame(1,true,ScreenUse::world);Canvas dashboard;PicaColourEffects effects;

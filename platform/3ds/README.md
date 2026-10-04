@@ -9,6 +9,25 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Distant background depth and source priorities
+
+Open-world/intro Mode 1/2 BG2 artwork now uses infinite scenery disparity,
+separate from screen-space BG3 and OBJ. The adapter splits only contiguous
+coordinate-space groups, keeping the exact low/high background and sprite
+order around native models. It does not flatten or reproject a completed
+game image. Mode 3 map buffers, menus, boss roll, tunnels and water cross-
+sections retain their authored policy; verified outdoor ground continues to
+use its finite Q15 receiver rather than becoming an infinite sky.
+
+Both eyes share source texture bytes and cached decoded artwork. Isolated
+BG2 needs no redundant resident provenance mask; mixed sprite/text groups
+retain A8 ownership for colour math. Artwork-only assembly reserves the lower
+LCD in the same 4 MiB texture budget as the final compositor. Public fixtures
+compare native mono pixels, painter priorities, black coverage, fades, eye
+matrices and unchanged source state. Actual cartridge and ARM validation are
+separate gates. Unique EX skyline/orbital spans, extreme optical settings,
+full-flow resource limits and physical original-console acceptance remain.
+
 ## Native rendering FPS
 
 The real pre-game **RENDER FPS** row switches between **30** and **60**.

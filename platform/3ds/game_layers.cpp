@@ -36,6 +36,16 @@ Rgb right_margin(const GameLayerFrames& layers) {
     return {selected[0],selected[1],selected[2]};
 }
 }
+bool native_panorama_scene(const GamePresentation& frame) noexcept {
+    if(!frame.current || !frame.raster || !frame.raster->ppu || frame.raster->boss_roll) return false;
+    const auto& scene=*frame.current;const auto& ppu=*frame.raster->ppu;
+    if(ppu.background_mode<1 || ppu.background_mode>2 || ppu.tunnel_scene
+        || scene.background_water_surround || scene.background_landscape) return false;
+    using enum simulation::GameFlowState;
+    return scene.flow==gameplay || scene.flow==training || scene.flow==intro
+        || scene.flow==planet_travel || scene.flow==stage_results || scene.flow==game_over
+        || scene.flow==finished || scene.flow==credits;
+}
 GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     validate(frame);
     const auto& scene=*frame.current;const auto& ppu=*frame.raster->ppu;
@@ -116,13 +126,60 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     if(!world_hud) front.push_back(pass(PpuLayer::objects,3,extend));
     if(ppu.background_mode==1 && ppu.bg3_high_priority) front.push_back(pass(PpuLayer::bg3,1,extend));
     if(native_landscape_scene(frame)) result.before_models.space=PicaSpace::scenery;
+    else if(native_panorama_scene(frame)) {
+        for(const auto& source_pass:back) {
+            const auto space=source_pass.layer==PpuLayer::bg2?PicaSpace::scenery:PicaSpace::screen;
+            auto& groups=result.before_model_groups;
+            if(groups.empty() || groups.back().space!=space) {
+                PpuBatch group;group.space=space;group.expand_horizontal=true;
+                groups.push_back(std::move(group));
+            }
+            groups.back().passes.push_back(source_pass);
+        }
+    }
     return result;
+}
+std::array<PpuRasterWork,2> GameLayers::work() const noexcept {
+    auto before=retired_before_work_;
+    const auto add=[&](PpuRasterWork part){before.decodes+=part.decodes;before.colour_updates+=part.colour_updates;};
+    add(before_.work());for(const auto& group:panorama_groups_) add(group->work());
+    return {before,after_.work()};
 }
 GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
     const auto policy=game_layer_plan(frame);
     const auto brightness=frame.raster->brightness;
-    GameLayerFrames result{
-        before_.prepare(frame.raster->ppu,policy.before_models,frame.plan,brightness,frame.current->background_colour_subtract),
+    const auto retire=[&](PpuRasterWork part) {
+        retired_before_work_.decodes+=part.decodes;retired_before_work_.colour_updates+=part.colour_updates;
+    };
+    PicaFrame before;
+    if(policy.before_model_groups.empty()) {
+        for(const auto& group:panorama_groups_) retire(group->work());
+        panorama_groups_.clear();
+        before=before_.prepare(frame.raster->ppu,policy.before_models,frame.plan,brightness,frame.current->background_colour_subtract);
+    } else {
+        retire(before_.work());before_=PicaRaster{};
+        while(panorama_groups_.size()>policy.before_model_groups.size()) {
+            retire(panorama_groups_.back()->work());panorama_groups_.pop_back();
+        }
+        while(panorama_groups_.size()<policy.before_model_groups.size())
+            panorama_groups_.push_back(std::make_unique<PicaRaster>());
+        auto& groups=working_groups_;groups.clear();groups.reserve(panorama_groups_.size());
+        // Strip redundant A8 only from isolated BG2 descriptors. The decoder's
+        // owned mask still validates source ownership; mixed screen groups
+        // retain provenance for colour math. No texture pixels are copied.
+        auto& bg_images=working_bg_images_;bg_images.clear();bg_images.reserve(panorama_groups_.size());
+        for(unsigned i=0;i<panorama_groups_.size();++i) {
+            auto prepared=panorama_groups_[i]->prepare(frame.raster->ppu,policy.before_model_groups[i],
+                frame.plan,brightness,frame.current->background_colour_subtract);
+            if(policy.before_model_groups[i].space==PicaSpace::scenery && !prepared.textures.empty()) {
+                auto image=prepared.textures.front();image.source_layers={};image.layer_pitch=0;
+                bg_images.push_back(image);prepared.textures=std::span<const PicaImage>(&bg_images.back(),1);
+            }
+            groups.push_back(prepared);
+        }
+        before=panorama_.prepare_layers(frame.plan,groups);
+    }
+    GameLayerFrames result{before,
         after_.prepare(frame.raster->ppu,policy.after_models,frame.plan,brightness,frame.current->background_colour_subtract),
         backdrop(frame.raster->ppu->cgram[0],brightness)};
     if(native_landscape_scene(frame)) result.before_models=scenery_.prepare(frame,result.before_models);

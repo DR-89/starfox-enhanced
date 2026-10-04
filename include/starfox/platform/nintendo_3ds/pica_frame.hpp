@@ -190,8 +190,8 @@ struct PicaFrame {
 };
 // Complete validation precedes any frame recording/texture replacement. This
 // is not a primitive converter: unresolved source faces must not be omitted.
-inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
-    if(!valid_image(dashboard,bottom_width,screen_height) || !dashboard.pixels.data()
+inline void validate_pica_group(const PicaFrame& frame,unsigned reserved_texture_bytes) {
+    if(reserved_texture_bytes>pica_texture_budget
         || frame.vertices.size()>pica_vertex_limit || frame.draws.size()>pica_draw_limit
         || frame.textures.size()>pica_texture_limit)
         throw std::invalid_argument("Invalid 3DS GPU frame dimensions/budget");
@@ -202,7 +202,7 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
     }
     if(frame.plan.eye_count!=(frame.plan.stereo?2U:1U))
         throw std::invalid_argument("Incomplete 3DS eye plan");
-    unsigned bytes=pica_texture_layout({dashboard.pixels,dashboard.width,dashboard.height,dashboard.pitch,3}).bytes;
+    unsigned bytes=reserved_texture_bytes;
     for(auto texture:frame.textures) {
         const auto size=pica_resident_texture_bytes(texture);
         if(size>pica_texture_budget-bytes) throw std::invalid_argument("3DS GPU texture budget exceeded");
@@ -252,5 +252,11 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
         cursor+=draw.count;
     }
     if(cursor!=frame.vertices.size()) throw std::invalid_argument("3DS GPU frame has unsubmitted vertices");
+}
+inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
+    if(!valid_image(dashboard,bottom_width,screen_height) || !dashboard.pixels.data())
+        throw std::invalid_argument("Invalid 3DS lower LCD image");
+    validate_pica_group(frame,pica_texture_layout(
+        {dashboard.pixels,dashboard.width,dashboard.height,dashboard.pitch,3}).bytes);
 }
 } // namespace starfox::platform::nintendo_3ds
