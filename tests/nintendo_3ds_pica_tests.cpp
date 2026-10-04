@@ -179,5 +179,21 @@ void layer_upload() {
 }
 int main() try {
     texture_upload();projection_and_draws();layer_upload();
+    require(pica_uv_mode(false,false)==std::array<float,4>{1,0,0,0},"Ordinary texture projection changed");
+    require(pica_uv_mode(true,false)==std::array<float,4>{0,1,0,0},"LCD parity texture lost its homogeneous Q");
+    require(pica_uv_mode(false,true)==std::array<float,4>{0,0,1,0},"Source terrain mode zeroed ordinary UVs before projection");
+    rejects([&]{pica_uv_mode(true,true);},"Conflicting texture projection modes accepted");
+    Canvas lower;std::vector<std::uint8_t> pixels(8*8*4,255);
+    PicaImage image{pixels,8,8,32,4};
+    std::array<PicaVertex,3> terrain{{{{-10,-40,256},{1,1,1,1},{0,0}},{{10,-40,256},{1,1,1,1},{1,0}},{{10,-40,512},{1,1,1,1},{1,1}}}};
+    PicaDraw draw;draw.count=3;draw.texture=0;draw.projected_uv=true;
+    PicaFrame frame{plan_frame(1,true,ScreenUse::world),terrain,std::span(&draw,1),std::span(&image,1)};
+    validate_pica_frame(frame,lower.view());
+    const auto valid=[&]{validate_pica_frame(frame,lower.view());};
+    draw.screen_dither=true;rejects(valid,"Source terrain projection mixed with parity checker");draw.screen_dither=false;
+    draw.texture=pica_no_texture;rejects(valid,"Source terrain projection without artwork");draw.texture=0;
+    image.repeat=true;rejects(valid,"A wrapping model texture was mistaken for projected terrain");image.repeat=false;
+    draw.space=PicaSpace::screen;draw.depth_test=draw.depth_write=false;
+    rejects(valid,"Projected source terrain cannot become a mono overlay");
     std::cout<<"3DS PICA upload/projection/pass contracts: "<<checks<<" checks passed\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

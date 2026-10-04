@@ -1,6 +1,7 @@
 #pragma once
 #include "starfox/platform/nintendo_3ds/game_presentation.hpp"
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
+#include "starfox/platform/nintendo_3ds/game_scenery.hpp"
 
 namespace starfox::platform::nintendo_3ds {
 // Source-authored 2D painter groups around the native BG1 model stream.
@@ -20,5 +21,6 @@ public:
     [[nodiscard]] std::array<PpuRasterWork,2> work() const noexcept {return {before_.work(),after_.work()};}
 private:
     PicaRaster before_,after_;
+    GameScenery scenery_;
 };
 } // namespace starfox::platform::nintendo_3ds

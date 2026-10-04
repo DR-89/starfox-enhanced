@@ -115,6 +115,7 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     }
     if(!world_hud) front.push_back(pass(PpuLayer::objects,3,extend));
     if(ppu.background_mode==1 && ppu.bg3_high_priority) front.push_back(pass(PpuLayer::bg3,1,extend));
+    if(native_landscape_scene(frame)) result.before_models.space=PicaSpace::scenery;
     return result;
 }
 GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
@@ -124,6 +125,7 @@ GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
         before_.prepare(frame.raster->ppu,policy.before_models,frame.plan,brightness,frame.current->background_colour_subtract),
         after_.prepare(frame.raster->ppu,policy.after_models,frame.plan,brightness,frame.current->background_colour_subtract),
         backdrop(frame.raster->ppu->cgram[0],brightness)};
+    if(native_landscape_scene(frame)) result.before_models=scenery_.prepare(frame,result.before_models);
     if(policy.solid_frontend_margins) result.clear=right_margin(result);
     return result;
 }

@@ -57,7 +57,15 @@ struct PicaDraw {
     std::optional<PicaClip> clip{}; // Source effect window, identical for both eye submissions.
     std::uint8_t source_layer{1};
     std::optional<PicaColourOp> colour_op{}; // Screen fixed-colour operation; preserves layer/depth ownership.
+    // Project cartridge-authored BG artwork onto finite terrain. Homogeneous
+    // UV/Q retains its source pixel registration instead of perspective-
+    // stretching the native colour bands across a large ground triangle.
+    bool projected_uv{};
 };
+inline std::array<float,4> pica_uv_mode(bool screen_dither,bool projected_uv) {
+    if(screen_dither && projected_uv) throw std::invalid_argument("Conflicting 3DS texture projectors");
+    return {screen_dither || projected_uv?0.F:1.F,screen_dither?1.F:0.F,projected_uv?1.F:0.F,0};
+}
 struct PicaImage {
     std::span<const std::uint8_t> pixels;
     unsigned width{},height{},pitch{},channels{4}; // RGB24 or RGBA8, row-major.
@@ -211,7 +219,7 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             throw std::invalid_argument("Invalid/omitted 3DS GPU draw range");
         if(!pica_source_layer(draw.source_layer)) throw std::invalid_argument("Invalid 3DS source draw layer");
         if(draw.texture!=pica_no_texture && !frame.textures[draw.texture].source_layers.empty()
-            && (draw.space==PicaSpace::world || draw.screen_dither || draw.colour_op))
+            && (draw.space==PicaSpace::world || draw.screen_dither || draw.colour_op || draw.projected_uv))
             throw std::invalid_argument("3DS per-pixel source layers require opaque PPU artwork");
         if(draw.colour_op && (draw.space!=PicaSpace::screen || draw.texture!=pica_no_texture
             || draw.source_layer!=0 || draw.screen_dither || draw.alpha_blend || draw.model!=pica_identity
@@ -221,6 +229,9 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             || frame.textures[draw.texture].width!=8 || frame.textures[draw.texture].height!=8
             || !frame.textures[draw.texture].repeat))
             throw std::invalid_argument("Invalid 3DS source dither texture");
+        if(draw.projected_uv && (draw.space!=PicaSpace::world || draw.texture==pica_no_texture
+            || draw.screen_dither || draw.colour_op || frame.textures[draw.texture].repeat))
+            throw std::invalid_argument("Invalid 3DS source terrain projection");
         if(draw.clip) static_cast<void>(pica_screen_scissor(*draw.clip));
         for(const auto& row:draw.model) for(float value:row) if(!std::isfinite(value))
             throw std::invalid_argument("Non-finite 3DS model matrix");

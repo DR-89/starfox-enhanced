@@ -129,8 +129,83 @@ void margins_and_cache() {
     try {static_cast<void>(layers.prepare(frame));} catch(const std::invalid_argument&) {rejected=true;}
     require(rejected,"Unsupported source mode was silently substituted");
 }
+void landscape_depth() {
+    auto frame=source(simulation::GameFlowState::gameplay,2);
+    auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    scene->background_landscape=true;scene->landscape_grid_height=-145;scene->landscape_atlas_origin=232;
+    frame.current=frame.previous=scene;
+    auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);
+    ppu->bg2_scroll_y=232;ppu->bg2_screen_size=3;ppu->bg2_vertical_offsets_enabled=true;
+    for(unsigned i=0;i<4096;++i) {ppu->vram[0x6400+i*2]=1;ppu->vram[0x6401+i*2]=8;}
+    // Quantized source HDMA steps, including a signed 8192-word crossing.
+    for(int roll:{-16,-3,0,3,16}) {
+        const int base=roll<0?8190:roll>0?8060:211;
+        for(unsigned i=0;i<32;++i) {
+            const unsigned word=0x4000|((base+roll*int(i+1))&8191),at=(0x2fa0+i)*2;
+            ppu->vram[at]=std::uint8_t(word);ppu->vram[at+1]=std::uint8_t(word>>8);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=std::make_shared<simulation::SnesPpuState>(*ppu);
+        frame.raster=raster;
+        const auto plane=source_landscape_plane(frame);
+        require(std::abs(plane.slope+roll/8.)<1.e-9 && plane.height==145,"Rolled ground inferred from palette, one edge step or arbitrary depth");
+        GameLayers layers;frame.plan=plan_frame(1,true,ScreenUse::world);
+        auto prepared=layers.prepare(frame);const auto work=layers.work();
+        Canvas lower;validate_pica_frame(prepared.before_models,lower.view());
+        const auto& group=prepared.before_models;
+        require(group.draws.size()==2 && group.draws[0].space==PicaSpace::scenery
+            && group.draws[1].space==PicaSpace::world && group.draws[1].depth_test && group.draws[1].depth_write
+            && group.draws[1].projected_uv && group.draws[0].source_layer==2 && group.draws[1].source_layer==2,
+            "Native landscape stayed a screen-depth HUD image or lost source ownership/depth");
+        require(group.textures.size()==1 && group.textures[0].source_layers.empty(),"Landscape duplicated the entire texture or retained an unnecessary mixed-layer mask");
+        const std::vector<PicaVertex> saved(group.vertices.begin(),group.vertices.end());
+        for(unsigned i=6;i<saved.size();++i) {
+            const auto& v=saved[i];const double z=v.position[2];
+            const double x=200+256*v.position[0]/z,y=120-256*v.position[1]/z;
+            require(std::abs(x+32-v.uv[0]*464)<.001 && std::abs(y-v.uv[1]*240)<.001,
+                "Finite terrain lost the mono cartridge pixel registration");
+            require(std::abs(z*(y-plane.centre-plane.slope*(x-200))-145*256)<.1,
+                "Terrain vertices are not on the same source camera plane");
+        }
+        // Independent perspective interpolation oracle at interior points.
+        // A plain UV sampler incorrectly stretches the native color bands.
+        for(unsigned i=6;i+2<saved.size();i+=3) for(const auto weights:std::array<std::array<double,3>,3>{{{.2,.3,.5},{.7,.2,.1},{.1,.6,.3}}}) {
+            double reciprocal=0,u=0,v=0,q=0;std::array<double,3> camera{};
+            for(unsigned k=0;k<3;++k) {
+                const auto& p=saved[i+k];const double inv=weights[k]/p.position[2];reciprocal+=inv;
+                u+=inv*p.uv[0]*p.position[2];v+=inv*p.uv[1]*p.position[2];q+=inv*p.position[2];
+                for(unsigned axis=0;axis<3;++axis) camera[axis]+=inv*p.position[axis];
+            }
+            for(auto& axis:camera) axis/=reciprocal;
+            require(std::abs(u/q-(200+256*camera[0]/camera[2]+32)/464)<1.e-6
+                && std::abs(v/q-(120-256*camera[1]/camera[2])/240)<1.e-6,
+                "Homogeneous source UV/Q does not cancel ground perspective stretching");
+            for(unsigned eye=0;eye<2;++eye) {
+                const auto pixel=project(frame.plan,eye,float(camera[0]),float(camera[1]),float(camera[2]));
+                require(pixel.has_value(),"Valid finite source ground disappeared from an eye projection");
+            }
+        }
+        const auto& nearest=*std::min_element(saved.begin()+6,saved.end(),[](const auto& a,const auto& b){return a.position[2]<b.position[2];});
+        const auto left=project(frame.plan,0,nearest.position[0],nearest.position[1],nearest.position[2]);
+        const auto right=project(frame.plan,1,nearest.position[0],nearest.position[1],nearest.position[2]);
+        require(left && right && std::abs((*left)[0]-(*right)[0]-2*background_offset(frame.plan,0))>.01,
+            "Ground used only infinite scenery displacement instead of finite stereo disparity");
+        for(float slider:{0.F,.5F,1.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world);prepared=layers.prepare(frame);
+            require(saved.size()==prepared.before_models.vertices.size() && std::equal(saved.begin(),saved.end(),prepared.before_models.vertices.begin()),
+                "Slider changed shared terrain vertices instead of eye projection");
+            require(layers.work()[0].decodes==work[0].decodes && layers.work()[0].colour_updates==work[0].colour_updates,
+                "Slider reran source landscape tile/colour preparation");
+            validate_pica_frame(prepared.before_models,lower.view());
+        }
+    }
+    scene->flow=simulation::GameFlowState::ex_pregame_menu;
+    require(!native_landscape_scene(frame),"EX menu terrain replaced its authored planar background");
+    scene->flow=simulation::GameFlowState::gameplay;ppu->tunnel_scene=true;
+    auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+    require(!native_landscape_scene(frame),"Tunnel artwork was misclassified as outdoor ground");
+}
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

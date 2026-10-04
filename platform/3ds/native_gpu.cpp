@@ -202,13 +202,13 @@ struct NativeGpu::Impl {
         for(unsigned stage=0;stage<6;++stage) C3D_TexEnvInit(C3D_GetTexEnv(stage));
     }
     void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false,
-        std::array<std::uint8_t,4> odd={}) {
+        std::array<std::uint8_t,4> odd={},bool projected_uv=false) {
         auto* env=C3D_GetTexEnv(0);C3D_TexEnvInit(env);
         C3D_TexEnvInit(C3D_GetTexEnv(1));C3D_TexBind(1,nullptr);
         C3D_AlphaTest(true,GPU_GREATER,0);
         if(texture) {
             texture->texture.param=(texture->texture.param&~GPU_TEXTURE_MODE(7))
-                |GPU_TEXTURE_MODE(screen_dither?GPU_TEX_PROJECTION:GPU_TEX_2D);
+                |GPU_TEXTURE_MODE(screen_dither || projected_uv?GPU_TEX_PROJECTION:GPU_TEX_2D);
             C3D_TexBind(0,&texture->texture);
             if(screen_dither) {
                 C3D_TexEnvSrc(env,C3D_Both,GPU_CONSTANT,GPU_PRIMARY_COLOR,GPU_TEXTURE0);
@@ -224,7 +224,8 @@ struct NativeGpu::Impl {
             C3D_TexBind(0,nullptr);C3D_TexEnvSrc(env,C3D_Both,GPU_PRIMARY_COLOR);
             C3D_TexEnvFunc(env,C3D_Both,GPU_REPLACE);C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_location,1,1,0,0);
         }
-        C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_mode_location,screen_dither?0:1,screen_dither?1:0,0,0);
+        const auto mode=pica_uv_mode(screen_dither,projected_uv);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_mode_location,mode[0],mode[1],mode[2],mode[3]);
         C3D_DepthTest(depth,GPU_GEQUAL,write?GPU_WRITE_ALL:GPU_WRITE_COLOR);
         C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,alpha?GPU_SRC_ALPHA:GPU_ONE,
             alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO,GPU_ONE,alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO);
@@ -287,7 +288,7 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
             upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
             auto* texture=draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture];
             impl_->material(texture,
-                draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither,draw.dither_odd);
+                draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither,draw.dither_odd,draw.projected_uv);
             if(draw.colour_op) {
                 Impl::colour_operation(*draw.colour_op);
                 C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);

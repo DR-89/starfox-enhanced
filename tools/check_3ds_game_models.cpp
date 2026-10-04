@@ -21,7 +21,7 @@ bool same_draws(std::span<const PicaDraw> a,std::span<const PicaDraw> b) {
         if(x.first!=y.first || x.count!=y.count || x.texture!=y.texture || x.model!=y.model
             || x.space!=y.space || x.depth_test!=y.depth_test || x.depth_write!=y.depth_write
             || x.alpha_blend!=y.alpha_blend || x.screen_dither!=y.screen_dither || x.dither_odd!=y.dither_odd || x.clip!=y.clip
-            || x.source_layer!=y.source_layer || x.colour_op!=y.colour_op) return false;
+            || x.source_layer!=y.source_layer || x.colour_op!=y.colour_op || x.projected_uv!=y.projected_uv) return false;
     }
     return true;
 }
@@ -76,7 +76,8 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     PicaColourEffects colour;GameLayers cartridge_layers;
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     session.advance(0,0);
-    for(unsigned phase=1;phase<=240;++phase) {
+    const unsigned phases=map=="BOOT"?240:1440;unsigned outdoor_frames=0;
+    for(unsigned phase=1;phase<=phases;++phase) {
         context=map+" native phase "+std::to_string(phase);
         const auto time=(std::int64_t(phase)*1'000'000'000+59)/60;
         const auto held=map=="BOOT" && phase==8?input::start
@@ -104,6 +105,14 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             && std::equal(frame.vertices.begin(),frame.vertices.end(),composed.vertices.begin()+back.vertices.size()),
             "Native layer composition lost/reprojected cartridge model geometry");
         const auto ordered=cartridge_layers.prepare(source);
+        if(native_landscape_scene(source)) {
+            ++outdoor_frames;
+            require(!ordered.before_models.draws.empty() && ordered.before_models.draws[0].space==PicaSpace::scenery,
+                "Actual outdoor cartridge background stayed at HUD depth");
+            require(ordered.before_models.draws.size()==2 && ordered.before_models.draws[1].projected_uv
+                && ordered.before_models.draws[1].depth_test && ordered.before_models.draws[1].source_layer==2,
+                "Actual cartridge terrain lost its finite source-owned receiver");
+        }
         const auto ordered_frame=composite.prepare(source.plan,
             std::array{ordered.before_models,frame,ordered.after_models,effects,mask},source.dashboard,ordered.clear);
         require(ordered_frame.vertices.size()==ordered.before_models.vertices.size()+frame.vertices.size()
@@ -148,8 +157,9 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         ++frames;
     }
     require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
+    if(map!="BOOT") require(outdoor_frames>0,"Stage check stopped before the outdoor terrain actually appeared");
     std::cout<<map<<": "<<frames<<" source frames, "<<models_seen<<" models, "<<shadows<<" shadows, "<<glyphs<<" glyphs, "
-        <<particles<<" particles; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
+        <<particles<<" particles, "<<outdoor_frames<<" terrain frames; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
 }
 }
 int main(int argc,char** argv) try {

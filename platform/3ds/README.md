@@ -146,10 +146,16 @@ With the default PICA diagnostic enabled, source models, ordered cartridge
 artwork, colour operations/windows and the separate lower dashboard now feed
 the actual Citro3D presenter. A permanent diagnostic strip identifies the
 unfinished terrain/menu state. Without PICA, the upper LCD remains a guide.
-The combined native scene entry is being cross-verified after the accepted
-lean-core link above. **This is not a completed game or its pre-game menu.**
-Do not use it as a playable release: outdoor PPU artwork still needs separate
-terrain/panorama placement, EX spans/grid/dust and host menu/text integration.
+The combined source-layer/model/colour/window entry passed native CI
+[37182647615](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37182647615)
+at `184b3245da19495ca481e83a2051d01873679fad`: eight lean host suites and all
+three real ARM executables link. Its downloaded core package is 1,899,356 bytes;
+the ARM ELF32/3DSX headers and unchanged 440-byte shader were verified. Static
+text/data/BSS are 1,843,316 / 9,872 / 33,604 bytes, not peak runtime RAM.
+The subsequent finite-terrain/source-projection changes below are undergoing
+their own native cross-check. **This is not a completed game or pre-game menu.**
+Do not use it as a playable release: remaining panorama policies, EX spans/
+grid/dust and host menu/text integration are not complete.
 It does not flatten a finished model scene into two eyes or fabricate a menu.
 
 APT Home/sleep hooks pause queued PCM and rebase the source time/input contract;
@@ -214,11 +220,35 @@ right edge rather than the miscolored left demonstration edge.
 
 Two bounded raster caches retain indices/coverage across slider reads and
 recolour source palette/brightness fades without repeating tile traversal.
-This closes cartridge-artwork painter selection; it does **not** turn the
-screen-space BG2 artwork into correctly projected terrain/infinite scenery,
-nor render the host-owned pre-game UI or missing source text/grid/span passes.
+The outdoor Mode 2 gameplay/Training group now uses `GameScenery` to separate
+infinite BG2 scenery from its finite terrain receiver. This is not the complete
+panorama/all-flow policy, nor the host-owned pre-game UI or missing source
+text/grid/span passes.
 Host priority-pixel and actual Original/EX BOOT/LEVEL1_1 resource/state tests
 exercise the adapter; physical whole-scene acceptance still remains.
+
+### Source landscape receiver
+
+`GameScenery` reconstructs the source horizon from every valid Mode 2 offset
+entry, including signed 8192-word wrap. It uses the verified atlas's own ground
+origin and captured source ground height. A clipped finite camera plane shares
+the source BG2 texture with the infinite background; source color bands, palette
+fades, brightness and opaque black are not replaced with invented lighting.
+Homogeneous source UV/Q prevents perspective-stretched stripes while each
+LCD eye independently projects the ground's actual depth. Ground writes BG2
+ownership/depth, not model-sized rectangles or a flattened world image.
+The distant far-plane interval stays in the same source artwork under the
+receiver. No sky/ground texture duplication or per-eye tile decode is needed;
+the isolated one-hot BG2 draw also avoids an unnecessary A8 provenance copy.
+
+This path is enabled only for identified outdoor gameplay/Training with a
+valid captured ground height. EX's pre-game backgrounds stay planar and
+tunnels/other background types are not guessed to be terrain. The model
+fixture now runs 1,440 native phases for direct Corneria and requires that the
+outdoor scene actually appeared; the older 240-phase check ended too early.
+Original-hardware pixels, ground/model occlusion, default-slider edge coverage,
+optical comfort and performance still require physical acceptance. Space,
+water, tunnel, intro and other panorama policies still need native integration.
 
 `PicaRaster` decodes cartridge BG1/BG2/BG3/OBJ artwork into cached indexed
 layers, with separate write coverage and layer provenance. It retains source

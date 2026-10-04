@@ -150,6 +150,10 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     for(unsigned corner:{0U,1U,2U,0U,2U,3U})
         vertices_[vertex++]={{left+uv[corner][0]*width,uv[corner][1]*screen_height,0},{1,1,1,1},uv[corner]};
     draws_[0]={0,6,0,pica_identity,batch.space,false,false,true};
+    // An isolated BG2 group can retain one-hot source ownership when its
+    // raster is projected onto a world receiver. Mixed groups still use A8.
+    if(!batch.passes.empty() && std::all_of(batch.passes.begin(),batch.passes.end(),
+        [](const auto& pass){return pass.layer==PpuLayer::bg2;})) draws_[0].source_layer=2;
     images_[0]={rgba_,width,screen_height,width*4,4,false,layers_,width};
     return {plan,visible_?std::span<const PicaVertex>(vertices_):std::span<const PicaVertex>{},
         visible_?std::span<const PicaDraw>(draws_):std::span<const PicaDraw>{},
