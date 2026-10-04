@@ -11,7 +11,7 @@ class PicaShapes {
 public:
     void clear();
     void append(const render::PreparedShapePrimitives&,std::span<const render::Rgba8>,
-        std::array<double,2> source_origin={128,112});
+        std::array<double,2> source_origin={128,112},const FramePlan* span_plan=nullptr);
     // Borrowed spans remain valid only until the next append/clear/frame call.
     // The native presenter consumes/copies them synchronously.
     [[nodiscard]] PicaFrame frame(const FramePlan&,Rgb clear={8,15,28});

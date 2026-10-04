@@ -11,7 +11,7 @@ endif()
 add_library(starfox_3ds_frontend STATIC frontend.cpp cockpit_layout.cpp game_hud_editor.cpp game_remap.cpp game_quick_menu.cpp)
 target_include_directories(starfox_3ds_frontend PUBLIC ../../include)
 target_compile_features(starfox_3ds_frontend PUBLIC cxx_std_20)
-add_library(starfox_3ds_source_geometry STATIC pica_shapes.cpp
+add_library(starfox_3ds_source_geometry STATIC pica_shapes.cpp pica_source_spans.cpp
     ../../src/render/software_renderer.cpp ../../src/render/face_material.cpp
     ../../src/simulation/math.cpp ../../src/assets/rom.cpp)
 target_include_directories(starfox_3ds_source_geometry PUBLIC ../../include)
@@ -163,6 +163,12 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
     add_executable(starfox_3ds_source_geometry_tests ../../tests/nintendo_3ds_source_geometry_tests.cpp)
     target_link_libraries(starfox_3ds_source_geometry_tests PRIVATE starfox_3ds_source_geometry)
     add_test(NAME starfox_3ds_source_geometry_tests COMMAND starfox_3ds_source_geometry_tests)
+    add_executable(starfox_3ds_source_spans_tests ../../tests/nintendo_3ds_source_spans_tests.cpp)
+    target_link_libraries(starfox_3ds_source_spans_tests PRIVATE starfox_3ds_source_geometry)
+    add_test(NAME starfox_3ds_source_spans_tests COMMAND starfox_3ds_source_spans_tests)
+    add_executable(starfox_source_polygon_spans_tests ../../tests/source_polygon_spans_tests.cpp)
+    target_link_libraries(starfox_source_polygon_spans_tests PRIVATE starfox_3ds_source_geometry)
+    add_test(NAME starfox_source_polygon_spans_tests COMMAND starfox_source_polygon_spans_tests)
     add_executable(starfox_3ds_source_models_check ../../tools/check_3ds_source_models.cpp
         ../../src/assets/shape_decoder.cpp)
     target_link_libraries(starfox_3ds_source_models_check PRIVATE starfox_3ds_source_geometry)

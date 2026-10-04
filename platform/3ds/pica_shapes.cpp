@@ -1,4 +1,5 @@
 #include "starfox/platform/nintendo_3ds/pica_shapes.hpp"
+#include "starfox/platform/nintendo_3ds/pica_source_spans.hpp"
 
 namespace starfox::platform::nintendo_3ds {
 namespace {
@@ -69,7 +70,7 @@ void PicaShapes::submit(std::span<const PicaVertex> vertices,unsigned texture_in
     }
 }
 void PicaShapes::append(const render::PreparedShapePrimitives& source,
-    std::span<const render::Rgba8> palette,std::array<double,2> origin) {
+    std::span<const render::Rgba8> palette,std::array<double,2> origin,const FramePlan* span_plan) {
     if(palette.empty() || palette.size()>256 || !std::isfinite(source.focal_length)
         || source.focal_length<=0 || !std::isfinite(origin[0]) || !std::isfinite(origin[1])
         || !std::isfinite(source.pose.vanish_x) || !std::isfinite(source.pose.vanish_y))
@@ -107,9 +108,9 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                     && kind!=render::ShapePrimitiveKind::sprite))
                 throw std::invalid_argument("Incomplete 3DS source primitive");
             const auto* art=primitive.material.texture;
-            if(kind==render::ShapePrimitiveKind::polygon && !art && (source.pose.wireframe_mode
-                || source.pose.wobble_mode || source.pose.wave_mode || source.pose.cel_mode))
-                throw std::runtime_error("3DS native EX scanline-span conversion is not implemented yet");
+            const bool sparse=kind==render::ShapePrimitiveKind::polygon && !art && (source.pose.wireframe_mode
+                || source.pose.wobble_mode || source.pose.wave_mode || source.pose.cel_mode);
+            if(sparse && !span_plan) throw std::invalid_argument("3DS EX spans require the immutable active eye plan");
             if(kind==render::ShapePrimitiveKind::sprite && !art)
                 throw std::invalid_argument("Missing 3DS source sprite texture");
             unsigned texture_index=pica_no_texture;bool dither=false;std::array<std::uint8_t,4> odd_colour{};
@@ -144,6 +145,12 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                 // One parity mask handles every source ink pair through TEV.
                 // COLOR WARP must not allocate hundreds of tiny textures.
                 texture_index=texture(std::move(image));dither=true;
+            }
+            if(sparse) {
+                const auto triangles=pica_source_span_geometry(primitive.vertices,source.pose,
+                    source.focal_length,origin,*span_plan,colour,unsigned(pica_vertex_limit-vertices_.size()));
+                submit(triangles,texture_index,model,dither,odd_colour,clip);
+                continue;
             }
             std::vector<PicaVertex> boundary;
             if(kind==render::ShapePrimitiveKind::polygon) {

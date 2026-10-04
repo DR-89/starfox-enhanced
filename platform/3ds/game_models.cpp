@@ -30,6 +30,10 @@ double interpolate_word(std::int16_t a,std::int16_t b,double alpha) {
 }
 render::PreparedShapePrimitives auxiliary(const render::RenderPose& pose) {
     render::PreparedShapePrimitives result;result.pose=pose;result.colour_index_base=112;result.focal_length=256;
+    // MPART and projected text use their own source routines, not MDRAWP's
+    // object-global alternate solid-polygon scan converter.
+    result.pose.wireframe_mode=result.pose.wobble_mode=0;
+    result.pose.cel_mode=result.pose.wave_mode=false;
     // MPART/MDSPRITE use the bitmap centre, not EX menu's model vanishing point.
     result.pose.vanish_x=source_origin[0];result.pose.vanish_y=source_origin[1];return result;
 }
@@ -150,7 +154,7 @@ PicaFrame GameModels::prepare(const GamePresentation& frame) {
                 auto diameter=simulation::add16(header.size,adjustment);diameter=simulation::add16(diameter,diameter);
                 pose.simple_sprite_world_size=diameter?diameter:1;pose.simple_sprite_colour=object.extended[21];
             }
-            const auto prepared=renderer_.prepare_primitives(*model,pose);next.append(prepared,palette,source_origin);
+            const auto prepared=renderer_.prepare_primitives(*model,pose);next.append(prepared,palette,source_origin,&frame.plan);
             count.primitives+=prepared.primitives.size();if(shadow) ++count.shadows;else ++count.models;
         } catch(const std::exception& error) {
             throw std::runtime_error("3DS object "+std::to_string(item.handle)+" shape "+std::to_string(object.shape)+": "+error.what());

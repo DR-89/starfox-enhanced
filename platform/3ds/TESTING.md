@@ -12,6 +12,13 @@ background into depth while the native menu text remains at screen depth.
 Other menu/map/Controls routing remains unchanged. Source checks pass; the
 physical LCD result still needs testing.
 
+The next EX span follow-up needs native tests of the cartridge's wireframe,
+cel, wobble and wave choices: preserve their deliberate holes/deformation,
+palette changes and effect-window boundaries while the slider changes actual
+object depth. Text and particles must not inherit polygon-only effects.
+R11 predates this implementation. Host ink/depth and cartridge-catalogue
+checks are not proof of native pixels, complete-scene budgets or device FPS.
+
 The source follow-up also fixes final-room panorama depth when the cartridge
 retains its tunnel flag. Check final-tunnel exits and near-wall stereo at slider
 maximum, including camera banks. Host canonical/resource tests do not replace
@@ -31,10 +38,15 @@ build/package gates and isolated native pre-game/title/Controls/Training visual
 check, including live lower-LCD radio/meters. A normal campaign recording also
 reaches the Original map/travel briefing and initial gameplay geometry, with
 distinct upper-screen eyes at maximum emulated slider and an unchanged lower
-HUD. R10's travel map repeats artwork in the outer columns; the next source
-follow-up restricts its Mode-3 menu panel, and needs a fresh native check.
-Full Original/EX stage-flow and physical-device checks remain in progress. Do not treat an
-earlier package's host/link checks as proof that its displayed artwork is correct.
+HUD. R10's travel map repeats artwork in the outer columns. R11 restricts its
+Mode-3 menu panel and passes fresh ARM/package gates plus the normal native
+emulator route: map and briefing margins no longer duplicate their artwork,
+and initial campaign geometry retains distinct eyes with an unchanged lower
+HUD. Full Original/EX stage-flow and physical-device checks remain in progress.
+Do not treat an earlier package's host/link checks as proof that its displayed
+artwork is correct. The local current candidate is
+`build/StarFoxEnhanced-original-3ds-test-r11.zip`; check its source commit
+`033594c200f8625711b310270684bc4ef7c1c8e0` in `BUILD-INFO.json`.
 
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.
    This package does not modify firmware or install a CIA.

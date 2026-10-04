@@ -15,6 +15,33 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## Native EX span follow-up
+
+The source renderer's original solid/EX span rules now feed a native camera-
+geometry consumer for untextured wireframe, cel, wobble and wave polygons.
+It retains sparse ink, authored fan depth and the wave's unwarped source Y;
+it does not replace an effect with a filled fan or a projected mono bitmap.
+Both eyes use one stream prepared against their union, then hardware projection
+and clipping. Source palette pairs, material order, effect windows and atomic
+failure/resource limits remain connected to the existing presenter. Particles
+and projected text keep their own source routines, rather than inheriting
+MDRAWP's global polygon effects.
+
+Local checks compare native ink and reciprocal-depth interpolation across 576
+synthetic fixtures/all 48 EX mode combinations, non-planar fan surfaces,
+near/far clipping, an eye-only visible face, palette/window ordering and
+transaction rollback. All twenty freshly rebuilt host suites pass. Private
+local cartridge catalogue checks include 2,697 Original and 3,511 EX models,
+335,232 poses including the EX combinations, with no conversion failure;
+per-model peaks are 13,206 vertices / 125 draws / 39 textures. These are
+individual-model resource checks, not a complete-scene memory or performance
+claim. The shared generator also retains all three pre-extraction raster
+fingerprints across 4,608 frames. Actual ARM/GPU acceptance of this follow-up
+is still pending; R11 predates it and must not be relabeled as containing it.
+The asset-free native GPU diagnostic now exposes these eight span modes via
+L/R on a sloping face, alongside unchanged textured cubes. Its small separate
+CI artifact allows native effect checks without downloading debug ELFs.
+
 ## Bounded texture replacements
 
 The source follow-up after R6 releases every obsolete padded colour/A8
@@ -92,8 +119,14 @@ backdrop. Mode-1/2 world travel surrounds retain their wide/depth behavior.
 
 The independent edge-marker fixture fails on the former travel policy and
 passes after the restriction, preserving both canonical edges, both tile
-priorities and the other travel modes. Fresh ARM/package/native-window checks
-for this follow-up are still required; R10 does not contain the map correction.
+priorities and the other travel modes. R11's source
+`033594c200f8625711b310270684bc4ef7c1c8e0` passes the fresh ARM, linked-stack,
+eighteen host-suite and package gates. The independently checked package runs
+the same normal-input route in the isolated emulator: travel map and briefing
+artwork no longer repeat in the native margins. At maximum emulated slider,
+initial campaign geometry has distinct eyes and the lower HUD is identical.
+R10 does not contain this correction. R11 is still experimental, not physical
+LCD/slider, performance, peak-RAM or full Original/EX acceptance.
 
 ## Signed tunnel entrance/exit faces
 

@@ -169,7 +169,7 @@ void rollback_and_budget() {
     auto after=output.frame(plan);
     require(std::vector<PicaVertex>(after.vertices.begin(),after.vertices.end())==saved && after.draws[0].count==6,"Merged draw count and geometry rolled back together");
     prepared=renderer.prepare_primitives(shape,p);prepared.pose.wave_mode=1;
-    rejects([&]{output.append(prepared,colours);},"Unimplemented EX sparse/wave fill never silently becomes a solid fan");
+    rejects([&]{output.append(prepared,colours);},"EX sparse/wave geometry requires its active immutable eye plan");
     prepared.pose.wave_mode=0;
     rejects([&]{output.append(prepared,std::span(colours).first(2));},"Missing palette rejected, not substituted");
     prepared.focal_length=0;rejects([&]{output.append(prepared,colours);},"Invalid focal rejected");

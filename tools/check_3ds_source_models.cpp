@@ -12,10 +12,7 @@ std::string context;
 void require(bool value,const char* message) {
     ++checks;if(!value) throw std::runtime_error(context+": "+message);
 }
-}
-int main(int argc,char** argv) try {
-    if(argc!=3) throw std::invalid_argument("Usage: check_3ds_source_models ROM SYMBOLS (local, never bundled)");
-    const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
+void catalogue(const assets::RomImage& rom,const assets::SymbolMap& symbols,bool ex_spans) {
     assets::ShapeDecoder decoder(rom,symbols);render::SoftwareRenderer renderer;
     render::Palette256 colours;
     for(unsigned i=0;i<colours.size();++i) colours[i]={std::uint8_t(i),std::uint8_t(i^85),std::uint8_t(i^170),255};
@@ -30,14 +27,20 @@ int main(int argc,char** argv) try {
         context=name+" $"+std::to_string(address);
         const auto shape=decoder.decode(address,name);++models;
         bsp+=shape.bsp_root_address!=0;animated+=!shape.frames.empty();
-        for(unsigned mode=0;mode<6;++mode) {
+        for(unsigned mode=0;mode<(ex_spans?54U:6U);++mode) {
             context=name+" mode "+std::to_string(mode);
             render::RenderPose p;p.vanish_x=128;p.vanish_y=112;p.z=mode<2?768:2048;
             p.use_rotation_matrix=true;p.rotation_matrix={32767,0,0,0,32767,0,0,0,32767};
             p.animation_frame=shape.frames.empty()?mode:mode%shape.frames.size();p.colour_frame=mode;
             p.continuous_geometry=mode%2!=0;
-            if(mode>=4) {p.explosion_progress=8;p.explosion_phase=mode==4?7.:7.5;}
+            if(mode==4 || mode==5) {p.explosion_progress=8;p.explosion_phase=mode==4?7.:7.5;}
             if(mode==3) {p.texture_scroll_x=13;p.texture_scroll_y=-9;p.colour_warp=true;}
+            if(mode>=6) {
+                unsigned flags=mode-6;p.wireframe_mode=std::uint8_t(flags%3);flags/=3;
+                p.wobble_mode=std::uint8_t(flags%4);flags/=4;
+                p.wave_mode=(flags%2)!=0;p.cel_mode=(flags/2)!=0;
+                p.wave_offset=-32760;
+            }
             const auto prepared=renderer.prepare_primitives(shape,p);
             render::Framebuffer source(256,224);render::RenderDiagnostics trace;
             renderer.draw(shape,p,source,true,nullptr,nullptr,&trace);
@@ -55,7 +58,8 @@ int main(int argc,char** argv) try {
                 textured+=primitive.material.texture!=nullptr;dithered+=primitive.material.colour.dither;
             }
             require(polygon==trace.polygons.size(),"Captured geometry omitted a source-visible polygon");
-            PicaShapes native;native.append(prepared,colours);
+            const auto active_plan=plan_frame(1,true,ScreenUse::world);
+            PicaShapes native;native.append(prepared,colours,{128,112},&active_plan);
             for(float slider:{0.F,.5F,1.F}) {
                 const auto frame=native.frame(plan_frame(slider,true,ScreenUse::world));
                 validate_pica_frame(frame,dashboard);
@@ -71,5 +75,14 @@ int main(int argc,char** argv) try {
         <<polygons<<" polygons, "<<lines<<" lines, "<<sprites<<" sprites, "<<textured<<" textured, "<<dithered<<" two-ink\n"
         <<bsp<<" BSP models, "<<animated<<" animated models; peak per-model "<<peak_vertices<<" vertices / "
         <<peak_draws<<" draws / "<<peak_textures<<" textures\n"
+        <<(ex_spans?"All 48 authored EX span combinations included\n":"EX span modes not requested\n")
         <<"Source camera/BSP/material geometry and bounded native conversion; NOT native rendering or full-game acceptance\n";
+}
+}
+int main(int argc,char** argv) try {
+    if(argc<3 || argc>4 || (argc==4 && std::string_view(argv[3])!="--ex-spans"))
+        throw std::invalid_argument("Usage: check_3ds_source_models ROM SYMBOLS [--ex-spans] (local, never bundled)");
+    const auto rom=starfox::assets::RomImage::load(argv[1]);const auto symbols=starfox::assets::SymbolMap::load(argv[2]);
+    catalogue(rom,symbols,argc==4);
+    return 0;
 } catch(const std::exception& error) {std::cerr<<context<<": "<<error.what()<<'\n';return 1;}

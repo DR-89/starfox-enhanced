@@ -19,6 +19,8 @@ on:
       - 'include/starfox/render/sprite_renderer.hpp'
       - 'src/render/software_renderer.cpp'
       - 'include/starfox/render/software_renderer.hpp'
+      - 'include/starfox/render/source_polygon_spans.hpp'
+      - 'tests/source_polygon_spans_tests.cpp'
       - 'include/starfox/render/sprite_selection.hpp'
       - 'include/starfox/vr/game_scene.hpp'
       - 'include/starfox/vr/source_pose_interpolation.hpp'
@@ -58,10 +60,20 @@ jobs:
         run: |
           g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I include \
             tests/nintendo_3ds_source_geometry_tests.cpp platform/3ds/pica_shapes.cpp \
+            platform/3ds/pica_source_spans.cpp \
             src/render/software_renderer.cpp src/render/face_material.cpp \
             src/simulation/math.cpp src/assets/rom.cpp \
             -o "$RUNNER_TEMP/starfox-3ds-source-contracts"
           "$RUNNER_TEMP/starfox-3ds-source-contracts"
+      - name: Verify EX ink, surface depth, stereo coverage and transaction limits
+        shell: bash
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I include \
+            tests/nintendo_3ds_source_spans_tests.cpp platform/3ds/pica_shapes.cpp \
+            platform/3ds/pica_source_spans.cpp src/render/software_renderer.cpp \
+            src/render/face_material.cpp src/simulation/math.cpp src/assets/rom.cpp \
+            -o "$RUNNER_TEMP/starfox-3ds-ex-span-contracts"
+          "$RUNNER_TEMP/starfox-3ds-ex-span-contracts"
       - name: Verify source PPU layers, caches and ordered composition
         shell: bash
         run: |
@@ -130,5 +142,14 @@ jobs:
             build/3ds-native/*.smdh
             build/3ds-native/pica_scene.shbin
             build/3ds-native/**/*.su
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload small asset-free EX span GPU probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-3ds-ex-spans-gpu-probe
+          path: |
+            build/3ds-native/starfox_3ds_gpu_check.3dsx
+            build/3ds-native/gpu-check.smdh
           if-no-files-found: error
           retention-days: 7

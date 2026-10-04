@@ -31,10 +31,19 @@ starfox::assets::Shape source_cube() {
     for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x) art.texels[y*8+x]=((x/2+y/2)&1)?5:15;
     shape.textures.push_back(std::move(art));return shape;
 }
+starfox::assets::Shape source_span_face() {
+    starfox::assets::Shape shape;
+    shape.vertices={{-40,-40,-24},{40,-40,24},{40,40,24},{-40,40,-24}};
+    shape.faces.push_back({-1,14,{0,0,0},{0,1,2,3}});
+    return shape;
+}
 int diagnostic(NativeDisplay& display) {
     NativeGpu gpu(pica_scene_shader); // Destroy/sync the GPU BEFORE gfxExit.
     Canvas caption(top_width);CockpitDashboard lower;
     const auto shape=source_cube();
+    const auto span_face=source_span_face();
+    constexpr std::array<const char*,8> span_names{
+        "SOLID","WIREFRAME 1","WIREFRAME 2","WOBBLE 1","WOBBLE 2","WOBBLE 3","WAVE","CEL"};
     const std::array<starfox::render::Rgba8,16> colours{{{0,0,0},{48,48,60},{112,28,32},{38,70,150},
         {188,72,24},{24,130,132},{82,20,26},{35,52,120},{118,46,132},{38,110,52},
         {82,82,92},{118,118,128},{156,156,166},{202,202,210},{238,238,242},{255,255,255}}};
@@ -60,7 +69,8 @@ int diagnostic(NativeDisplay& display) {
     std::vector<PicaVertex> vertices;
     std::vector<PicaDraw> draws;std::vector<PicaImage> images;
     std::vector<PicaVertex> alpha_vertices;std::vector<PicaDraw> alpha_draws;
-    bool setup=true,caption_dirty=true,wipe_demo=false,colour_demo=false;unsigned wipe_phase{},colour_phase{};float x{},y{};
+    bool setup=true,caption_dirty=true,wipe_demo=false,colour_demo=false;
+    unsigned wipe_phase{},colour_phase{},span_mode{},animation_phase{};float x{},y{};
     starfox::input::ButtonMask previous{};
     StereoSettings settings;settings.near_plane=16;
     while(true) {
@@ -70,12 +80,21 @@ int diagnostic(NativeDisplay& display) {
         if((input.held&starfox::input::b) && !(previous&starfox::input::b)) {setup=true;caption_dirty=true;}
         if(!setup && (input.held&starfox::input::x) && !(previous&starfox::input::x)) wipe_demo=!wipe_demo;
         if(!setup && (input.held&starfox::input::y) && !(previous&starfox::input::y)) colour_demo=!colour_demo;
+        if(!setup && (input.held&starfox::input::right_shoulder) && !(previous&starfox::input::right_shoulder)) {
+            span_mode=(span_mode+1)%span_names.size();caption_dirty=true;
+        }
+        if(!setup && (input.held&starfox::input::left_shoulder) && !(previous&starfox::input::left_shoulder)) {
+            span_mode=(span_mode+span_names.size()-1)%span_names.size();caption_dirty=true;
+        }
         previous=input.held;
         if(caption_dirty) {
             caption.clear({8,15,28});
             caption.text(12,12,"PICA200 GPU CHECK / NOT THE GAME",{183,224,240});
-            if(setup) caption.text(24,56,"A: SOURCE MODELS / DEPTH / SLIDER\n\nB: RETURN TO THIS PAGE\nCIRCLE PAD: MOVE FRONT CUBE\n\nSELECT + START: EXIT\n\nREAL PRE-GAME MENU IS RETAINED\nIN THE SEPARATE GAME PORT",{227,235,242});
-            else caption.text(8,221,"SLIDER: DEPTH / X: WIPE / Y: COLOUR",{213,237,244});
+            if(setup) caption.text(24,56,"A: SOURCE MODELS / DEPTH / SLIDER\n\nB: RETURN TO THIS PAGE\nCIRCLE PAD: MOVE FRONT CUBE\nL/R: EX SPAN MODE\n\nSELECT + START: EXIT\n\nREAL PRE-GAME MENU IS RETAINED\nIN THE SEPARATE GAME PORT",{227,235,242});
+            else {
+                caption.text(8,203,std::string("EX SPANS: ")+span_names[span_mode],{213,237,244});
+                caption.text(8,221,"L/R: SPANS / X: WIPE / Y: COLOUR",{213,237,244});
+            }
             caption_dirty=false;
         }
         if(!setup) {
@@ -97,6 +116,11 @@ int diagnostic(NativeDisplay& display) {
             source_geometry.append(source_renderer.prepare_primitives(shape,pose),colours);
             pose.x=32;pose.y=-24;pose.z=650;
             source_geometry.append(source_renderer.prepare_primitives(shape,pose),colours);
+            pose.x=-84;pose.y=20;pose.z=280;pose.animation_frame=animation_phase++;
+            pose.wireframe_mode=std::uint8_t(span_mode==1?1:span_mode==2?2:0);
+            pose.wobble_mode=std::uint8_t(span_mode>=3 && span_mode<=5?span_mode-2:0);
+            pose.wave_mode=span_mode==6;pose.cel_mode=span_mode==7;
+            source_geometry.append(source_renderer.prepare_primitives(span_face,pose),colours,{128,112},&plan);
             const auto converted=source_geometry.frame(plan);
             groups.push_back(converted);
             // The separate translucent pass still exercises depth/alpha state.
