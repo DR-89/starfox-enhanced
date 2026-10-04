@@ -3,6 +3,7 @@
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
+#include "starfox/platform/nintendo_3ds/game_remap.hpp"
 #include "starfox/state/container.hpp"
 #include "starfox/state/archive.hpp"
 #include "starfox/assets/bps.hpp"
@@ -208,7 +209,7 @@ struct MenuDriver {
     void tap(input::ButtonMask button) {
         time+=50'000'000;last=session.advance(time,button);
         time+=50'000'000;const auto release=session.advance(time,0);
-        if(release.requested_experience || release.requested_preview) last=release;
+        if(release.requested_experience || release.requested_preview || release.requested_controller_remap || release.requested_settings_reset) last=release;
     }
     void select(unsigned id) {
         const auto order=simulation::pregame_menu_order(session.game().pregame_page());
@@ -480,6 +481,113 @@ void actual_settings_reset(const assets::RomImage& rom,const assets::SymbolMap& 
     }
     std::cout<<"  Settings reset: mapped five-second menu chord, pure owner handoff, defaults/game-save preservation, focus/release/clock guards checked\n";
 }
+void actual_controller_remap(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    GameSession session(rom,symbols,[](auto){});MenuDriver controls(session);
+    rejects([&]{session.finish_controller_remap();},"Unrequested controller editor acknowledged");
+    controls.select(14);controls.tap(input::a);controls.select(8);
+    const auto menu=GameMenu::capture(session.game());
+    const auto row=std::find_if(menu.rows.begin(),menu.rows.end(),[](const auto& item){return item.id==8;});
+    require(row!=menu.rows.end() && row->enabled && row->value=="A  OPEN","Actual Controller option remains unavailable");
+    controls.tap(input::a);
+    require(controls.last.requested_controller_remap && session.controller_remap_pending()
+        && session.game().pregame_page()==simulation::PregamePage::options && session.game().pregame_selection()==8,
+        "Controller action did not freeze at the actual source Options row");
+    const auto before=session.game().save_state(),spc=session.audio().save_state();
+    const auto waiting=session.advance(controls.time+10'000'000'000LL,input::a|input::left_shoulder|input::right_shoulder);
+    require(waiting.requested_controller_remap && !waiting.video_phases && !waiting.audio_blocks
+        && before==session.game().save_state() && spc==session.audio().save_state(),"Controller host screen ticked old source/audio/reset");
+    GameRemap editor;editor.open({});editor.update({});
+    const auto tap=[&](input::ButtonMask physical) {editor.update({physical});editor.update({});};
+    for(unsigned i=0;i<8;++i) tap(input::down);
+    tap(input::a);editor.update({input::a});editor.update({});
+    tap(input::down);tap(input::a);editor.update({input::b});editor.update({});
+    const auto bindings=editor.bindings();
+    require(bindings.sources[8]==8 && bindings.sources[9]==0,"Real host editor did not map shoulders to face buttons");
+    require(before==session.game().save_state() && spc==session.audio().save_state(),"Editing bindings mutated the source VM/SPC");
+    session.finish_controller_remap();
+    require(!session.controller_remap_pending(),"Controller screen could not return to actual Options");
+    const auto base=controls.time+20'000'000'000LL;
+    auto result=session.advance(base,input::a|input::b,true,mapped_buttons(bindings,{input::a|input::b}));
+    require(!result.requested_controller_remap && !result.requested_settings_reset && !session.settings_reset_hold().active(),"Captured physical input leaked out of controller screen");
+    session.advance(base+50'000'000,0,true,0);
+    const auto begin=base+100'000'000;const auto prefs=session.preferences();
+    session.advance(begin,input::a|input::b,true,mapped_buttons(bindings,{input::a|input::b}));
+    for(unsigned frame=1;frame<100;++frame) {
+        result=session.advance(begin+std::int64_t(frame)*50'000'000,input::a|input::b,true,mapped_buttons(bindings,{input::a|input::b}));
+        require(!result.requested_controller_remap && !result.requested_settings_reset
+            && session.game().pregame_selection()==8 && session.preferences()==prefs,"Mapped reset chord also changed fixed menu settings/navigation");
+    }
+    require(session.advance(begin+SettingsResetHold::duration,input::a|input::b,true,mapped_buttons(bindings,{input::a|input::b})).requested_settings_reset,
+        "Remapped in-game L/R did not trigger the five-second reset");
+    // Independent real cartridge oracle for custom gameplay bindings. No
+    // production mapping helper is used to build the expected logical inputs.
+    std::vector<std::int16_t> pcm;
+    GameSession stage(rom,symbols,[&](auto block){pcm.insert(pcm.end(),block.begin(),block.end());},"LEVEL1_1");
+    SourceOracle direct(rom,symbols,"LEVEL1_1");GameBindings custom;
+    custom.sources[0]=12;custom.sources[4]=0;custom.sources[5]=255;custom.sources[6]=255;custom.sources[8]=8;custom.sources[9]=9;
+    stage.advance(0,0);
+    for(unsigned poll=1;poll<=240;++poll) {
+        PadSample pad;input::ButtonMask expected{};
+        if(poll>=16 && poll<44) {pad.physical=input::b;expected=input::a;}
+        if(poll>=64 && poll<92) {pad.physical=input::a;expected=input::left_shoulder;}
+        if(poll>=112 && poll<140) {pad.physical=input::x;expected=input::right_shoulder;}
+        if(poll>=160 && poll<188) {pad.circle_y=80;expected=input::up;}
+        if(poll>=208 && poll<236) {pad.circle_x=80;expected=input::right;}
+        require(mapped_buttons(custom,pad)==expected,"Custom sampler differs from independent native logical-input oracle");
+        const auto advanced=stage.advance(timestamp(poll,240),fixed_menu_buttons(pad),true,mapped_buttons(custom,pad));
+        direct.input.sample(expected);if(poll%4==0) direct.raster();
+        require(!advanced.requested_settings_reset && !advanced.requested_controller_remap,"Gameplay remapping opened a host editor/reset");
+        if(poll%4==0) require(stage.game().save_state()==direct.game.save_state() && stage.audio().save_state()==direct.spc.save_state()
+            && pcm==direct.pcm,"Actual remapped gameplay VM/SPC/PCM diverged from direct cartridge inputs");
+    }
+    std::cout<<"  Controller: actual source row/editor freeze/return, mapped reset and 60 independent gameplay rasters/SPC/PCM checked\n";
+}
+void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    std::vector<std::int16_t> pcm;
+    GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());});
+    SourceOracle source(rom,symbols,"BOOT");
+    std::int64_t time{};session.advance(time,0);
+    const auto compare=[&] {
+        require(session.game().save_state()==source.game.save_state(),"Controller editor return changed independent source state");
+        require(session.audio().save_state()==source.spc.save_state() && pcm==source.pcm,
+            "Controller editor discarded/replayed partial SPC cadence or pending handshakes");
+    };
+    const auto step=[&](input::ButtonMask held,bool editor_action=false) {
+        time+=50'000'000;
+        source.input.sample(editor_action?0:held);
+        const auto result=session.advance(time,held);
+        require(result.video_phases>0 && result.video_phases<=3,"Editor navigation lost its ordinary raster clock");
+        for(unsigned i=0;i<result.video_phases;++i) source.raster();
+        compare();return result;
+    };
+    const auto tap=[&](input::ButtonMask held) {step(held);step(0);};
+    const auto select=[&](unsigned id) {
+        const auto order=simulation::pregame_menu_order(session.game().pregame_page());
+        for(std::size_t i=0;session.game().pregame_selection()!=id && i<order.size();++i) tap(input::down);
+        require(session.game().pregame_selection()==id,"Independent resume fixture could not select source menu row");
+    };
+    select(14);tap(input::a);select(8);
+    const auto opening=step(input::a,true);
+    require(opening.requested_controller_remap,"Independent resume fixture did not open controller editor");
+    source.input.reset();
+    const auto frozen_phase=source.phase;
+    const auto wait=session.advance(time+60'000'000'000LL,input::start);
+    require(!wait.video_phases && !wait.audio_blocks && source.phase==frozen_phase,"Editor wait advanced source audio/raster");
+    compare();session.finish_controller_remap();
+    time+=60'000'000'001LL;
+    require(!session.advance(time,input::a).video_phases,"Editor close caught up wall-clock time");
+    source.input.reset();session.advance(++time,0);compare();
+    // Resume one raster at a time, including across every partial 50ms audio
+    // boundary. The independent oracle retains its own phase and APU writes.
+    const auto resumed=time;
+    for(unsigned raster=1;raster<=24;++raster) {
+        const auto result=session.advance(resumed+timestamp(raster),0);
+        require(result.video_phases==1,"Editor return duplicated/dropped source raster");
+        source.raster();compare();
+    }
+    std::cout<<"  Controller resume: independent VM/SPC/PCM parity through partial audio phase "<<frozen_phase%3
+        <<" and 24 post-editor rasters checked\n";
+}
 }
 int main(int argc,char** argv) {
     try {
@@ -490,6 +598,8 @@ int main(int argc,char** argv) {
         actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
         actual_disk_handoff(rom,symbols);
         actual_settings_reset(rom,symbols);
+        actual_controller_remap(rom,symbols);
+        controller_resume_parity(rom,symbols);
         merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});
         failed.advance(0,0);rejects([&]{failed.advance(50'000'000,0);},"PCM failure ignored");

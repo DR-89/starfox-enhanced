@@ -1,5 +1,6 @@
 #pragma once
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
+#include "starfox/platform/nintendo_3ds/game_input.hpp"
 #include <string>
 
 namespace starfox::platform::nintendo_3ds {
@@ -9,6 +10,7 @@ struct GameSaveData {
     GamePreferences preferences;
     std::uint32_t ex_rom_crc{};
     std::vector<std::uint8_t> ex_sram;
+    GameBindings bindings;
     bool operator==(const GameSaveData&) const=default;
 };
 struct GameSaveLoad {
@@ -20,7 +22,8 @@ struct GameSaveLoad {
 // even when returning to Original BOOT and switching Preview off.
 [[nodiscard]] inline GameSaveData default_game_settings(GameSaveData previous) {
     previous.experience=simulation::Experience::original;
-    previous.preview=false;previous.preferences=GamePreferences{};return previous;
+    previous.preview=false;previous.preferences=GamePreferences{};
+    previous.bindings=GameBindings{};return previous;
 }
 // One native owner, two checksummed SD slots. Write the older/incomplete slot,
 // close and re-read it before committing the in-memory generation. The newest

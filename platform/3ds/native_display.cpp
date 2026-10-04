@@ -20,7 +20,9 @@ NativeInput NativeDisplay::poll() {
     const bool running=aptMainLoop();
     if(!running) return {};
     hidScanInput();circlePosition circle{};hidCircleRead(&circle);
-    return {buttons(hidKeysHeld(),circle.dx,circle.dy),osGet3DSliderState(),true,stereoscopic_hardware_};
+    const auto physical=hidKeysHeld();
+    return {buttons(physical,circle.dx,circle.dy),osGet3DSliderState(),true,stereoscopic_hardware_,
+        buttons(physical),circle.dx,circle.dy};
 }
 void NativeDisplay::present(const FramePlan& frame,ImageView left,ImageView right,ImageView lower) {
     if(!valid_image(left,top_width,screen_height) || !valid_image(lower,bottom_width,screen_height)

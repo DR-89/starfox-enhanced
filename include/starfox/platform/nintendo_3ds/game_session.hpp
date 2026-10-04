@@ -24,6 +24,7 @@ struct GameAdvance {
     // Retire this owner and rebuild real Original BOOT with default settings;
     // the host preserves battery SRAM. Never tick the old owner afterwards.
     bool requested_settings_reset{};
+    bool requested_controller_remap{};
 };
 struct GamePreferences {
     simulation::TimingMode timing{simulation::TimingMode::original_speed};
@@ -57,7 +58,12 @@ public:
 
     // Monotonic nanoseconds from the platform clock, sampled ONCE per host
     // frame. Source raster is 60 Hz; SPC is 20 Hz even at original FX pacing.
-    GameAdvance advance(std::int64_t nanoseconds,input::ButtonMask held,bool focused=true);
+    GameAdvance advance(std::int64_t nanoseconds,input::ButtonMask held,bool focused=true,
+        std::optional<input::ButtonMask> mapped_gameplay={});
+    // Explicitly acknowledge the host editor; source cursor/state and partial
+    // SPC cadence survive. Suppress held input before returning to Options.
+    void finish_controller_remap();
+    [[nodiscard]] bool controller_remap_pending() const noexcept {return requested_controller_remap_;}
     [[nodiscard]] GamePresentation presentation(float slider,bool stereoscopic_hardware,
         const StereoSettings& settings={}) const;
     [[nodiscard]] const simulation::GameSimulation& game() const noexcept {return game_;}
@@ -108,5 +114,6 @@ private:
     bool start_after_preview_{};
     SettingsResetHold reset_hold_;
     bool requested_settings_reset_{};
+    bool requested_controller_remap_{};
 };
 } // namespace starfox::platform::nintendo_3ds

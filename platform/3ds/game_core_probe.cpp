@@ -7,6 +7,7 @@
 #include "starfox/platform/nintendo_3ds/game_models.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
+#include "starfox/platform/nintendo_3ds/game_remap.hpp"
 #include "starfox/assets/bps.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
@@ -46,7 +47,8 @@ private:
                 self.audio_.pause(true);
                 self.session_.advance(monotonic_time(),0,false);
                 self.checkpoint_();
-            } else if(event==APTHOOK_ONRESTORE || event==APTHOOK_ONWAKEUP) self.audio_.pause(false);
+            } else if(event==APTHOOK_ONRESTORE || event==APTHOOK_ONWAKEUP)
+                self.audio_.pause(self.session_.controller_remap_pending());
         } catch(const std::exception& error) {self.error_=error.what();}
     }
     ctr::GameSession& session_;ctr::NativeAudio& audio_;std::function<void()> checkpoint_;
@@ -87,12 +89,15 @@ int main() {
     std::array<std::uint32_t,2> bank_crc{};
     ctr::GameStorage storage("sdmc:/3ds/starfox-enhanced",ctr::companion_manifest);
     ctr::GameSaveData saved;
+    ctr::GameBindings bindings;
+    std::unique_ptr<ctr::GameRemap> remap;
     std::string save_warning;
     bool save_enabled=false;
     std::uint32_t cartridge_crc{};
     std::int64_t last_save_check{};
     try {
         const auto& loaded=storage.load();saved=loaded.data;experience=saved.experience;
+        bindings=saved.bindings;
         save_enabled=loaded.writable;save_warning=loaded.warning;
         cartridge_ram[unsigned(simulation::Experience::starfox_ex)]=saved.ex_sram;
         bank_crc[unsigned(simulation::Experience::starfox_ex)]=saved.ex_rom_crc;
@@ -108,6 +113,7 @@ int main() {
         try {
             auto next=saved;next.experience=session->game().experience();
             next.preferences=session->preferences();
+            next.bindings=bindings;
             if(session->game().in_setup_menu() && !session->game().runtime_options_open())
                 next.preview=session->game().preview_requested();
             if(session->cartridge_experience()==simulation::Experience::starfox_ex) {
@@ -121,6 +127,7 @@ int main() {
         }
     };
     const auto release_owners=[&] {
+        remap.reset();
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
         gpu.reset();layers.reset();
@@ -150,7 +157,7 @@ int main() {
             [&](auto pcm){audio->submit(pcm);},map,cartridge_ram[unsigned(experience)],options);
         models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
         menu=std::make_unique<ctr::GameMenu>(session->rom(),session->symbols());
-        suspension=std::make_unique<Suspension>(*session,*audio,[&]{checkpoint(true);});
+        suspension=std::make_unique<Suspension>(*session,*audio,[&]{if(remap) remap->suspend();checkpoint(true);});
 #if defined(STARFOX_3DS_CORE_PICA)
         layers=std::make_unique<ctr::GameLayers>();
         gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
@@ -175,8 +182,26 @@ int main() {
             }
             if(running) {
                 if(!suspension->error().empty()) throw std::runtime_error(suspension->error());
-                const auto advanced=session->advance(monotonic_time(),controls.held);
+                const ctr::PadSample pad{controls.physical,controls.circle_x,controls.circle_y};
+                if(remap) {
+                    remap->update(pad);bindings=remap->bindings();
+                    if(!remap->active()) {
+                        session->finish_controller_remap();audio->pause(false);checkpoint(true);remap.reset();continue;
+                    }
+                    checkpoint(false);
+#if defined(STARFOX_3DS_CORE_PICA)
+                    gpu->present(remap->frame(),remap->lower_view());
+#else
+                    display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),remap->upper_view(),{},remap->lower_view());
+#endif
+                    continue; // No source ticking or world preparation in the editor.
+                }
+                const auto advanced=session->advance(monotonic_time(),controls.held,true,ctr::mapped_buttons(bindings,pad));
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
+                if(advanced.requested_controller_remap) {
+                    checkpoint(true);audio->pause(true);
+                    remap=std::make_unique<ctr::GameRemap>();remap->open(bindings);continue;
+                }
                 if(advanced.requested_settings_reset) {
                     checkpoint(true);
                     // Preserve the current real EX bank even if SD writing is
@@ -189,6 +214,7 @@ int main() {
                         saved.ex_sram.assign(ram.begin(),ram.end());saved.ex_rom_crc=cartridge_crc;
                     }
                     saved=ctr::default_game_settings(std::move(saved));
+                    bindings=saved.bindings;
                     if(save_enabled) try {storage.save(saved);save_warning=storage.current().warning;}
                     catch(const std::exception& failure) {
                         save_warning=std::string(failure.what())+"\nDefaults applied in memory; SD saving disabled until restart.";

@@ -61,6 +61,35 @@ release or verification of the old desktop host against the revised menu API.
 Full VM state persistence, remaining scene/effect integrations and physical
 original 3DS gameplay/optics/audio/APT/memory/performance remain open.
 
+## Native controller remapping
+
+Open **Options → Controller** in the actual pre-game menu. The upper LCD shows
+a SNES controller and highlights the logical in-game action being assigned;
+the lower LCD lists its physical button or Circle Pad direction. Menu navigation
+stays fixed so remapping gameplay cannot make the options screen inaccessible.
+Use A to assign, X to clear, Y for controller defaults, and B to return. Capture
+commits after release; B+Start cancels a capture. Ambiguous multi-button/axis
+input is rejected until release. The final row changes the Circle Pad deadzone.
+Restart is not a fictitious SNES button; the native editor exposes the twelve
+SNES game actions. The separate face-swap setting still applies during gameplay.
+
+Opening this host editor freezes the cartridge/SPC without world preparation;
+returning rebases the clock, suppresses held keys, and retains partial audio
+cadence and pending APU writes. Home/sleep cancels an unfinished capture and
+requires release on resume. Custom bindings also drive the five-second in-game
+L+R reset, including when those shoulders are assigned to physical face buttons.
+While that chord is held, it cannot simultaneously confirm or navigate a menu.
+The editor's two LCD canvases are allocated only while open and freed on return;
+unchanged input redraws no text or controller pixels.
+
+Bindings are persisted in the protected two-slot SD journal. Previous schema-1
+settings and EX SRAM load with the original Nintendo bindings; the next changed
+save upgrades only the alternate slot to schema 2, retaining the old valid slot.
+Invalid sources/deadzones, unknown formats and existing corruption keep the
+journal's recovery/read-only protections. These host-checked controls still need
+physical original-3DS input/APT/SD and whole-flow acceptance; there is no playable
+release or full VM save-state support implied by the editor.
+
 ## SD settings and EX save journal
 
 The native source entry reads `/3ds/starfox-enhanced/3ds-save-0.dat` and
@@ -122,6 +151,14 @@ and EX fixture checks cover the actual Options page, old-owner freeze, default
 BOOT rebind, real bank preservation and gameplay exclusion. Native countdown/
 APT/SD behavior still requires physical original-3DS testing. Desktop remapping
 and rendering-effects acceptance are not renewed by these native checks.
+
+[Native reset CI 37187201296](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37187201296)
+at `a1fe2c2f54d48e89d6d85a80fb1e48fc9c5de665` passes ten lean host suites
+and all three real ARM links. Downloaded ELF32 ARM/3DSX headers were checked;
+source-core 3DSX 1,978,428 bytes, unchanged shader 488 bytes. Static sections
+do not prove peak memory. Exact branch Original/EX fixture checks pass 5,040
+each; the local dirty desktop worktree's separate shared API passes 4,983 each.
+No physical-original-console, full-flow, performance, release or full-goal claim.
 
 ## Screen layout and controls
 

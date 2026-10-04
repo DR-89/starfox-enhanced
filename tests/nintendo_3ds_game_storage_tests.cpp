@@ -40,11 +40,12 @@ void replace(const std::string& path,std::span<const std::uint8_t> data) {
     file.write(reinterpret_cast<const char*>(data.data()),static_cast<std::streamsize>(data.size()));file.close();
 }
 // Independent format oracle; do not use the production encoder/decoder.
-std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest) {
+std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest,bool legacy=false) {
     state::Writer writer;const auto& p=data.preferences;
     writer(generation,data.experience,data.preview,p.timing,p.music,p.sfx,p.language,p.laser,p.level,
         p.swap,p.god,p.bombs,p.boost,p.lives,p.planet_cheat,p.separation,p.convergence,data.ex_rom_crc,data.ex_sram);
-    return state::pack(0x33445301U,manifest,writer.bytes());
+    if(!legacy) writer(data.bindings.sources,data.bindings.deadzone);
+    return state::pack(legacy?0x33445301U:0x33445302U,manifest,writer.bytes());
 }
 GameSaveData fixture() {
     GameSaveData data;data.experience=simulation::Experience::starfox_ex;data.preview=true;
@@ -138,10 +139,11 @@ void invalid_and_io() {
 void settings_reset_keeps_game_save() {
     Temporary temp;constexpr std::uint32_t manifest=0x99112233;
     GameStorage store(temp.path.generic_string(),manifest);static_cast<void>(store.load());
-    const auto before=fixture();require(store.save(before),"Reset fixture save failed");
+    auto before=fixture();before.bindings.sources[8]=8;before.bindings.sources[9]=0;before.bindings.deadzone=80;
+    require(store.save(before),"Reset fixture save failed");
     const auto after=default_game_settings(before);
     require(after.experience==simulation::Experience::original && !after.preview
-        && after.preferences==GamePreferences{},"Settings reset did not select default Original setup");
+        && after.preferences==GamePreferences{} && after.bindings==GameBindings{},"Settings reset did not select default Original setup/bindings");
     require(after.ex_sram==before.ex_sram && after.ex_rom_crc==before.ex_rom_crc,"Settings reset erased/rebound EX game progress");
     require(store.save(after),"Default settings did not commit to the SD journal");
     GameStorage reopened(temp.path.generic_string(),manifest);
@@ -150,8 +152,34 @@ void settings_reset_keeps_game_save() {
     const auto retail=default_game_settings(GameSaveData{});
     require(retail.ex_sram.empty() && retail.ex_rom_crc==0,"Retail settings reset manufactured EX SRAM");
 }
+void binding_migration() {
+    Temporary temp;constexpr std::uint32_t manifest=0x81230045;
+    GameStorage store(temp.path.generic_string(),manifest);
+    const auto old=fixture();replace(store.slot_path(0),envelope(7,old,manifest,true));
+    require(store.load().found && store.current().writable && store.current().data==old
+        && store.current().data.bindings==GameBindings{},"Legacy settings/EX bank did not migrate with default Nintendo bindings");
+    const auto backup=bytes(store.slot_path(0));
+    auto next=old;next.bindings.sources[8]=8;next.bindings.sources[9]=0;next.bindings.sources[0]=12;
+    next.bindings.sources[4]=GameBindings::unbound;next.bindings.deadzone=80;
+    require(store.save(next) && store.generation()==8,"Custom mappings did not upgrade the journal");
+    require(bytes(store.slot_path(0))==backup && bytes(store.slot_path(1))==envelope(8,next,manifest),"Binding upgrade changed the old valid bank/backup");
+    GameStorage reopened(temp.path.generic_string(),manifest);
+    require(reopened.load().data==next && reopened.current().data.ex_sram==old.ex_sram,"Bindings/deadzone/real save were lost at reopen");
+    auto bad=next;bad.bindings.sources[0]=16;rejects([&]{reopened.save(bad);});
+    bad=next;bad.bindings.deadzone=157;rejects([&]{reopened.save(bad);});
+    replace(store.slot_path(1),envelope(9,bad,manifest));GameStorage invalid_axis(temp.path.generic_string(),manifest);
+    require(invalid_axis.load().data==old && invalid_axis.current().writable && !invalid_axis.current().warning.empty(),"Invalid decoded mapping did not recover the legacy backup");
+    bad=next;bad.bindings.sources[1]=254;replace(store.slot_path(1),envelope(9,bad,manifest));
+    GameStorage invalid_button(temp.path.generic_string(),manifest);require(invalid_button.load().data==old,"Unknown decoded physical source accepted");
+    auto extended=envelope(10,next,manifest);auto payload=state::unpack(extended,0x33445302U,manifest);
+    std::vector<std::uint8_t> trailing(payload.begin(),payload.end());trailing.push_back(0);
+    replace(store.slot_path(1),state::pack(0x33445302U,manifest,trailing));
+    GameStorage extra(temp.path.generic_string(),manifest);require(extra.load().data==old,"Extended mapping payload accepted");
+    replace(store.slot_path(1),state::pack(0x33445303U,manifest,payload));
+    GameStorage future(temp.path.generic_string(),manifest);require(future.load().data==old,"Unknown future schema accepted as bindings");
+}
 }
 int main() try {
-    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();
+    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();binding_migration();
     std::cout<<"3DS SD settings/EX SRAM journal: "<<checks<<" checks passed; synthetic public saves, not physical SD power-loss acceptance\n";
 } catch(const std::exception& error) {std::cerr<<"3DS SD journal: "<<error.what()<<'\n';return 1;}

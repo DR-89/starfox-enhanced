@@ -126,13 +126,20 @@ void GameSession::publish_raster() {
     hud_frame_=hud_.capture(game_);hud_.update(hud_frame_);
     raster_=std::move(next);
 }
-GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool focused) {
+void GameSession::finish_controller_remap() {
+    if(!requested_controller_remap_) throw std::logic_error("No native controller editor to close");
+    requested_controller_remap_=false;input_.reset();clock_.reset();previous_time_.reset();fraction_=0;
+    suppress_held_=true;reset_hold_.cancel();history_.reset_interpolation();
+}
+GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool focused,
+    std::optional<input::ButtonMask> mapped_gameplay) {
     if(failed_) throw std::runtime_error("Reconstruct 3DS game after a failed source/audio tick");
     if(time<0) throw std::invalid_argument("Invalid 3DS monotonic frame time");
     GameAdvance result;result.requested_experience=requested_experience_;
     result.requested_preview=requested_preview_;result.start_after_preview=start_after_preview_;
     result.requested_settings_reset=requested_settings_reset_;
-    if(requested_experience_ || requested_preview_ || requested_settings_reset_) return result;
+    result.requested_controller_remap=requested_controller_remap_;
+    if(requested_experience_ || requested_preview_ || requested_settings_reset_ || requested_controller_remap_) return result;
     if(!focused) {
         reset_hold_.cancel();
         previous_time_.reset();clock_.reset();input_.reset();fraction_=0;
@@ -140,16 +147,28 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     }
     // Home/sleep/resume must not act as a fresh held Start/A press. Wait for
     // release; pending pre-suspend APU events/partial 20 Hz cadence survive.
-    if(suppress_held_) {if(!held) suppress_held_=false;else held=0;}
+    auto gameplay=mapped_gameplay.value_or(held);
+    const bool any_held=(held|gameplay)!=0;
+    if(suppress_held_) {
+        if(!(held|gameplay)) suppress_held_=false;
+        else held=gameplay=0;
+    }
     // Check continuously at the host input clock, including duplicate raster
     // times. A rewind, release, Home/sleep or leaving setup cancels the hold.
     const bool reset_eligible=game_.in_setup_menu() && (!previous_time_ || time>=*previous_time_);
-    if(reset_hold_.update(reset_eligible,held,time)) {
+    const bool reset_was_active=reset_hold_.active();
+    if(reset_hold_.update(reset_eligible,gameplay,time)) {
         requested_settings_reset_=result.requested_settings_reset=true;
         clock_.reset();fraction_=result.raster_fraction=0;input_.reset();
         history_.reset_interpolation();return result;
     }
-    if(!game_.in_setup_menu()) held=gameplay_buttons(held,game_.swap_face_buttons());
+    if(reset_was_active && !reset_hold_.active()) {
+        suppress_held_=true;held=gameplay=0;input_.reset();
+    }
+    // Remapped shoulders can be physical A/B/directions. While their reset
+    // chord is held, do not also open a submenu/change experience/navigate.
+    if(game_.in_setup_menu() && reset_hold_.active()) {held=0;input_.reset();}
+    if(!game_.in_setup_menu()) held=gameplay_buttons(gameplay,game_.swap_face_buttons());
     input_.sample(held); // Also retain quick input on a duplicate display time.
     if(previous_time_ && time==*previous_time_) {
         result.duplicate=true;result.raster_fraction=fraction_;return result;
@@ -157,7 +176,7 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     if(!previous_time_ || time<*previous_time_) {
         const bool rewound=previous_time_ && time<*previous_time_;
         previous_time_=time;clock_.reset();fraction_=0;history_.reset_interpolation();
-        if(rewound) {input_.reset();suppress_held_=held!=0;}
+        if(rewound) {input_.reset();suppress_held_=any_held;}
         return result;
     }
     const auto batch=clock_.advance(std::chrono::nanoseconds(time-*previous_time_));previous_time_=time;
@@ -169,6 +188,14 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
             if(game_.logic_tick_ready()) {
                 const bool runtime=game_.runtime_options_open(),paused=game_.paused();
                 auto controls=GameMenu::filter(game_,input_.consume());
+                if(game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::options
+                    && game_.pregame_selection()==8 && (controls.pressed&input::a)) {
+                    requested_controller_remap_=result.requested_controller_remap=true;
+                    // Consume this host action instead of sending it into the
+                    // cartridge, but finish this raster's ordinary VM/SPC
+                    // cadence before freezing. A partial audio phase survives.
+                    controls={};input_.reset();reset_hold_.cancel();
+                }
                 if(start_after_preview_ && game_.in_setup_menu() && !game_.menu_preview()) {
                     // A single source Start action, not a jump into gameplay or
                     // a held Start that could pause the newly launched stage.
@@ -206,6 +233,10 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                     game_.music_volume(),game_.sfx_volume(),mixed_);
                 sink_(mixed_);game_.synchronize_apu_output_ports(audio_.output_ports());
                 pending_audio_.clear();audio_phase_=0;++result.audio_blocks;
+            }
+            if(requested_controller_remap_) {
+                clock_.reset();fraction_=result.raster_fraction=0;
+                history_.reset_interpolation();break;
             }
         }
         if(result.video_phases) {
