@@ -4,6 +4,7 @@
 #include "starfox/platform/nintendo_3ds/pica_shapes.hpp"
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
+#include "starfox/platform/nintendo_3ds/pica_window.hpp"
 #include "pica_scene_shader.hpp"
 
 namespace {
@@ -37,7 +38,7 @@ int diagnostic(NativeDisplay& display) {
         {188,72,24},{24,130,132},{82,20,26},{35,52,120},{118,46,132},{38,110,52},
         {82,82,92},{118,118,128},{156,156,166},{202,202,210},{238,238,242},{255,255,255}}};
     starfox::render::SoftwareRenderer source_renderer;PicaShapes source_geometry;
-    PicaRaster source_raster;PicaComposite compositor;
+    PicaRaster source_raster;PicaComposite compositor;PicaWindow source_window;
     auto sky=std::make_shared<starfox::simulation::SnesPpuState>();
     sky->main_screen=2;sky->bg2_screen_size=0;
     sky->bg2_character_base=0x4000;sky->bg2_screen_base=0x6000;
@@ -51,7 +52,7 @@ int diagnostic(NativeDisplay& display) {
     std::vector<PicaVertex> vertices;
     std::vector<PicaDraw> draws;std::vector<PicaImage> images;
     std::vector<PicaVertex> alpha_vertices;std::vector<PicaDraw> alpha_draws;
-    bool setup=true,caption_dirty=true;float x{},y{};
+    bool setup=true,caption_dirty=true,wipe_demo=false;unsigned wipe_phase{};float x{},y{};
     starfox::input::ButtonMask previous{};
     StereoSettings settings;settings.near_plane=16;
     while(true) {
@@ -59,12 +60,13 @@ int diagnostic(NativeDisplay& display) {
         if((input.held&(starfox::input::select|starfox::input::start))==(starfox::input::select|starfox::input::start)) return 0;
         if((input.held&starfox::input::a) && !(previous&starfox::input::a)) {setup=false;caption_dirty=true;}
         if((input.held&starfox::input::b) && !(previous&starfox::input::b)) {setup=true;caption_dirty=true;}
+        if(!setup && (input.held&starfox::input::x) && !(previous&starfox::input::x)) wipe_demo=!wipe_demo;
         previous=input.held;
         if(caption_dirty) {
             caption.clear({8,15,28});
             caption.text(12,12,"PICA200 GPU CHECK / NOT THE GAME",{183,224,240});
             if(setup) caption.text(24,56,"A: SOURCE MODELS / DEPTH / SLIDER\n\nB: RETURN TO THIS PAGE\nCIRCLE PAD: MOVE FRONT CUBE\n\nSELECT + START: EXIT\n\nREAL PRE-GAME MENU IS RETAINED\nIN THE SEPARATE GAME PORT",{227,235,242});
-            else caption.text(16,221,"SLIDER: DEPTH / B: BACK / SELECT+START: EXIT",{213,237,244});
+            else caption.text(16,221,"SLIDER: DEPTH / X: WIPE / B: BACK",{213,237,244});
             caption_dirty=false;
         }
         if(!setup) {
@@ -91,7 +93,12 @@ int diagnostic(NativeDisplay& display) {
             alpha_vertices.clear();alpha_draws.clear();
             quad(alpha_vertices,{{{-75,-60,450},{75,-60,450},{75,60,450},{-75,60,450}}},{.2F,.8F,1,.35F});
             alpha_draws.push_back({0,6,pica_no_texture,pica_identity,PicaSpace::world,true,false,true});
+            alpha_draws.back().clip=PicaClip{185,0,225,240}; // Exercise actual per-draw PICA scissor state.
             groups.push_back({plan,alpha_vertices,alpha_draws,{}});
+            starfox::simulation::WindowWipeState wipe;wipe.active=wipe_demo;wipe.horizontal_opening=true;
+            const auto opening=std::abs(192-int(wipe_phase++%384));
+            wipe.opening_top=(192-opening)*.5;wipe.opening_bottom=192-wipe.opening_top;
+            groups.push_back(source_window.prepare(wipe,plan,WindowCoverage::full_scene));
         }
         HudState hud;hud.lives=2;hud.bombs=3;hud.shield_percent=76;hud.boost_percent=92;
         hud.ally_percent={84,58,95};hud.radio_message="SYNTHETIC GPU CHECK / NO GAME DATA";

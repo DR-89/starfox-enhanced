@@ -1,5 +1,6 @@
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
+#include "starfox/platform/nintendo_3ds/pica_window.hpp"
 #include <iostream>
 
 namespace {
@@ -123,6 +124,88 @@ void composition() {
     std::array<PicaFrame,8> oversized;oversized.fill(backdrop);
     rejected([&]{compositor.prepare(plan,oversized,dashboard.view());},"Combined padded texture budget not checked");
 }
+bool expected_mask(const simulation::WindowWipeState& wipe,WindowCoverage coverage,unsigned x,unsigned y) {
+    if(!wipe.active) return false;
+    const bool wide=coverage==WindowCoverage::full_scene;
+    const int sx=wide?16+int(x*223/399):int(x)-72;
+    if(wipe.horizontal_opening) {
+        const double sy=wide?(double(y)+.5)*.8:double(y)+.5-24;
+        if(sy<0 || sy>=192) return false;
+        if(sy<wipe.opening_top || sy>=wipe.opening_bottom) return true;
+        return wide?x<2:(!(sx>=15 && sx<=16))!=(sx>=16 && sx<=240);
+    }
+    const int sy=wide?int(y*191/239):int(y)-24;
+    if(sy<0 || sy>=192) return false;
+    const int left=std::uint8_t(wipe.left[sy]),right=std::uint8_t(wipe.right[sy]);
+    const bool dynamic=left<=right?(sx>=left && sx<=right):(sx>=left || sx<=right);
+    const bool first=!dynamic,second=sx>=16 && sx<=240;
+    if((wipe.logic&3)==0) return first || second;
+    if((wipe.logic&3)==1) return first && second;
+    if((wipe.logic&3)==2) return first!=second;
+    return first==second;
 }
-int main() try {raster();composition();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+void window_masks() {
+    const auto plan=plan_frame(1,true,ScreenUse::world);Canvas dashboard;PicaWindow window;
+    simulation::WindowWipeState wipe;wipe.active=true;
+    const auto check=[&](WindowCoverage coverage) {
+        const auto before=wipe;
+        const auto frame=window.prepare(wipe,plan,coverage);validate_pica_frame(frame,dashboard.view());
+        require(frame.textures.empty() && frame.draws.size()<=1,"Source wipe allocated a full world/mask bitmap or one draw per row");
+        if(!frame.draws.empty()) require(frame.draws[0].space==PicaSpace::screen && !frame.draws[0].depth_test
+            && !frame.draws[0].depth_write && !frame.draws[0].alpha_blend,"Black source wipe lost post-composition screen role");
+        std::vector<std::uint8_t> actual(top_width*screen_height,0);
+        for(unsigned i=0;i<frame.vertices.size();i+=6) {
+            const auto& a=frame.vertices[i];const auto& b=frame.vertices[i+2];
+            const unsigned left=unsigned(a.position[0]),top=unsigned(a.position[1]);
+            const unsigned right=unsigned(b.position[0]),bottom=unsigned(b.position[1]);
+            require(left<right && top<bottom && right<=400 && bottom<=240,"Native wipe emits out-of-bounds/empty rectangle");
+            for(unsigned j=i;j<i+6;++j) require(frame.vertices[j].colour==std::array<float,4>{0,0,0,1},"Wipe rectangle not opaque black");
+            for(unsigned y=top;y<bottom;++y) for(unsigned x=left;x<right;++x) ++actual[y*400+x];
+        }
+        for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;++x)
+            require(actual[y*400+x]==unsigned(expected_mask(wipe,coverage,x,y)),
+                "Native source-window geometry disagrees with independent per-pixel logic or leaves an edge seam");
+        const auto builds=window.builds();const auto* data=frame.vertices.data();
+        for(float slider:{0.F,.5F,1.F}) {
+            const auto other=window.prepare(wipe,plan_frame(slider,true,ScreenUse::world),coverage);
+            require(window.builds()==builds && other.vertices.data()==data,"Slider/second eye rebuilt source window mask");
+        }
+        require(wipe.left==before.left && wipe.right==before.right && wipe.opening_top==before.opening_top
+            && wipe.opening_bottom==before.opening_bottom,"Window preparation mutated native raster state");
+    };
+    for(unsigned logic=0;logic<4;++logic) for(unsigned phase=0;phase<5;++phase) {
+        wipe.logic=logic;
+        for(unsigned y=0;y<192;++y) {
+            wipe.left[y]=std::uint16_t((y*13+phase*59)&511);
+            wipe.right[y]=std::uint16_t((y*7+255-phase*39)&511);
+        }
+        check(WindowCoverage::authored);check(WindowCoverage::full_scene);
+    }
+    wipe.logic=1;wipe.left.fill(0);wipe.right.fill(0);check(WindowCoverage::full_scene);
+    const auto closed=window.prepare(wipe,plan,WindowCoverage::full_scene);
+    require(closed.vertices.size()==6 && closed.vertices[0].position==Point3{0,0,0}
+        && closed.vertices[2].position==Point3{400,240,0},"Closed Training wipe must cover every added LCD column/row");
+    wipe.horizontal_opening=true;
+    for(double edge:{0.,32.125,63.5,96.}) {
+        wipe.opening_top=edge;wipe.opening_bottom=192-edge;
+        check(WindowCoverage::authored);check(WindowCoverage::full_scene);
+    }
+    const auto retained=window.prepare(wipe,plan,WindowCoverage::full_scene);
+    const std::vector<PicaVertex> saved(retained.vertices.begin(),retained.vertices.end());const auto builds=window.builds();
+    auto bad=wipe;bad.opening_top=std::numeric_limits<double>::quiet_NaN();
+    rejected([&]{window.prepare(bad,plan,WindowCoverage::full_scene);},"Non-finite shutter accepted");
+    require(window.builds()==builds && std::equal(saved.begin(),saved.end(),retained.vertices.begin()),"Failed window transaction lost last complete mask");
+    const std::array<PicaVertex,3> geometry{{{{-1,-1,512}},{{1,-1,512}},{{0,1,512}}}};
+    const std::array<PicaDraw,1> draw{{{0,3}}};const PicaFrame models{plan,geometry,draw,{}};
+    PicaComposite composite;const auto composed=composite.prepare(plan,std::array{models,retained},dashboard.view());
+    require(composed.draws.front().space==PicaSpace::world && composed.draws.back().space==PicaSpace::screen
+        && std::equal(geometry.begin(),geometry.end(),composed.vertices.begin()),"Window flattened or reordered stereo model geometry");
+    wipe.active=false;
+    require(window.prepare(wipe,plan,WindowCoverage::authored).vertices.empty(),"Retired source wipe left a stale black shutter");
+    require(pica_screen_scissor({10,20,30,40})==std::array<unsigned,4>{200,370,220,390},"LCD-to-rotated-target scissor mapping wrong");
+    rejected([&]{pica_screen_scissor({0,0,400,241});},"Off-LCD effect scissor accepted");
+    rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
+}
+}
+int main() try {raster();composition();window_masks();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

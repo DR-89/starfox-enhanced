@@ -88,8 +88,6 @@ void GameModels::text(PicaShapes& output,const simulation::GameObject& object,co
 void GameModels::particles(PicaShapes& output,const vr::GameSceneSnapshot& scene,simulation::ObjectHandle owner,
     const render::RenderPose& pose,double alpha,const render::Palette256& palette,GameModelCoverage& count) {
     auto prepared=auxiliary(pose);
-    if(pose.effect_clip_right>pose.effect_clip_left)
-        throw std::runtime_error("3DS particle effect-window clipping is not implemented yet");
     for(const auto& particle:scene.particles) {
         if(!particle.life || particle.owner!=owner) continue;
         const std::array<double,3> current{pose.x+interpolate_word(particle.previous_x,particle.x,alpha),

@@ -52,12 +52,12 @@ unsigned PicaShapes::texture(Texture image) {
     textures_.push_back(std::move(image));return unsigned(textures_.size()-1);
 }
 void PicaShapes::submit(std::span<const PicaVertex> vertices,unsigned texture_index,
-    const PicaMatrix& model,bool dither,std::array<std::uint8_t,4> odd) {
+    const PicaMatrix& model,bool dither,std::array<std::uint8_t,4> odd,std::optional<PicaClip> clip) {
     if(vertices.empty()) return;
     if(vertices.size()%3 || vertices.size()>pica_vertex_limit-vertices_.size())
         throw std::length_error("3DS source geometry limit exceeded");
     const bool merge=!draws_.empty() && draws_.back().texture==texture_index
-        && draws_.back().model==model && draws_.back().screen_dither==dither
+        && draws_.back().model==model && draws_.back().screen_dither==dither && draws_.back().clip==clip
         && (!dither || draws_.back().dither_odd==odd);
     if(!merge && draws_.size()>=pica_draw_limit) throw std::length_error("3DS source draw limit exceeded");
     const auto first=unsigned(vertices_.size()),count=unsigned(vertices.size());
@@ -65,7 +65,7 @@ void PicaShapes::submit(std::span<const PicaVertex> vertices,unsigned texture_in
     if(merge) draws_.back().count+=count;
     else {
         PicaDraw draw;draw.first=first;draw.count=count;draw.texture=texture_index;
-        draw.model=model;draw.screen_dither=dither;draw.dither_odd=odd;draws_.push_back(draw);
+        draw.model=model;draw.screen_dither=dither;draw.dither_odd=odd;draw.clip=clip;draws_.push_back(draw);
     }
 }
 void PicaShapes::append(const render::PreparedShapePrimitives& source,
@@ -74,6 +74,17 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
         || source.focal_length<=0 || !std::isfinite(origin[0]) || !std::isfinite(origin[1])
         || !std::isfinite(source.pose.vanish_x) || !std::isfinite(source.pose.vanish_y))
         throw std::invalid_argument("Invalid 3DS source projection/palette");
+    std::optional<PicaClip> clip;
+    if(source.pose.effect_clip_right>source.pose.effect_clip_left) {
+        // Source clips use the same canonical bitmap coordinates as vanish_x.
+        // Shift to the native LCD centre, not to either projected eye position.
+        const double offset=double(top_width)*.5-origin[0];
+        const auto left=std::clamp(double(source.pose.effect_clip_left)+offset,0.,double(top_width));
+        const auto right=std::clamp(double(source.pose.effect_clip_right)+offset,0.,double(top_width));
+        if(left>=right) return; // A completely clipped primitive is legitimately invisible.
+        clip=PicaClip{int(std::ceil(left)),0,int(std::ceil(right)),int(screen_height)};
+        if(clip->left>=clip->right) return;
+    }
     const auto old_vertices=vertices_.size(),old_draws=draws_.size(),old_textures=textures_.size();
     const unsigned old_count=draws_.empty()?0:draws_.back().count;
     try {
@@ -159,13 +170,6 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                     const double width=unsigned(art->u_mask)+1,height=unsigned(art->v_mask)+1;
                     if(height<width) bottom=top+2*half*height/width;
                     else v1=width/height;
-                } else if(source.pose.effect_clip_right>source.pose.effect_clip_left && centre[2]>0) {
-                    const double projected_left=source.pose.vanish_x+left*source.focal_length/centre[2];
-                    const double dimension=2*half*source.focal_length/centre[2];
-                    u0=std::clamp((source.pose.effect_clip_left-projected_left)/dimension,0.,1.);
-                    u1=std::clamp((source.pose.effect_clip_right-projected_left)/dimension,0.,1.);
-                    if(u0>=u1) continue;
-                    left+=2*half*u0;right=centre[0]-half+2*half*u1;
                 }
                 const std::array<Camera,4> points{{{left,top,centre[2]},{right,top,centre[2]},
                     {right,bottom,centre[2]},{left,bottom,centre[2]}}};
@@ -178,7 +182,7 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                 for(unsigned corner=1;corner+1<boundary.size();++corner)
                     for(unsigned index:{0U,corner,corner+1}) triangles.push_back(boundary[index]);
             }
-            submit(triangles,texture_index,model,dither,odd_colour);
+            submit(triangles,texture_index,model,dither,odd_colour,clip);
         }
         views_.clear();
     } catch(...) {

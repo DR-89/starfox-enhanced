@@ -21,6 +21,19 @@ struct PicaVertex {
 };
 static_assert(sizeof(PicaVertex)==9*sizeof(float));
 enum class PicaSpace {world,screen,scenery}; // Scenery is at infinity, not HUD depth.
+struct PicaClip {
+    int left{},top{},right{int(top_width)},bottom{int(screen_height)}; // LCD pixels; right/bottom exclusive.
+    bool operator==(const PicaClip&) const=default;
+};
+inline std::array<unsigned,4> pica_screen_scissor(const PicaClip& clip) {
+    if(clip.left<0 || clip.top<0 || clip.right>int(top_width) || clip.bottom>int(screen_height)
+        || clip.left>=clip.right || clip.top>=clip.bottom)
+        throw std::invalid_argument("Invalid 3DS LCD effect clip");
+    // The upper render target is 240x400, clockwise-rotated by our projection.
+    // Citro3D takes exclusive bounds and encodes right-1/bottom-1 itself.
+    return {screen_height-unsigned(clip.bottom),top_width-unsigned(clip.right),
+        screen_height-unsigned(clip.top),top_width-unsigned(clip.left)};
+}
 struct PicaDraw {
     unsigned first{},count{},texture{pica_no_texture};
     PicaMatrix model{pica_identity};
@@ -31,6 +44,7 @@ struct PicaDraw {
     // model UVs must not stretch the checkerboard along perspective geometry.
     bool screen_dither{};
     std::array<std::uint8_t,4> dither_odd{}; // TEV constant; one shared parity mask.
+    std::optional<PicaClip> clip{}; // Source effect window, identical for both eye submissions.
 };
 struct PicaImage {
     std::span<const std::uint8_t> pixels;
@@ -141,6 +155,7 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             || frame.textures[draw.texture].width!=8 || frame.textures[draw.texture].height!=8
             || !frame.textures[draw.texture].repeat))
             throw std::invalid_argument("Invalid 3DS source dither texture");
+        if(draw.clip) static_cast<void>(pica_screen_scissor(*draw.clip));
         for(const auto& row:draw.model) for(float value:row) if(!std::isfinite(value))
             throw std::invalid_argument("Non-finite 3DS model matrix");
         for(unsigned eye=0;eye<frame.plan.eye_count;++eye)

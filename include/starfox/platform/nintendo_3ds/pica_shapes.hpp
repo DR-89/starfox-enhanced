@@ -23,7 +23,7 @@ private:
     };
     unsigned texture(Texture);
     void submit(std::span<const PicaVertex>,unsigned texture,const PicaMatrix&,bool dither,
-        std::array<std::uint8_t,4> odd);
+        std::array<std::uint8_t,4> odd,std::optional<PicaClip>);
     std::vector<PicaVertex> vertices_;
     std::vector<PicaDraw> draws_;
     std::vector<Texture> textures_;

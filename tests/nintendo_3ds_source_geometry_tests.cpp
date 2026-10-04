@@ -124,9 +124,39 @@ void materials_and_sprites() {
     prepared=renderer.prepare_primitives(shape,p);
     require(prepared.primitives.size()==1 && prepared.primitives[0].simple_sprite,"Whole-object asteroid/explosion sprite retained");
     output.clear();output.append(prepared,colours);frame=output.frame(plan_frame(1,true,ScreenUse::world));
-    require(frame.vertices.size()==6 && frame.vertices[0].uv[0]==.5F && frame.vertices[1].uv[0]==1,"Simple sprite source effect clip retains cropped UVs");
+    require(frame.vertices.size()==6 && frame.vertices[0].uv[0]==0 && frame.vertices[1].uv[0]==1
+        && frame.draws[0].clip==PicaClip{200,0,208,240},"Simple sprite must retain both-eye geometry/UVs and use native LCD clipping");
     require(frame.textures[0].pixels[3]==0 && frame.textures[0].pixels[4]==colours[12].r,"Sprite palette override preserves transparent zero");
     p.z=64;require(renderer.prepare_primitives(shape,p).primitives.empty(),"Source simple sprite near no-op matches original");
+}
+void effect_windows() {
+    auto prepared=render::SoftwareRenderer{}.prepare_primitives(quad(),pose());
+    const auto plan=plan_frame(1,true,ScreenUse::world);PicaShapes output;
+    output.append(prepared,palette());
+    auto clipped=prepared;clipped.pose.effect_clip_left=64;clipped.pose.effect_clip_right=160;
+    output.append(clipped,palette());
+    const auto frame=output.frame(plan);
+    require(frame.draws.size()==2 && !frame.draws[0].clip && frame.draws[1].clip==PicaClip{136,0,232,240},
+        "Different source windows must not merge into one unclipped native draw");
+    require(std::equal(frame.vertices.begin(),frame.vertices.begin()+6,frame.vertices.begin()+6),
+        "Source mask pre-cropped mono geometry instead of clipping each native eye");
+    require(pica_screen_scissor(*frame.draws[1].clip)==std::array<unsigned,4>{0,168,240,264},
+        "LCD horizontal effect clip did not rotate into the actual 240x400 target");
+    output.append(clipped,palette());
+    require(output.frame(plan).draws.size()==2 && output.frame(plan).draws[1].count==12,
+        "Adjacent equal effect windows failed native draw coalescing");
+    clipped.pose.effect_clip_left=-2000;clipped.pose.effect_clip_right=-1000;
+    output.append(clipped,palette());
+    require(output.frame(plan).vertices.size()==18,"Fully outside effect window emitted unmasked geometry");
+    clipped.pose.effect_clip_left=-100;clipped.pose.effect_clip_right=128;
+    output.append(clipped,palette());
+    require(output.frame(plan).draws.back().clip==PicaClip{0,0,200,240},"Partially outside source clip failed LCD clamping");
+    std::vector<std::uint8_t> lower(bottom_width*screen_height*3);
+    auto malformed=output.frame(plan);std::vector<PicaDraw> bad_draws(malformed.draws.begin(),malformed.draws.end());
+    bad_draws[1].clip=PicaClip{200,0,100,240};
+    malformed.draws=bad_draws;
+    rejects([&]{validate_pica_frame(malformed,{lower,bottom_width,screen_height,bottom_width*3});},
+        "Reversed source window accepted by presenter validation");
 }
 void rollback_and_budget() {
     auto shape=quad();auto p=pose();render::SoftwareRenderer renderer;
@@ -198,6 +228,6 @@ void projected_dither() {
 }
 } // namespace
 int main() try {
-    native_vertices();source_geometry();materials_and_sprites();rollback_and_budget();texture_resources();projected_dither();
+    native_vertices();source_geometry();materials_and_sprites();effect_windows();rollback_and_budget();texture_resources();projected_dither();
     std::cout<<"3DS shared source geometry/material conversion: "<<checks<<" checks passed\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

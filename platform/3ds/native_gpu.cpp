@@ -144,6 +144,7 @@ struct NativeGpu::Impl {
         C3D_CullFace(GPU_CULL_NONE); // Source visibility is not generic winding.
         C3D_DepthMap(true,-1,0);C3D_AlphaTest(true,GPU_GREATER,0);
         C3D_EarlyDepthTest(false,GPU_EARLYDEPTH_GEQUAL,0);
+        C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0);
         for(unsigned stage=0;stage<6;++stage) C3D_TexEnvInit(C3D_GetTexEnv(stage));
     }
     void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false,
@@ -198,6 +199,10 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
         auto* target=impl_->top[eye];C3D_RenderTargetClear(target,C3D_CLEAR_ALL,clear_colour(frame.clear),0);
         if(!C3D_FrameDrawOn(target)) throw std::runtime_error("3DS GPU eye target unavailable");
         for(const auto& draw:frame.draws) {
+            if(draw.clip) {
+                const auto bounds=pica_screen_scissor(*draw.clip);
+                C3D_SetScissor(GPU_SCISSOR_NORMAL,bounds[0],bounds[1],bounds[2],bounds[3]);
+            } else C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0);
             upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
             impl_->material(draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture],
                 draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither,draw.dither_odd);
@@ -207,6 +212,7 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
     C3D_RenderTargetClear(impl_->bottom,C3D_CLEAR_COLOR,0,0);
     if(!C3D_FrameDrawOn(impl_->bottom)) throw std::runtime_error("3DS GPU HUD target unavailable");
     upload_matrix(impl_->transform_location,pica_screen_matrix(bottom_width));
+    C3D_SetScissor(GPU_SCISSOR_DISABLE,0,0,0,0); // Never inherit upper-LCD effect masks into the cockpit HUD.
     impl_->material(&impl_->dashboard,false,false,false);
     C3D_DrawArrays(GPU_TRIANGLES,pica_vertex_limit,6);
 }
