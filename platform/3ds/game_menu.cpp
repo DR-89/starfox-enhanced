@@ -3,7 +3,7 @@
 namespace starfox::platform::nintendo_3ds {
 namespace {
 using simulation::PregamePage;
-constexpr std::array<std::string_view,79> labels{
+constexpr std::array<std::string_view,80> labels{
     "EXPERIENCE","PACE/SPEED","RENDER FPS","DISPLAY","RENDERER","MSU-1 MUSIC","RUMBLE",
     "AA QUALITY","2D FILTER","RENDER UPSCALE","ENHANCED LIGHTING","VSYNC","3D COLOR / STYLE",
     "2D COLOR / STYLE","OPTIONS","START GAME","PREVIEW","3D BLOOM","2D BLOOM","3D SMOOTHING",
@@ -17,7 +17,7 @@ constexpr std::array<std::string_view,79> labels{
     "EXPLOSION SHOCKWAVES","WEAPON LIGHTING","EXHAUST TRAILS","STAGE WEATHER","AMBIENT OCCLUSION",
     "DEPTH OF FIELD","IMPACT SPARKS / DEBRIS","EXHAUST HEAT DISTORTION","CRT PHOSPHOR PERSISTENCE",
     "ADAPTIVE EXPOSURE","WATER CAUSTICS","SHADOW SOFTNESS","IMPACT SHAKE","WEAPON RECOIL",
-    "CAMERA BANKING","VOLUMETRIC FOG","MOTION BLUR","DLSS 4.5"};
+    "CAMERA BANKING","VOLUMETRIC FOG","MOTION BLUR","DLSS 4.5","3D ASTEROIDS"};
 std::string toggle(bool value) {return value?"ON":"OFF";}
 bool supported(PregamePage page,unsigned id,bool runtime) {
     switch(page) {
@@ -108,6 +108,11 @@ std::string title(PregamePage page) {
 }
 } // namespace
 GameMenu::GameMenu(const assets::RomImage& rom,const assets::SymbolMap& symbols):text_(rom,symbols) {
+    // Check source-owned page orders without private cartridge data. A new
+    // shared row must never pass CI and then crash only when a player opens it.
+    for(const auto page:{PregamePage::main,PregamePage::two_d,PregamePage::three_d,PregamePage::global})
+        for(const auto id:simulation::pregame_menu_order(page))
+            if(id>=labels.size() || labels[id].empty()) throw std::logic_error("Unmapped source menu page row");
     constexpr std::array<Point3,4> corners{{{0,0,0},{400,0,0},{400,240,0},{0,240,0}}};
     constexpr std::array<std::array<float,2>,4> uv{{{0,0},{1,0},{1,1},{0,1}}};
     unsigned i=0;for(unsigned corner:{0U,1U,2U,0U,2U,3U}) vertices_[i++]={corners[corner],{1,1,1,1},uv[corner]};
@@ -135,7 +140,7 @@ input::TickInput GameMenu::filter(const simulation::GameSimulation& game,input::
 bool GameMenu::update(const GameMenuState& state) {
     if(initialized_ && state_==state) return false;
     if(state.visible) {
-        if(state.rows.empty() || state.rows.size()>79 || state.language>5
+        if(state.rows.empty() || state.rows.size()>labels.size() || state.language>5
             || std::none_of(state.rows.begin(),state.rows.end(),[&](const auto& row){return row.id==state.selection;}))
             throw std::invalid_argument("Invalid actual pre-game snapshot");
         for(std::size_t i=0;i<state.rows.size();++i) for(std::size_t j=0;j<i;++j)
