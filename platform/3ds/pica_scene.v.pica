@@ -1,0 +1,23 @@
+; One local-space geometry input, independently projected for each LCD eye.
+.fvec transform[4]
+.fvec uv_scale
+.constf constants(0.0, 1.0, 0.0, 0.0)
+.out out_position position
+.out out_colour color
+.out out_uv texcoord0
+.alias in_position v0
+.alias in_colour v1
+.alias in_uv v2
+.proc main
+    mov r0.xyz, in_position
+    mov r0.w, constants.y
+    dp4 out_position.x, transform[0], r0
+    dp4 out_position.y, transform[1], r0
+    dp4 out_position.z, transform[2], r0
+    dp4 out_position.w, transform[3], r0
+    mov out_colour, in_colour
+    mul r1.xy, uv_scale, in_uv
+    mov out_uv.x, r1.x
+    add out_uv.y, constants.y, -r1.y
+    end
+.end

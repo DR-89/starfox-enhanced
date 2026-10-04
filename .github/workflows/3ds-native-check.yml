@@ -1,0 +1,53 @@
+name: 3DS native bring-up checks
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/3ds-native-bringup]
+    paths:
+      - 'platform/3ds/**'
+      - 'include/starfox/platform/nintendo_3ds/**'
+      - '.github/workflows/3ds-native-check.yml'
+permissions:
+  contents: read
+jobs:
+  native-diagnostics:
+    name: Original 3DS libctru / NDSP / PICA cross-link
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Official devkitPro/devkitARM image, pinned rather than floating latest.
+      CTR_IMAGE: devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-build actual native diagnostics
+        shell: bash
+        run: |
+          docker pull "$CTR_IMAGE"
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE:/src" -w /src "$CTR_IMAGE" \
+            bash tools/build_3ds_frontend.sh . build/3ds-native
+          for target in starfox_3ds_frontend_check starfox_3ds_gpu_check; do
+            test -s "build/3ds-native/$target.elf"
+            test -s "build/3ds-native/$target.3dsx"
+          done
+      - name: Inspect ARM executables and memory sizes
+        shell: bash
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$GITHUB_WORKSPACE:/src" -w /src "$CTR_IMAGE" bash -euc '
+              for target in starfox_3ds_frontend_check starfox_3ds_gpu_check; do
+                "$DEVKITARM/bin/arm-none-eabi-readelf" -h "build/3ds-native/$target.elf"
+                "$DEVKITARM/bin/arm-none-eabi-size" "build/3ds-native/$target.elf"
+              done
+            '
+      - name: Upload diagnostics, not a playable game or release
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-original-3ds-native-diagnostics
+          path: |
+            build/3ds-native/*.elf
+            build/3ds-native/*.3dsx
+            build/3ds-native/*.smdh
+            build/3ds-native/pica_scene.shbin
+          if-no-files-found: error
+          retention-days: 7
