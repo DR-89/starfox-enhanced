@@ -28,7 +28,7 @@ void write_u32(std::ofstream& output, std::uint32_t value) {
 } // namespace
 
 void composite_transparent_layer(const Framebuffer& source,
-    Framebuffer& destination, const LayerCompositeSettings& settings) noexcept {
+    Framebuffer& destination, const LayerCompositeSettings& settings) {
     const auto mosaic_enabled = settings.mosaic_layer_mask != 0U
         && (settings.mosaic & settings.mosaic_layer_mask) != 0U;
     const auto mosaic_size = static_cast<std::int32_t>(

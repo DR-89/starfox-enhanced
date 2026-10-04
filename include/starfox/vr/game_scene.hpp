@@ -1,6 +1,7 @@
 #pragma once
-#if !defined(__3DS__)
+#if !defined(__3DS__) && !defined(STARFOX_SCENE_SOURCE_ONLY) && __has_include("starfox/vr/presentation.hpp")
 #include "starfox/vr/presentation.hpp"
+#define STARFOX_SCENE_TRACKED_HELPERS
 #endif
 #include "starfox/render/object_snapshot.hpp"
 #include "starfox/render/software_renderer.hpp"
@@ -22,7 +23,8 @@ struct GameSceneObject {
 // one shared snapshot for both eyes and for asynchronous GPU fence retries.
 struct GameSceneSnapshot {
     uint64_t revision{};
-    // Stable scene epoch is distinct from individual completed source ticks.
+    // revision identifies completed ticks; scene_epoch identifies scene/state
+    // discontinuities. Temporal rendering must not reset on every source tick.
     uint64_t scene_epoch{};
     timing::TransformSnapshot camera;
     simulation::MatrixQ15 view_matrix{};
@@ -32,10 +34,11 @@ struct GameSceneSnapshot {
     bool shadows_enabled{};
     simulation::GameFlowState flow{};
     simulation::ObjectHandle player{};
-    // A live player reference is captured independently of draw visibility.
+    // Preserve upstream tracked-headset metadata independently of draw-list
+    // visibility. Native consoles keep the unmodified cartridge camera.
     std::optional<render::ObjectPresentationSnapshot> pilot_reference;
     bool pilot_tracking{};
-    uint8_t control_type{}; // Native C_TYPE; bit 1 inverts the vertical pad axis.
+    uint8_t control_type{};
     render::ObjectSnapshotMap transforms;
     std::vector<GameSceneObject> objects; // Native draw-list order, never sorted.
     std::array<simulation::ParticleState,simulation::kMaximumParticles> particles{};
@@ -87,15 +90,12 @@ struct GameSceneSnapshot {
     std::optional<uint16_t> colour_table_override;
 };
 
-#if !defined(__3DS__)
-// Tracked-headset helpers do not belong to the console source data contract.
+#if defined(STARFOX_SCENE_TRACKED_HELPERS)
 inline bool pilot_view_active(const GameSceneSnapshot& scene,const PresentationPreferences& preferences) noexcept {
     return preferences.cockpit && scene.pilot_tracking && scene.pilot_reference
         && (scene.flow==simulation::GameFlowState::gameplay || scene.flow==simulation::GameFlowState::training);
 }
 inline bool world_panel_scene(const GameSceneSnapshot& scene) noexcept {
-    // Complete authored interface scenes share one raster/quad, including their
-    // menu-preview models. Gameplay world geometry remains stereoscopic.
     return scene.paused || scene.briefing.active
         || scene.flow==simulation::GameFlowState::title
         || scene.flow==simulation::GameFlowState::controls_type
@@ -105,8 +105,6 @@ inline bool world_panel_scene(const GameSceneSnapshot& scene) noexcept {
         || scene.flow==simulation::GameFlowState::ex_pregame_menu;
 }
 inline EyeCamera source_panel_camera(const GameSceneSnapshot& scene) noexcept {
-    // Source focal length 256; 256x224 PPU canvas contains the 224x192 FX
-    // viewport at (16,16). Preserve dynamic authored vanishing points.
     auto result=EyeCamera{identity_matrix,{}};
     result.projection={2,0,0,0,0,-512.F/224,0,0,
         1.F-2.F*(scene.source_vanishing_point[0]+16)/256.F,
@@ -114,7 +112,7 @@ inline EyeCamera source_panel_camera(const GameSceneSnapshot& scene) noexcept {
         0,0,-.05F,0};
     return result;
 }
-
+#undef STARFOX_SCENE_TRACKED_HELPERS
 #endif
 
 inline bool replace_native_dialogue(const GameSceneSnapshot& scene) {
@@ -132,10 +130,13 @@ inline bool same_landscape_mapping(const GameSceneSnapshot& previous,const GameS
         && previous.background_landscape_unique_right_half==current.background_landscape_unique_right_half;
 }
 
+// Console stereo keeps the authored camera; a tracked-headset renderer can
+// retain its existing presentation-only follow adjustment. Neither changes VM.
+enum class SceneCameraPolicy {headset_tracking,source};
 class GameSceneHistory {
 public:
     GameSceneHistory(const simulation::GameSimulation&,const assets::RomImage&,
-                     const assets::SymbolMap&);
+                     const assets::SymbolMap&,SceneCameraPolicy=SceneCameraPolicy::headset_tracking);
     // Capture once after a completed logic tick, including every catch-up
     // tick. Publication is transactional; retained older snapshots stay valid.
     void capture();
@@ -144,12 +145,12 @@ public:
     [[nodiscard]] const simulation::GameSimulation& game() const {return game_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> current() const {return current_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> previous() const {return previous_;}
-    // The tick before previous(), for presentation smoothing across ticks.
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> older() const {return older_;}
 private:
     const simulation::GameSimulation& game_;
     const assets::RomImage& rom_;
     simulation::TrigTables trig_;
+    SceneCameraPolicy camera_policy_;
     std::array<uint32_t,13> addresses_{};
     std::array<uint32_t,2> tracking_strategies_{};
     std::array<uint32_t,11> model_addresses_{};

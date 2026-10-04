@@ -7,8 +7,8 @@
 
 namespace starfox::vr {
 GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
-    const assets::RomImage& rom,const assets::SymbolMap& symbols)
-    :game_(game),rom_(rom),trig_(simulation::TrigTables::load(rom,symbols)) {
+    const assets::RomImage& rom,const assets::SymbolMap& symbols,SceneCameraPolicy camera_policy)
+    :game_(game),rom_(rom),trig_(simulation::TrigTables::load(rom,symbols)),camera_policy_(camera_policy) {
     constexpr std::array names{"VIEWPOSX","VIEWPOSY","VIEWPOSZ",
         "VIEWROTXW","VIEWROTYW","VIEWROTZW","VIEWFLOATY","GAMEFRAME","PLAYERFLYMODE","SHADOWHEIGHT","BG2SCROLL","PVIEWPOSY","C_TYPE"};
     for(size_t i=0;i<names.size();++i) {
@@ -18,7 +18,6 @@ GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
                 addresses_[i]=address;found=true;break;
             }
         }
-        // C_TYPE only feeds the Steam Frame's cockpit steering; a bundle without it is fine elsewhere.
         if(!found && std::string_view(names[i])!="C_TYPE") throw std::runtime_error(std::string("Missing scene RAM symbol: ")+names[i]);
     }
     constexpr std::array tracking_names{"PLAYERONPLANET_STRAT","PLAYERINSPACE_STRAT"};
@@ -139,6 +138,7 @@ void GameSceneHistory::capture() {
         throw std::overflow_error("VR scene revision exhausted");
     auto next=std::make_shared<GameSceneSnapshot>();
     next->revision=current_?current_->revision+1:0;
+    next->scene_epoch=game_.scene_revision();
     const auto word=[&](size_t index) {return game_.map().peek_ram_word(addresses_[index]).value();};
     next->camera={starfox::bit_cast<int16_t>(word(0)),starfox::bit_cast<int16_t>(word(1)),
         starfox::bit_cast<int16_t>(word(2)),word(3),word(4),word(5)};
@@ -370,7 +370,8 @@ void GameSceneHistory::capture() {
     next->transforms=render::capture_object_snapshots(game_.objects(),trig_);
     if(const auto player=next->transforms.find(next->player);player!=next->transforms.end()) {
         const auto strategy=player->second.strategy_address;
-        if(strategy && (strategy==tracking_strategies_[0] || strategy==tracking_strategies_[1])) {
+        if(camera_policy_==SceneCameraPolicy::headset_tracking && strategy
+            && (strategy==tracking_strategies_[0] || strategy==tracking_strategies_[1])) {
             // Normal source flight follows only a fraction of player Y.
             // Remove that deliberate screen drift from the shared VR camera,
             // preserving shake, camera orbit and every scripted strategy.

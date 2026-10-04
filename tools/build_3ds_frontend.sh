@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Asset-free platform diagnostic only. This does not build the game runtime.
+# Platform diagnostics and real cartridge-core bring-up, not the completed game.
 # Run from a devkitPro shell; no WSL or Docker environment is required.
 : "${DEVKITPRO:?Set DEVKITPRO to the devkitPro installation}"
 source_root="${1:-$(pwd)}"
@@ -20,3 +20,4 @@ cmake -S "${source_root}/platform/3ds" -B "${build_root}" -G Ninja \
 cmake --build "${build_root}" --parallel 2
 printf 'Frontend diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_frontend_check.3dsx"
 printf 'PICA GPU diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_gpu_check.3dsx"
+printf 'Actual VM/SPC/HUD bring-up (renderer incomplete): %s\n' "${build_root}/starfox_3ds_game_core_check.3dsx"
