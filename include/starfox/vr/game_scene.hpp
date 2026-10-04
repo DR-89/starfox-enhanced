@@ -142,6 +142,19 @@ public:
     void capture();
     // Pause/camera-clock rebases must not replay the previous pose on resume.
     void reset_interpolation() noexcept {older_=previous_=current_;}
+    [[nodiscard]] render::GridLineHistory::State grid_history_state() const noexcept {return grid_line_history_.state();}
+    // State loading rebuilds source assets, never deserializes pointers or old
+    // interpolated poses. Retain the source ink's carried endpoint and revision
+    // so the first post-load capture advances it exactly once.
+    void restore_grid_history(const render::GridLineHistory::State& state,std::uint64_t revision,
+        std::array<std::int16_t,2> start) {
+        if(!current_ || revision==UINT64_MAX || (state.initialized && state.number>revision))
+            throw std::invalid_argument("Invalid source scene history checkpoint");
+        auto grid=grid_line_history_;grid.restore(state);
+        auto next=std::make_shared<GameSceneSnapshot>(*current_);
+        next->revision=revision;next->grid_line_start=start;
+        grid_line_history_=grid;current_=std::move(next);reset_interpolation();
+    }
     [[nodiscard]] const simulation::GameSimulation& game() const {return game_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> current() const {return current_;}
     [[nodiscard]] std::shared_ptr<const GameSceneSnapshot> previous() const {return previous_;}

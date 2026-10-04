@@ -110,7 +110,7 @@ struct Spc700Audio::Impl {
     void save(state::Writer& writer) const {
         CoreStateCopy core;
         auto* context = reinterpret_cast<unsigned char*>(&core);
-        spc_copy_state(spc, &context, CoreStateCopy::copy);
+        spc->copy_state_preserving_machine(&context, CoreStateCopy::copy);
         std::array<int, 8> history{};
         static_assert(sizeof(int) == sizeof(std::int32_t));
         filter->save_history(history.data());
@@ -350,6 +350,13 @@ std::vector<std::uint8_t> Spc700Audio::save_state() const {
     music_impl_->save(writer);
     effects_impl_->save(writer);
     writer(last_music_samples_, last_effect_samples_);
+    // Optional trailing extension preserves the actual CPU->SMP input ports.
+    // The pinned core's old format merges them with SMP output registers.
+    // Older states without this extension retain their original load behavior.
+    std::array<std::uint8_t,4> music_inputs{},effects_inputs{};
+    music_impl_->spc->save_cpu_input_ports(music_inputs.data());
+    effects_impl_->spc->save_cpu_input_ports(effects_inputs.data());
+    writer(music_inputs,effects_inputs);
     return state::pack(0x53504301U, 0U, writer.bytes());
 }
 
@@ -359,6 +366,11 @@ void Spc700Audio::load_state(std::span<const std::uint8_t> bytes) {
     restored.music_impl_->load(reader);
     restored.effects_impl_->load(reader);
     reader(restored.last_music_samples_, restored.last_effect_samples_);
+    if(!reader.empty()) {
+        std::array<std::uint8_t,4> music_inputs{},effects_inputs{};reader(music_inputs,effects_inputs);
+        restored.music_impl_->spc->load_cpu_input_ports(music_inputs.data());
+        restored.effects_impl_->spc->load_cpu_input_ports(effects_inputs.data());
+    }
     reader.finish();
     const auto samples = restored.last_music_samples_.size();
     if (samples != restored.last_effect_samples_.size()

@@ -9,6 +9,44 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Full game states and native quick menu
+
+Physical **Select + Y** opens a paused native quick menu: Resume, the actual
+shared Game Options, state slot 0-9, Save and Load. This does not replace or
+reorder the cartridge pre-game menu. Navigation is fixed physical A/B/D-pad;
+gameplay remapping is unchanged. Opening/waking waits for button release.
+Overwriting an occupied slot and loading a state require a second A confirmation.
+The panel redraws only on changes; paused navigation performs no VM/SPC ticks
+or world preparation. Save/load display their operation before SD work begins.
+
+Each state includes the complete game and both SPC stems, pending APU writes,
+partial three-raster audio phase, and carried connected-grid history. Load
+prepares a new owner with its own ROM/symbol references, validates all components
+and prepares native renderer owners before retiring the old run. A corrupt or
+incompatible state leaves the old VM/audio/published scene intact. NDSP resets
+synchronously only after preparation succeeds; a DSP reset failure remains an
+explicit terminal error. Interpolation and held input rebase, rather than
+replaying an old pose or catching up the time spent loading.
+
+Files are separate from settings and EX battery saves:
+`3ds-state-<ROM CRC>-<0-9>-<0-or-1>.dat` in `/3ds/starfox-enhanced/`.
+Each logical slot alternates between two checksummed, companion-bound generations;
+close and re-read verifies a write before committing it. The preceding valid
+generation survives interruption/write failure. All-corrupt or conflicting
+generations are preserved read-only. Different cartridges have different paths.
+The explicit state packet bound is 4 MiB, not a whole-flow peak-RAM guarantee;
+physical SD/controller power-loss durability and multiple writers are not promised.
+
+The state work also exposed a shared SPC bug: upstream state copying changed
+the live CPU input registers while saving. Saving now preserves the live machine,
+and an optional trailing archive extension restores the separate input ports.
+Old SPC archives still load. A public nine-byte synthetic SMP program tests
+different input/output values, repeated read-only snapshots and continuation,
+without Nintendo assets. Actual Original/EX BOOT/stage checks cover all audio
+phases 0/1/2, SD reopen/interrupted generations, retired-owner continuation,
+held-input guards and frozen runtime-options resume. Host checks pass; this
+checkpoint still needs its exact ARM link and original-device acceptance.
+
 ## Cartridge dust and connected ground grid
 
 `GameDots` now consumes the actual captured STAR_COLS table, recycled dust
@@ -678,8 +716,9 @@ remote CI run, release publication or console installation was performed.
 2. Promote the linked `GameSession`/SD/NDSP diagnostic into the actual console
    game entry. Real pre-game menu, experience/preview/Start handoffs, settings,
    EX SRAM, mapped reset and controller remapping are now connected; finish
-   full VM/SPC state slots, runtime menu access, native HUD customization and
-   appropriate FPS controls. Verify all handoff/failure paths on hardware.
+   native HUD customization and appropriate FPS controls. Full VM/SPC state slots
+   and runtime menu access now have host coverage; verify their native input,
+   SD/NDSP handoff/failure paths and allocation peaks on hardware.
    Preserve the full source menu/timing and clear unsupported states for
    desktop-only graphics features; do not silently enable ignored settings.
 3. Complete the **PICA200/Citro3D** compositor around the now-converted cartridge

@@ -4,6 +4,7 @@
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/platform/nintendo_3ds/game_remap.hpp"
+#include "starfox/platform/nintendo_3ds/game_state_storage.hpp"
 #include "starfox/state/container.hpp"
 #include "starfox/state/archive.hpp"
 #include "starfox/assets/bps.hpp"
@@ -542,6 +543,126 @@ void actual_controller_remap(const assets::RomImage& rom,const assets::SymbolMap
     }
     std::cout<<"  Controller: actual source row/editor freeze/return, mapped reset and 60 independent gameplay rasters/SPC/PCM checked\n";
 }
+void full_state_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    const auto crc=assets::crc32(rom.bytes());std::size_t maximum_bytes{};
+    struct Temp {
+        std::filesystem::path path;std::uint32_t crc;
+        explicit Temp(std::uint32_t cartridge):crc(cartridge) {
+            const auto stamp=std::chrono::steady_clock::now().time_since_epoch().count();
+            for(unsigned i=0;i<64;++i) {
+                const auto candidate=std::filesystem::temp_directory_path()/("sfe-3ds-real-states-"+std::to_string(stamp)+"-"+std::to_string(i));
+                if(std::filesystem::create_directory(candidate)) {path=candidate;return;}
+            }
+            throw std::runtime_error("Cannot create isolated actual state fixture directory");
+        }
+        ~Temp() {
+            std::error_code ignored;GameStateStorage storage(path.generic_string(),0x76543210,crc);
+            for(unsigned slot=0;slot<6;++slot) for(unsigned gen=0;gen<2;++gen) std::filesystem::remove(storage.slot_path(slot,gen),ignored);
+            std::filesystem::remove(path,ignored);
+        }
+    } temp(crc);
+    for(const auto map:{"BOOT","LEVEL1_1"}) for(unsigned partial=0;partial<3;++partial) {
+        std::vector<std::int16_t> pcm;
+        auto session=std::make_unique<GameSession>(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());},map);
+        SourceOracle oracle(rom,symbols,map);session->advance(0,0);
+        const auto before_rasters=30+partial;
+        for(unsigned i=1;i<=before_rasters;++i) {session->advance(timestamp(i),0);oracle.raster();}
+        require(session->game().save_state()==oracle.game.save_state() && session->audio().save_state()==oracle.spc.save_state()
+            && pcm==oracle.pcm,"State fixture diverged before save");
+        const auto game=session->game().save_state(),audio=session->audio().save_state();
+        const auto scene=session->presentation(1,true);const auto state=session->save_state();maximum_bytes=std::max(maximum_bytes,state.size());
+        const auto decoded=decode_game_state(state,crc);
+        require(decoded.audio_phase==partial && decoded.pending_audio==oracle.pending,"Full state omitted pending APU writes/partial audio phase");
+        require(decoded.game==game && decoded.audio==audio && session->presentation(1,true).current==scene.current,
+            "State capture mutated live VM/SPC/published scene");
+        // Corrupt outer/component data and a checksummed invalid native field
+        // must leave the old owner, its PCM sink and immutable raster untouched.
+        auto corrupt=state;corrupt.back()^=1;
+        rejects([&]{static_cast<void>(session->restored_state(corrupt));},"Corrupt state replaced live source");
+        auto wrong_audio=decoded;wrong_audio.audio.back()^=1;
+        rejects([&]{static_cast<void>(encode_game_state(wrong_audio,crc));},"Corrupt SPC component accepted");
+        // Valid checksums are not a substitute for complete component decode.
+        auto invalid_game=decoded;invalid_game.game=state::pack(0x47414d01U,crc,{});
+        const auto malformed_game=encode_game_state(invalid_game,crc);
+        rejects([&]{static_cast<void>(session->restored_state(malformed_game));},"Checksummed invalid VM was loaded");
+        auto invalid_spc=decoded;invalid_spc.audio=state::pack(0x53504301U,0,{});
+        const auto malformed_spc=encode_game_state(invalid_spc,crc);
+        rejects([&]{static_cast<void>(session->restored_state(malformed_spc));},"Checksummed invalid SPC partly replaced live VM");
+        rejects([&]{static_cast<void>(decode_game_state(state,crc^1));},"Foreign cartridge state accepted");
+        require(session->game().save_state()==game && session->audio().save_state()==audio
+            && session->presentation(1,true).current==scene.current && pcm==oracle.pcm,"Rejected state changed the running owner");
+        const auto slot=(std::string_view(map)=="BOOT"?0U:3U)+partial;
+        GameStateStorage disk(temp.path.generic_string(),0x76543210,crc);static_cast<void>(disk.load(slot));
+        require(disk.save(slot,state),"Actual VM/SPC state did not reach disk");
+        {
+            std::ofstream interrupted(disk.slot_path(slot,1),std::ios::binary|std::ios::trunc);interrupted<<"partial";
+        }
+        GameStateStorage reopened(temp.path.generic_string(),0x76543210,crc);const auto loaded=reopened.load(slot);
+        require(loaded.bytes==state && loaded.info.found && loaded.info.writable && !loaded.info.warning.empty(),
+            "Interrupted SD state failed to retain actual prior VM/SPC timeline");
+        auto next=session->restored_state(loaded.bytes);
+        require(next->save_state()==state && pcm==oracle.pcm,"Prepared restore changed state or queued boot/preroll PCM");
+        require(next->presentation(1,true).previous==next->presentation(1,true).current,
+            "State load interpolated against the discarded run");
+        session=std::move(next); // Destroy all old ROM/symbol/VM owners before continuation.
+        pcm.clear();oracle.pcm.clear();oracle.input.reset();
+        constexpr std::int64_t resumed=90'000'000'000LL;
+        session->advance(resumed,input::start);session->advance(resumed+1,0);
+        require(session->game().save_state()==oracle.game.save_state() && session->audio().save_state()==oracle.spc.save_state(),
+            "State load caught up SD time or accepted held Start");
+        for(unsigned i=1;i<=24;++i) {
+            const auto step=session->advance(resumed+1+timestamp(i),0);oracle.raster();
+            require(step.video_phases==1 && session->game().save_state()==oracle.game.save_state(),"Restored VM/source pace differs from independent continuation");
+            require(session->audio().save_state()==oracle.spc.save_state() && pcm==oracle.pcm,"Restored partial SPC block duplicated/dropped handshakes or PCM");
+        }
+        // Carry is a source presentation checkpoint, not a pointer into a retired owner.
+        auto carried=decode_game_state(session->save_state(),crc);
+        carried.scene_revision=300;carried.grid={true,true,300,{17,-9},{-23,12}};carried.grid_start={-23,12};
+        const auto ink=encode_game_state(carried,crc);auto with_ink=session->restored_state(ink);
+        require(with_ink->save_state()==ink && with_ink->presentation(1,true).current->grid_line_start==carried.grid_start,
+            "State discarded asymmetric source grid carry");
+    }
+    // The host freezes source state at the real audio partial phase even while
+    // its shared runtime options animate/navigate. Closing rebases wall time.
+    for(unsigned partial=0;partial<3;++partial) {
+        std::vector<std::int16_t> pcm;
+        GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());},"LEVEL1_1");
+        SourceOracle oracle(rom,symbols,"LEVEL1_1");session.advance(0,0);
+        for(unsigned i=1;i<=30+partial;++i) {session.advance(timestamp(i),0);oracle.raster();}
+        const auto map=session.game().map().save_state(),audio=session.audio().save_state();
+        require(session.toggle_runtime_options() && session.game().runtime_options_open(),"Native runtime options are not accessible");
+        rejects([&]{static_cast<void>(session.save_state());},"Transient runtime menu saved as an incompatible source timeline");
+        session.advance(1'000'000'000,0);
+        for(unsigned i=1;i<=60;++i) session.advance(1'000'000'000+timestamp(i),0);
+        require(session.game().map().save_state()==map && session.audio().save_state()==audio && pcm==oracle.pcm,
+            "Runtime options advanced cartridge/SPC or queued audio");
+        require(session.toggle_runtime_options() && !session.game().runtime_options_open(),"Native runtime options did not close");
+        constexpr std::int64_t resumed=3'000'000'000;
+        session.advance(resumed,0);pcm.clear();oracle.pcm.clear();
+        for(unsigned i=1;i<=24;++i) {
+            const auto step=session.advance(resumed+timestamp(i),0);oracle.raster();
+            if(session.game().map().save_state()!=oracle.game.map().save_state()
+                || session.audio().save_state()!=oracle.spc.save_state() || pcm!=oracle.pcm) {
+                const auto a=session.game().map().save_state(),b=oracle.game.map().save_state();
+                std::cerr<<"Runtime resume mismatch: phase "<<partial<<", raster "<<i
+                    <<", advance phases/ticks/audio "<<step.video_phases<<'/'<<step.logic_ticks<<'/'<<step.audio_blocks
+                    <<", oracle phase "<<oracle.phase%3<<", native phase "<<unsigned(decode_game_state(session.save_state(),crc).audio_phase)
+                    <<", map/audio/PCM "<<(a==b)<<'/'<<(session.audio().save_state()==oracle.spc.save_state())<<'/'<<(pcm==oracle.pcm)<<"; map offsets:";
+                unsigned printed=0;for(std::size_t j=0;j<std::min(a.size(),b.size()) && printed<16;++j)
+                    if(a[j]!=b[j]) {std::cerr<<' '<<j<<':'<<unsigned(a[j])<<'/'<<unsigned(b[j]);++printed;}
+                const auto sa=session.audio().save_state(),sb=oracle.spc.save_state();
+                std::cerr<<"; SPC offsets:";printed=0;
+                for(std::size_t j=0;j<std::min(sa.size(),sb.size()) && printed<24;++j)
+                    if(sa[j]!=sb[j]) {std::cerr<<' '<<j<<':'<<unsigned(sa[j])<<'/'<<unsigned(sb[j]);++printed;}
+                std::cerr<<'\n';
+            }
+            require(session.game().map().save_state()==oracle.game.map().save_state()
+                && session.audio().save_state()==oracle.spc.save_state() && pcm==oracle.pcm,
+                "Runtime options resume lost partial source/audio phase");
+        }
+    }
+    std::cout<<"  Full states: BOOT/stage, audio phases 0/1/2, retired-owner continuation and runtime options; largest fixture "<<maximum_bytes<<" bytes\n";
+}
 void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
     std::vector<std::int16_t> pcm;
     GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());});
@@ -591,15 +712,21 @@ void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMa
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=3 && !(argc==5 && std::string_view(argv[3])=="--capture"))
-            throw std::invalid_argument("Usage: game_session_check ROM SYMBOLS [--capture DIRECTORY]");
+        const bool states_only=argc==4 && std::string_view(argv[3])=="--states-only";
+        if(argc!=3 && !states_only && !(argc==5 && std::string_view(argv[3])=="--capture"))
+            throw std::invalid_argument("Usage: game_session_check ROM SYMBOLS [--capture DIRECTORY | --states-only]");
         const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
+        if(states_only) {
+            full_state_parity(rom,symbols);
+            std::cout<<"3DS actual full states: "<<checks<<" checks passed; host source parity, not console acceptance\n";return 0;
+        }
         parity(rom,symbols,"BOOT");parity(rom,symbols,"LEVEL1_1");handoff(rom,symbols);
         actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
         actual_disk_handoff(rom,symbols);
         actual_settings_reset(rom,symbols);
         actual_controller_remap(rom,symbols);
         controller_resume_parity(rom,symbols);
+        full_state_parity(rom,symbols);
         merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});
         failed.advance(0,0);rejects([&]{failed.advance(50'000'000,0);},"PCM failure ignored");

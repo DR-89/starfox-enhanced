@@ -8,6 +8,7 @@
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/platform/nintendo_3ds/game_remap.hpp"
+#include "starfox/platform/nintendo_3ds/game_quick_menu.hpp"
 #include "starfox/assets/bps.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
@@ -34,8 +35,8 @@ std::int64_t monotonic_time() {
 // Preserve source/audio cadence but rebase input/time around Home and sleep.
 class Suspension {
 public:
-    Suspension(ctr::GameSession& session,ctr::NativeAudio& audio,std::function<void()> checkpoint)
-        :session_(session),audio_(audio),checkpoint_(std::move(checkpoint)) {
+    Suspension(ctr::GameSession& session,ctr::NativeAudio& audio,std::function<void()> checkpoint,std::function<bool()> paused)
+        :session_(session),audio_(audio),checkpoint_(std::move(checkpoint)),paused_(std::move(paused)) {
         aptHook(&cookie_,callback,this);
     }
     ~Suspension() {aptUnhook(&cookie_);}
@@ -49,10 +50,11 @@ private:
                 self.session_.advance(monotonic_time(),0,false);
                 self.checkpoint_();
             } else if(event==APTHOOK_ONRESTORE || event==APTHOOK_ONWAKEUP)
-                self.audio_.pause(self.session_.controller_remap_pending());
+                self.audio_.pause(self.paused_());
         } catch(const std::exception& error) {self.error_=error.what();}
     }
     ctr::GameSession& session_;ctr::NativeAudio& audio_;std::function<void()> checkpoint_;
+    std::function<bool()> paused_;
     aptHookCookie cookie_{};std::string error_;
 };
 }
@@ -74,7 +76,7 @@ int main() {
     // Explicitly label this experimental source-scene test. This small host
     // strip is not a replacement pre-game menu or part of source colour math.
     ctr::Canvas label_canvas(ctr::top_width);
-    label_canvas.clear({8,15,28});label_canvas.text(4,4,"NATIVE PORT CHECK / FULL FLOW STILL PENDING",{240,181,86});
+    label_canvas.clear({8,15,28});label_canvas.text(4,4,"NATIVE CHECK / SELECT+Y MENU / FLOW PENDING",{240,181,86});
     constexpr std::array<ctr::Point3,4> label_corners{{{0,0,0},{400,0,0},{400,16,0},{0,16,0}}};
     constexpr std::array<std::array<float,2>,4> label_uv{{{0,0},{1,0},{1,1},{0,1}}};
     std::array<ctr::PicaVertex,6> label_vertices{};unsigned label_index=0;
@@ -93,6 +95,9 @@ int main() {
     ctr::GameSaveData saved;
     ctr::GameBindings bindings;
     std::unique_ptr<ctr::GameRemap> remap;
+    std::unique_ptr<ctr::GameQuickMenu> quick;
+    std::unique_ptr<ctr::GameStateStorage> states;
+    unsigned state_slot{};
     std::string save_warning;
     bool save_enabled=false;
     std::uint32_t cartridge_crc{};
@@ -129,7 +134,7 @@ int main() {
         }
     };
     const auto release_owners=[&] {
-        remap.reset();
+        remap.reset();quick.reset();states.reset();
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
         gpu.reset();layers.reset();dots.reset();
@@ -159,7 +164,12 @@ int main() {
             [&](auto pcm){audio->submit(pcm);},map,cartridge_ram[unsigned(experience)],options);
         models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
         menu=std::make_unique<ctr::GameMenu>(session->rom(),session->symbols());
-        suspension=std::make_unique<Suspension>(*session,*audio,[&]{if(remap) remap->suspend();checkpoint(true);});
+        suspension=std::make_unique<Suspension>(*session,*audio,[&]{
+            if(remap) remap->suspend();
+            if(quick) quick->suspend();
+            checkpoint(true);
+        },[&]{return remap || quick || session->game().runtime_options_open();});
+        states=std::make_unique<ctr::GameStateStorage>("sdmc:/3ds/starfox-enhanced",ctr::companion_manifest,cartridge_crc);
 #if defined(STARFOX_3DS_CORE_PICA)
         layers=std::make_unique<ctr::GameLayers>();
         dots=std::make_unique<ctr::GameDots>(session->rom(),session->symbols());
@@ -168,6 +178,13 @@ int main() {
         running=true;rasters=logic=blocks=0;error.clear();
         // The initiating physical A/Start belongs to loading, not the new menu.
         session->advance(monotonic_time(),0,false);
+    };
+    const auto present_quick=[&] {
+#if defined(STARFOX_3DS_CORE_PICA)
+        gpu->present(quick->frame(),quick->lower_view());
+#else
+        display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),quick->upper_view(),{},quick->lower_view());
+#endif
     };
     while(true) {
         const auto controls=display.poll();if(!controls.running) break;
@@ -199,7 +216,87 @@ int main() {
 #endif
                     continue; // No source ticking or world preparation in the editor.
                 }
+                constexpr auto quick_chord=input::ButtonMask(input::select|input::y);
+                if(!quick && (controls.physical&quick_chord)==quick_chord && (pressed&quick_chord)) {
+                    session->advance(monotonic_time(),0,false);audio->pause(true);
+                    quick=std::make_unique<ctr::GameQuickMenu>();
+                    quick->open(state_slot,session->state_available(),
+                        !session->game().in_setup_menu() || session->game().runtime_options_open());
+                    quick->set_info(states->load(state_slot).info);
+                }
+                if(quick) {
+                    const auto before=quick->slot();quick->update(pad);
+                    state_slot=quick->slot();
+                    if(before!=state_slot) quick->set_info(states->load(state_slot).info);
+                    const auto action=quick->take_action();
+                    if(action==ctr::QuickAction::resume || action==ctr::QuickAction::options) {
+                        if(action==ctr::QuickAction::options && !session->game().runtime_options_open()) session->toggle_runtime_options();
+                        session->advance(monotonic_time(),0,false);quick.reset();
+                        audio->pause(session->game().runtime_options_open());continue;
+                    }
+                    if(action==ctr::QuickAction::save) {
+                        quick->message("SAVING STATE...");present_quick();
+                        try {
+                            const auto bytes=session->save_state();
+                            states->save(state_slot,bytes);quick->set_info(states->current(state_slot));
+                            quick->message("STATE SAVED / PREVIOUS GENERATION KEPT");
+                        } catch(const std::exception& failure) {quick->message(failure.what());}
+                    }
+                    if(action==ctr::QuickAction::load) {
+                        quick->message("READING / VALIDATING STATE...");present_quick();
+                        std::unique_ptr<ctr::GameSession> next;
+                        std::unique_ptr<ctr::GameModels> next_models;
+                        std::unique_ptr<ctr::GameMenu> next_menu;
+                        std::unique_ptr<Suspension> next_hook;
+#if defined(STARFOX_3DS_CORE_PICA)
+                        std::unique_ptr<ctr::GameLayers> next_layers;
+                        std::unique_ptr<ctr::GameDots> next_dots;
+#endif
+                        try {
+                            auto saved_state=states->load(state_slot);
+                            quick->set_info(saved_state.info);
+                            if(!saved_state.info.found) throw std::runtime_error("No compatible saved state in this slot");
+                            next=session->restored_state(saved_state.bytes);
+                            next_models=std::make_unique<ctr::GameModels>(next->rom(),next->symbols());
+                            next_menu=std::make_unique<ctr::GameMenu>(next->rom(),next->symbols());
+                            next_menu->update(ctr::GameMenu::capture(next->game()));
+                            next_hook=std::make_unique<Suspension>(*next,*audio,[&]{
+                                if(remap) remap->suspend();
+                                if(quick) quick->suspend();
+                                checkpoint(true);
+                            },[&]{return remap || quick || session->game().runtime_options_open();});
+#if defined(STARFOX_3DS_CORE_PICA)
+                            next_layers=std::make_unique<ctr::GameLayers>();
+                            next_dots=std::make_unique<ctr::GameDots>(next->rom(),next->symbols());
+#endif
+                        } catch(const std::exception& failure) {
+#if defined(STARFOX_3DS_CORE_PICA)
+                            next_dots.reset();next_layers.reset();
+#endif
+                            next_hook.reset();next_menu.reset();next_models.reset();next.reset();quick->message(failure.what());
+                        }
+                        if(next) {
+                            // Validation/allocation completed with the old owner
+                            // intact. Reset NDSP synchronously before reusing its
+                            // buffers; reset failure is terminal, not a half-load.
+                            audio->reset();audio->pause(true);
+                            suspension.swap(next_hook);menu.swap(next_menu);models.swap(next_models);
+#if defined(STARFOX_3DS_CORE_PICA)
+                            layers.swap(next_layers);dots.swap(next_dots);
+#endif
+                            session.swap(next);rasters=logic=blocks=0;quick.reset();
+                            checkpoint(true);audio->pause(false);continue;
+                        }
+                    }
+                    // No cartridge ticking, clock catch-up or world preparation
+                    // while paused here. APT preserves the same partial cadence.
+                    session->advance(monotonic_time(),0,false);
+                    present_quick();
+                    continue;
+                }
+                const bool runtime_before=session->game().runtime_options_open();
                 const auto advanced=session->advance(monotonic_time(),controls.held,true,ctr::mapped_buttons(bindings,pad));
+                if(runtime_before!=session->game().runtime_options_open()) audio->pause(session->game().runtime_options_open());
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
                 if(advanced.requested_controller_remap) {
                     checkpoint(true);audio->pause(true);

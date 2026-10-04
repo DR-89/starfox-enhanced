@@ -63,6 +63,14 @@ public:
     // Explicitly acknowledge the host editor; source cursor/state and partial
     // SPC cadence survive. Suppress held input before returning to Options.
     void finish_controller_remap();
+    // Full VM/SPC/partial-raster timeline. Preparing a replacement owns its own
+    // ROM/symbol references; validation never mutates this running session.
+    [[nodiscard]] std::vector<std::uint8_t> save_state() const;
+    [[nodiscard]] std::unique_ptr<GameSession> restored_state(std::span<const std::uint8_t>) const;
+    [[nodiscard]] bool state_available() const noexcept;
+    // Host quick menu entry to the actual shared runtime options, not a second
+    // copy of source settings. Rebases input/time without losing partial audio.
+    bool toggle_runtime_options();
     [[nodiscard]] bool controller_remap_pending() const noexcept {return requested_controller_remap_;}
     [[nodiscard]] GamePresentation presentation(float slider,bool stereoscopic_hardware,
         const StereoSettings& settings={}) const;
