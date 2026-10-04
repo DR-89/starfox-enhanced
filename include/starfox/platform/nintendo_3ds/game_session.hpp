@@ -3,6 +3,7 @@
 #include "starfox/assets/shape_decoder.hpp"
 #include "starfox/platform/nintendo_3ds/game_hud.hpp"
 #include "starfox/platform/nintendo_3ds/game_presentation.hpp"
+#include "starfox/platform/nintendo_3ds/settings_reset.hpp"
 #include "starfox/vr/game_scene.hpp"
 #include <functional>
 #include <unordered_set>
@@ -19,6 +20,10 @@ struct GameAdvance {
     // rebuild must finish before either the old scene or its SPC can tick again.
     std::optional<bool> requested_preview;
     bool start_after_preview{};
+    // Five uninterrupted seconds of mapped in-game L+R in setup/options.
+    // Retire this owner and rebuild real Original BOOT with default settings;
+    // the host preserves battery SRAM. Never tick the old owner afterwards.
+    bool requested_settings_reset{};
 };
 struct GamePreferences {
     simulation::TimingMode timing{simulation::TimingMode::original_speed};
@@ -67,6 +72,7 @@ public:
         return cartridge_experience_==simulation::Experience::starfox_ex?game_.ex_save_ram():std::span<const std::uint8_t>{};
     }
     [[nodiscard]] GamePreferences preferences() const noexcept;
+    [[nodiscard]] const SettingsResetHold& settings_reset_hold() const noexcept {return reset_hold_;}
     [[nodiscard]] StereoSettings stereo_settings() const noexcept {
         StereoSettings result;
         result.separation=float(std::min<std::uint16_t>(64,game_.stereo_separation()));
@@ -100,5 +106,7 @@ private:
     std::optional<simulation::Experience> requested_experience_;
     std::optional<bool> requested_preview_;
     bool start_after_preview_{};
+    SettingsResetHold reset_hold_;
+    bool requested_settings_reset_{};
 };
 } // namespace starfox::platform::nintendo_3ds

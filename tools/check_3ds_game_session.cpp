@@ -429,6 +429,57 @@ void actual_disk_handoff(const assets::RomImage& rom,const assets::SymbolMap& sy
     require(old_valid.preferences()==prefs,"Recovered settings did not rebind the actual native owner");
     std::cout<<"  Disk handoff: actual settings/ROM-bound EX SRAM reopen and interrupted-slot recovery checked\n";
 }
+void actual_settings_reset(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    constexpr auto chord=input::ButtonMask(input::left_shoulder|input::right_shoulder);
+    GameSessionOptions options;
+    options.preferences=GamePreferences{simulation::TimingMode::unlocked_20_fps,35,55,2,2,35,true,true,true,true,true,true,32,4096};
+    GameSession menu(rom,symbols,[](auto){},"BOOT",{},options);MenuDriver controls(menu);
+    controls.select(14);controls.tap(input::a);controls.select(12); // Real Options page.
+    const auto prefs=menu.preferences();const auto start=controls.time+1;
+    require(!menu.advance(start,chord).requested_settings_reset && menu.settings_reset_hold().active(),"Real setup did not arm mapped reset");
+    // Poll independent of the source clock; the source must not mutate its
+    // settings or request a replacement until the complete five-second hold.
+    for(unsigned frame=1;frame<100;++frame)
+        require(!menu.advance(start+std::int64_t(frame)*50'000'000,chord).requested_settings_reset,"Source settings reset fired early");
+    require(!menu.advance(start+4'999'999'999LL,chord).requested_settings_reset && menu.preferences()==prefs,"Incomplete hold changed settings");
+    const auto before=menu.game().save_state(),spc=menu.audio().save_state();
+    const auto bank=std::vector<std::uint8_t>(menu.cartridge_ram().begin(),menu.cartridge_ram().end());
+    const auto fired=menu.advance(start+SettingsResetHold::duration,chord);
+    require(fired.requested_settings_reset && !fired.video_phases && !fired.logic_ticks && !fired.audio_blocks,"Reset boundary advanced the owner being retired");
+    require(before==menu.game().save_state() && spc==menu.audio().save_state(),"Reset request partly reset source VM/SPC before handoff");
+    const auto pending=menu.advance(start+20'000'000'000LL,input::start|chord);
+    require(pending.requested_settings_reset && !pending.video_phases && !pending.audio_blocks
+        && before==menu.game().save_state() && spc==menu.audio().save_state(),"Old source/audio kept running after settings-reset request");
+    GameSaveData record;record.experience=menu.cartridge_experience();record.preview=true;record.preferences=menu.preferences();
+    record.ex_sram=bank;if(!bank.empty()) record.ex_rom_crc=assets::crc32(rom.bytes());
+    const auto defaults=default_game_settings(record);
+    require(defaults.experience==simulation::Experience::original && !defaults.preview
+        && defaults.ex_sram==record.ex_sram && defaults.ex_rom_crc==record.ex_rom_crc,"Real reset record erased game progress or retained preview/EX setup");
+    options.preferences=defaults.preferences;
+    GameSession rebuilt(rom,symbols,[](auto){},"BOOT",bank,options);
+    require(rebuilt.preferences()==GamePreferences{} && rebuilt.game().in_setup_menu() && !rebuilt.game().menu_preview(),"Fresh actual BOOT retained settings/preview instead of defaults");
+    require(std::equal(bank.begin(),bank.end(),rebuilt.cartridge_ram().begin(),rebuilt.cartridge_ram().end()),"Default source reconstruction discarded real game progress");
+    rebuilt.advance(0,0,false);
+    require(!rebuilt.advance(9'000'000'000LL,chord).requested_settings_reset && !rebuilt.settings_reset_hold().active(),"Held buttons leaked into replacement BOOT");
+    rebuilt.advance(10'000'000'000LL,0);
+    require(!rebuilt.advance(11'000'000'000LL,chord).requested_settings_reset && rebuilt.settings_reset_hold().active(),"Released reset could not rearm on new BOOT");
+    rebuilt.advance(15'000'000'000LL,chord);
+    rebuilt.advance(15'500'000'000LL,0,false);
+    require(!rebuilt.settings_reset_hold().active(),"Home/sleep did not cancel the live menu hold");
+    require(!rebuilt.advance(30'000'000'000LL,chord).requested_settings_reset,"Resume turned a suspended hold into reset");
+    rebuilt.advance(30'500'000'000LL,0);rebuilt.advance(31'000'000'000LL,chord);
+    rebuilt.advance(31'000'000'000LL,input::left_shoulder);
+    require(!rebuilt.settings_reset_hold().active(),"Duplicate-time shoulder release did not cancel actual menu hold");
+    rebuilt.advance(32'000'000'000LL,chord);rebuilt.advance(31'000'000'000LL,chord);
+    require(!rebuilt.settings_reset_hold().active(),"Rewound clock retained a native reset hold");
+    GameSession stage(rom,symbols,[](auto){},"LEVEL1_1");stage.advance(0,chord);
+    require(!stage.game().in_setup_menu(),"Direct-stage reset exclusion fixture is not a real stage");
+    for(unsigned frame=1;frame<=120;++frame) {
+        const auto next=stage.advance(std::int64_t(frame)*50'000'000,chord);
+        require(!next.requested_settings_reset && !stage.settings_reset_hold().active(),"In-game roll shoulders triggered menu factory reset");
+    }
+    std::cout<<"  Settings reset: mapped five-second menu chord, pure owner handoff, defaults/game-save preservation, focus/release/clock guards checked\n";
+}
 }
 int main(int argc,char** argv) {
     try {
@@ -438,6 +489,7 @@ int main(int argc,char** argv) {
         parity(rom,symbols,"BOOT");parity(rom,symbols,"LEVEL1_1");handoff(rom,symbols);
         actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
         actual_disk_handoff(rom,symbols);
+        actual_settings_reset(rom,symbols);
         merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});
         failed.advance(0,0);rejects([&]{failed.advance(50'000'000,0);},"PCM failure ignored");

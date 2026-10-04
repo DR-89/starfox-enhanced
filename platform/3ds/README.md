@@ -27,8 +27,9 @@ its PICA models and background remain genuine independent eye geometry. Start
 from preview rebuilds BOOT and uses the actual source Start/fade/selected-level
 path. Experience changes replace cartridge/SPC/model/renderer owners in reference
 order rather than ticking an EX selection against Original data. Implemented
-settings and per-cartridge SRAM survive these in-process handoffs; disk
-settings/SRAM persistence and physical handoff/audio behavior remain pending.
+settings and per-cartridge SRAM survive these in-process handoffs. The SD
+journal below now adds disk settings/SRAM persistence; physical handoff/audio/
+SD behavior and full VM state slots remain unverified or unfinished.
 
 Nine lean host suites pass, including a synthetic-public-font menu renderer
 contract. The real Original and EX fixtures additionally check every current
@@ -57,8 +58,8 @@ checked; the source-core 3DSX is 1,954,004 bytes. Static text/data/BSS are
 The 488-byte shader matches the previous accepted terrain shader. This branch
 snapshot is separate from the dirty desktop worktree; it is not a main-branch
 release or verification of the old desktop host against the revised menu API.
-Disk persistence, remaining scene/effect integrations and physical original
-3DS gameplay/optics/audio/APT/memory/performance remain open.
+Full VM state persistence, remaining scene/effect integrations and physical
+original 3DS gameplay/optics/audio/APT/memory/performance remain open.
 
 ## SD settings and EX save journal
 
@@ -88,6 +89,39 @@ need original-console testing; two-slot recovery is not an SD-controller flush
 guarantee or a multi-process locking protocol. Full VM/SPC save-state slots,
 control remapping/custom HUD, the remaining scene/effect adapters and physical
 whole-flow/performance acceptance remain separate unfinished work.
+
+[Native SD CI 37186312347](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37186312347)
+at `d4579cbcbcc11c077ce85eda78eef8b4ed542bd1` passes ten host suites and
+all three real ARM links, including the journal and APT entry. Downloaded ARM
+ELF32/3DSX headers pass; core 3DSX 1,979,076 bytes. Static sections are not peak
+RAM or console frame-rate proof. The local current-source host graph also
+passes ten suites and its independent 4,745 checks for each cartridge; it is
+not identical to the accepted branch snapshot's shared menu API.
+
+## Five-second mapped L+R settings reset
+
+In the actual setup/options menu, hold the **in-game L and R actions** together
+for five uninterrupted seconds. The lower LCD shows progress and release-to-
+cancel text. This uses the monotonic host clock, not the emulated FX timing or
+the number of rendered frames. Either shoulder release, leaving setup, Home/
+sleep, or a clock rewind cancels the hold. The same shoulders used to roll in
+gameplay never reset settings. Future remapping must supply mapped action bits,
+not bypass this hook with libctru's physical key constants.
+
+At the threshold the old source/audio owner stops before another tick. The
+entry checkpoints the current battery bank, resets settings, switches to
+Original with Preview OFF, and rebuilds actual BOOT. EX's ROM-bound game save
+is kept, including when disk writing is unavailable. The new owner suppresses
+held input until release. Defaults are written through the same protected SD
+journal; damaged/read-only saves are not silently overwritten and write failure
+shows a warning. This does not erase EX progress or implement full VM state slots.
+
+Host contracts pass at 20/30/60/120/240/480 Hz, including zero/long uptime,
+duplicate samples, release/focus/rewind guards and one-shot firing. Real Original
+and EX fixture checks cover the actual Options page, old-owner freeze, default
+BOOT rebind, real bank preservation and gameplay exclusion. Native countdown/
+APT/SD behavior still requires physical original-3DS testing. Desktop remapping
+and rendering-effects acceptance are not renewed by these native checks.
 
 ## Screen layout and controls
 

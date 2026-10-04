@@ -135,8 +135,23 @@ void invalid_and_io() {
     require(!std::filesystem::exists(temp.path/"missing"),"Native save silently created an unintended directory");
     rejects([&]{GameStorage invalid("",manifest);});
 }
+void settings_reset_keeps_game_save() {
+    Temporary temp;constexpr std::uint32_t manifest=0x99112233;
+    GameStorage store(temp.path.generic_string(),manifest);static_cast<void>(store.load());
+    const auto before=fixture();require(store.save(before),"Reset fixture save failed");
+    const auto after=default_game_settings(before);
+    require(after.experience==simulation::Experience::original && !after.preview
+        && after.preferences==GamePreferences{},"Settings reset did not select default Original setup");
+    require(after.ex_sram==before.ex_sram && after.ex_rom_crc==before.ex_rom_crc,"Settings reset erased/rebound EX game progress");
+    require(store.save(after),"Default settings did not commit to the SD journal");
+    GameStorage reopened(temp.path.generic_string(),manifest);
+    require(reopened.load().data==after,"Reset settings/game save did not survive process reopen");
+    require(bytes(store.slot_path(0))==envelope(1,before,manifest),"Settings reset erased the preceding valid backup");
+    const auto retail=default_game_settings(GameSaveData{});
+    require(retail.ex_sram.empty() && retail.ex_rom_crc==0,"Retail settings reset manufactured EX SRAM");
+}
 }
 int main() try {
-    normal_and_recovery();invalid_and_io();
+    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();
     std::cout<<"3DS SD settings/EX SRAM journal: "<<checks<<" checks passed; synthetic public saves, not physical SD power-loss acceptance\n";
 } catch(const std::exception& error) {std::cerr<<"3DS SD journal: "<<error.what()<<'\n';return 1;}

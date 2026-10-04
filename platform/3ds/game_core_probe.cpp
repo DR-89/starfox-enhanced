@@ -177,6 +177,27 @@ int main() {
                 if(!suspension->error().empty()) throw std::runtime_error(suspension->error());
                 const auto advanced=session->advance(monotonic_time(),controls.held);
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
+                if(advanced.requested_settings_reset) {
+                    checkpoint(true);
+                    // Preserve the current real EX bank even if SD writing is
+                    // disabled. Reset all settings by replacing, not partially
+                    // mutating, the source owner. No game-save erasure.
+                    const auto ram=session->cartridge_ram();
+                    cartridge_ram[unsigned(session->cartridge_experience())].assign(ram.begin(),ram.end());
+                    bank_crc[unsigned(session->cartridge_experience())]=cartridge_crc;
+                    if(session->cartridge_experience()==simulation::Experience::starfox_ex) {
+                        saved.ex_sram.assign(ram.begin(),ram.end());saved.ex_rom_crc=cartridge_crc;
+                    }
+                    saved=ctr::default_game_settings(std::move(saved));
+                    if(save_enabled) try {storage.save(saved);save_warning=storage.current().warning;}
+                    catch(const std::exception& failure) {
+                        save_warning=std::string(failure.what())+"\nDefaults applied in memory; SD saving disabled until restart.";
+                        save_enabled=false;
+                    }
+                    experience=simulation::Experience::original;
+                    ctr::GameSessionOptions options;options.preferences=saved.preferences;
+                    load("BOOT",options);continue;
+                }
                 if(advanced.requested_experience || advanced.requested_preview) {
                     checkpoint(true);
                     ctr::GameSessionOptions options;
@@ -196,6 +217,15 @@ int main() {
                 if(!save_warning.empty() && session->game().in_setup_menu()) {
                     lower.clear({0,0,0});lower.image(0,0,dashboard);
                     lower.text(8,8,"SD SAVE WARNING\n"+save_warning,{239,90,99},1,304,216);
+                    dashboard=lower.view();
+                }
+                if(session->settings_reset_hold().active()) {
+                    if(dashboard.pixels.data()!=lower.view().pixels.data()) {
+                        lower.clear({0,0,0});lower.image(0,0,dashboard);
+                    }
+                    const auto seconds=session->settings_reset_hold().elapsed()/1'000'000'000LL;
+                    lower.rectangle(0,207,320,33,{8,15,28});
+                    lower.text(8,210,"HOLD L+R: RESET SETTINGS "+std::to_string(seconds)+"/5\nRELEASE TO CANCEL / GAME SAVE KEPT",{240,181,86},1,304,28);
                     dashboard=lower.view();
                 }
                 if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())

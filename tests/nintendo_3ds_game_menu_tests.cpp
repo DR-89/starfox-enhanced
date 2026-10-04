@@ -1,5 +1,7 @@
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
+#include "starfox/platform/nintendo_3ds/settings_reset.hpp"
 #include <iostream>
+#include <limits>
 
 using namespace starfox;
 using namespace starfox::platform::nintendo_3ds;
@@ -20,8 +22,44 @@ assets::RomImage public_font_fixture() {
     }
     return assets::RomImage(std::move(bytes));
 }
+void settings_reset_contract() {
+    constexpr auto chord=input::ButtonMask(input::left_shoulder|input::right_shoulder);
+    SettingsResetHold hold;
+    require(!hold.update(true,chord,0) && hold.active(),"Zero uptime did not arm mapped L+R");
+    require(!hold.update(true,chord,4'999'999'999LL),"Settings reset fired before five seconds");
+    require(hold.update(true,chord,5'000'000'000LL),"Settings reset did not fire at five seconds");
+    require(!hold.update(true,chord,5'000'000'000LL) && !hold.update(true,chord,15'000'000'000LL),"Held chord repeated settings reset");
+    require(!hold.update(true,input::left_shoulder,15'000'000'001LL) && !hold.active(),"One shoulder release failed to cancel");
+    require(!hold.update(true,chord,16'000'000'000LL) && hold.update(true,chord,21'000'000'000LL),"Released chord could not be rearmed");
+    hold.cancel();require(!hold.active() && hold.elapsed()==0,"Home/sleep cancellation retained reset progress");
+    for(unsigned fps:{20U,30U,60U,120U,240U,480U}) {
+        hold.cancel();require(!hold.update(true,chord,0),"Frame-rate fixture fired on first sample");
+        for(unsigned frame=1;frame<5*fps;++frame)
+            require(!hold.update(true,chord,std::int64_t(frame)*1'000'000'000/fps),"Frame count changed the real-time reset threshold");
+        require(hold.update(true,chord,SettingsResetHold::duration),"Frame rate delayed the real-time reset threshold");
+    }
+    hold.cancel();hold.update(true,chord,0);
+    require(!hold.update(false,chord,9'000'000'000LL) && !hold.active(),"Gameplay allowed menu settings reset");
+    hold.update(true,chord,10'000'000'000LL);hold.update(false,chord,14'999'999'999LL);
+    require(!hold.update(true,chord,15'000'000'000LL) && hold.elapsed()==0,"Leaving/re-entering setup retained an old hold");
+    require(!hold.update(true,0,16'000'000'000LL) && !hold.active(),"Mapped release failed to clear hold");
+    hold.update(true,chord,20'000'000'000LL);
+    require(!hold.update(true,chord,0) && !hold.active(),"Rewound host clock completed an old hold");
+    require(!hold.update(true,chord,-1) && !hold.active(),"Invalid clock sample armed reset");
+    constexpr auto physical_shoulders=(1U<<8)|(1U<<9);
+    require(!hold.update(true,buttons(physical_shoulders),0)
+        && hold.update(true,buttons(physical_shoulders),SettingsResetHold::duration),"Nintendo shoulders did not reach mapped in-game L+R");
+    for(auto wrong:{input::ButtonMask(input::a|input::b),input::ButtonMask(input::x|input::y),input::ButtonMask(input::select|input::start)}) {
+        hold.cancel();hold.update(true,wrong,0);
+        require(!hold.update(true,wrong,SettingsResetHold::duration) && !hold.active(),"Unrelated actions triggered settings reset");
+    }
+    hold.cancel();const auto far=std::numeric_limits<std::int64_t>::max();
+    hold.update(true,chord,far-SettingsResetHold::duration);
+    require(hold.update(true,chord,far),"Long uptime overflowed the hold timer");
+}
 }
 int main() try {
+    settings_reset_contract();
     const auto rom=public_font_fixture();
     const auto symbols=assets::SymbolMap::parse("MSCALECHARS $008000\nMARIOMSGS $008020\nFONT0WID $008100\nFONT0TRN $008200\nFONT0FON $008300\nFACEDATA $009000\n");
     GameMenu menu(rom,symbols);

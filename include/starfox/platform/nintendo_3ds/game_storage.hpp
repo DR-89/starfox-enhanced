@@ -16,6 +16,12 @@ struct GameSaveLoad {
     bool found{},writable{true};
     std::string warning;
 };
+// Settings reset is not "erase save game". Keep the real ROM-bound EX bank,
+// even when returning to Original BOOT and switching Preview off.
+[[nodiscard]] inline GameSaveData default_game_settings(GameSaveData previous) {
+    previous.experience=simulation::Experience::original;
+    previous.preview=false;previous.preferences=GamePreferences{};return previous;
+}
 // One native owner, two checksummed SD slots. Write the older/incomplete slot,
 // close and re-read it before committing the in-memory generation. The newest
 // valid slot is never truncated by an update. This is interruption recovery,

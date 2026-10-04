@@ -131,14 +131,24 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     if(time<0) throw std::invalid_argument("Invalid 3DS monotonic frame time");
     GameAdvance result;result.requested_experience=requested_experience_;
     result.requested_preview=requested_preview_;result.start_after_preview=start_after_preview_;
-    if(requested_experience_ || requested_preview_) return result;
+    result.requested_settings_reset=requested_settings_reset_;
+    if(requested_experience_ || requested_preview_ || requested_settings_reset_) return result;
     if(!focused) {
+        reset_hold_.cancel();
         previous_time_.reset();clock_.reset();input_.reset();fraction_=0;
         suppress_held_=true;history_.reset_interpolation();return result;
     }
     // Home/sleep/resume must not act as a fresh held Start/A press. Wait for
     // release; pending pre-suspend APU events/partial 20 Hz cadence survive.
     if(suppress_held_) {if(!held) suppress_held_=false;else held=0;}
+    // Check continuously at the host input clock, including duplicate raster
+    // times. A rewind, release, Home/sleep or leaving setup cancels the hold.
+    const bool reset_eligible=game_.in_setup_menu() && (!previous_time_ || time>=*previous_time_);
+    if(reset_hold_.update(reset_eligible,held,time)) {
+        requested_settings_reset_=result.requested_settings_reset=true;
+        clock_.reset();fraction_=result.raster_fraction=0;input_.reset();
+        history_.reset_interpolation();return result;
+    }
     if(!game_.in_setup_menu()) held=gameplay_buttons(held,game_.swap_face_buttons());
     input_.sample(held); // Also retain quick input on a duplicate display time.
     if(previous_time_ && time==*previous_time_) {
