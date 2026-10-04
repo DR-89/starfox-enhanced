@@ -205,7 +205,8 @@ inline void validate_pica_group(const PicaFrame& frame,unsigned reserved_texture
     unsigned bytes=reserved_texture_bytes;
     for(auto texture:frame.textures) {
         const auto size=pica_resident_texture_bytes(texture);
-        if(size>pica_texture_budget-bytes) throw std::invalid_argument("3DS GPU texture budget exceeded");
+        if(size>pica_texture_budget-bytes) throw std::invalid_argument("3DS GPU texture budget exceeded: "
+            +std::to_string(bytes)+" + "+std::to_string(size)+" > "+std::to_string(pica_texture_budget));
         bytes+=size;
     }
     unsigned cursor=0;

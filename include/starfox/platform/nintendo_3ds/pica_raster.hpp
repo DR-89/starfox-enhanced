@@ -29,6 +29,8 @@ struct PpuBatch {
     PicaSpace space{PicaSpace::screen};
     bool expand_horizontal{};
     unsigned first_row{},last_row{224};
+    bool water_receiver{}; // Isolated BG2; GameLayers supplies finite surface geometry.
+    bool compact_strips{}; // Preserve pixels while reducing power-of-two GPU padding.
     bool operator==(const PpuBatch&) const=default;
 };
 struct PpuRasterWork {std::uint64_t decodes{},colour_updates{};};
@@ -46,6 +48,9 @@ public:
         const FramePlan&,unsigned brightness=15,unsigned bg2_subtract=0,
         unsigned receiver_guard=pica_raster_base_guard,bool trim_transparent=false);
     [[nodiscard]] PpuRasterWork work() const noexcept {return work_;}
+    [[nodiscard]] unsigned coverage_guard() const noexcept {
+        return indexed_ && indexed_->width()>top_width?unsigned(indexed_->width()-top_width)/2:0;
+    }
 private:
     std::shared_ptr<const simulation::SnesPpuState> source_;
     PpuBatch batch_;

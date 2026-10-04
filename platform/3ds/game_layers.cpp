@@ -135,24 +135,60 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     if(!world_hud) front.push_back(pass(PpuLayer::objects,3,extend));
     if(ppu.background_mode==1 && ppu.bg3_high_priority) front.push_back(pass(PpuLayer::bg3,1,extend));
     if(native_landscape_scene(frame)) result.before_models.space=PicaSpace::scenery;
-    else if(native_panorama_scene(frame)) {
-        for(const auto& source_pass:back) {
-            const auto space=source_pass.layer==PpuLayer::bg2?PicaSpace::scenery:PicaSpace::screen;
-            auto& groups=result.before_model_groups;
-            if(groups.empty() || groups.back().space!=space) {
-                PpuBatch group;group.space=space;group.expand_horizontal=true;
-                groups.push_back(std::move(group));
+    else if(native_panorama_scene(frame) || native_water_scene(frame)) {
+        const bool water=native_water_scene(frame);
+        const auto split=[&](const auto& passes,auto& groups) {
+            for(const auto& source_pass:passes) {
+                const bool receiver=water && source_pass.layer==PpuLayer::bg2;
+                const auto space=(source_pass.layer==PpuLayer::bg2 || (water && source_pass.layer==PpuLayer::bg3))
+                    ?PicaSpace::scenery:PicaSpace::screen;
+                if(groups.empty() || groups.back().space!=space || groups.back().water_receiver!=receiver) {
+                    PpuBatch group;group.space=space;group.expand_horizontal=true;group.water_receiver=receiver;
+                    group.compact_strips=water && space==PicaSpace::scenery;
+                    groups.push_back(std::move(group));
+                }
+                groups.back().passes.push_back(source_pass);
             }
-            groups.back().passes.push_back(source_pass);
-        }
+        };
+        split(back,result.before_model_groups);
+        // A Mode-1 high-priority BG3 sky can be after models. Its infinity
+        // projection must not move the adjacent OBJ/bitmap passes or their order.
+        if(water) split(front,result.after_model_groups);
     }
     return result;
 }
 std::array<PpuRasterWork,2> GameLayers::work() const noexcept {
     auto before=retired_before_work_;
     const auto add=[&](PpuRasterWork part){before.decodes+=part.decodes;before.colour_updates+=part.colour_updates;};
-    add(before_.work());for(const auto& group:panorama_groups_) add(group->work());
-    return {before,after_.work()};
+    add(before_.work());for(const auto& group:panorama_groups_) add(group->raster.work());
+    auto after=retired_after_work_;const auto add_after=[&](PpuRasterWork part) {
+        after.decodes+=part.decodes;after.colour_updates+=part.colour_updates;
+    };
+    add_after(after_.work());for(const auto& group:foreground_groups_) add_after(group->raster.work());
+    return {before,after};
+}
+PicaFrame GameLayers::prepare_groups(const GamePresentation& frame,std::span<const PpuBatch> batches,
+    Owners& owners,std::vector<PicaFrame>& working,PicaComposite& composite,PpuRasterWork& retired) {
+    while(owners.size()>batches.size()) {
+        const auto work=owners.back()->raster.work();retired.decodes+=work.decodes;retired.colour_updates+=work.colour_updates;
+        owners.pop_back();
+    }
+    while(owners.size()<batches.size()) owners.push_back(std::make_unique<PainterOwner>());
+    working.clear();working.reserve(owners.size());
+    for(unsigned i=0;i<owners.size();++i) {
+        auto& owner=*owners[i];const auto& batch=batches[i];
+        const auto guard=batch.water_receiver?source_water_guard(frame):pica_raster_base_guard;
+        auto prepared=owner.raster.prepare(frame.raster->ppu,batch,frame.plan,frame.raster->brightness,
+            frame.current->background_colour_subtract,guard,true);
+        if(batch.water_receiver) prepared=owner.receiver.prepare_water(frame,prepared,owner.raster.coverage_guard());
+        else if(batch.space==PicaSpace::scenery) {
+            auto& images=owner.isolated_images;images.assign(prepared.textures.begin(),prepared.textures.end());
+            for(auto& image:images) {image.source_layers={};image.layer_pitch=0;}
+            prepared.textures=images;
+        }
+        working.push_back(prepared);
+    }
+    return composite.prepare_layers(frame.plan,working);
 }
 GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
     const auto policy=game_layer_plan(frame);
@@ -162,7 +198,7 @@ GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
     };
     PicaFrame before;
     if(policy.before_model_groups.empty()) {
-        for(const auto& group:panorama_groups_) retire(group->work());
+        for(const auto& group:panorama_groups_) retire(group->raster.work());
         panorama_groups_.clear();
         unsigned guard=pica_raster_base_guard;
         if(native_landscape_scene(frame)) {
@@ -175,33 +211,21 @@ GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
             frame.current->background_colour_subtract,guard);
     } else {
         retire(before_.work());before_=PicaRaster{};
-        while(panorama_groups_.size()>policy.before_model_groups.size()) {
-            retire(panorama_groups_.back()->work());panorama_groups_.pop_back();
-        }
-        while(panorama_groups_.size()<policy.before_model_groups.size())
-            panorama_groups_.push_back(std::make_unique<PicaRaster>());
-        auto& groups=working_groups_;groups.clear();groups.reserve(panorama_groups_.size());
-        // Strip redundant A8 only from isolated BG2 descriptors. The decoder's
-        // owned mask still validates source ownership; mixed screen groups
-        // retain provenance for colour math. No texture pixels are copied.
-        auto& bg_images=working_bg_images_;bg_images.clear();bg_images.reserve(panorama_groups_.size()*pica_raster_max_strips);
-        for(unsigned i=0;i<panorama_groups_.size();++i) {
-            auto prepared=panorama_groups_[i]->prepare(frame.raster->ppu,policy.before_model_groups[i],
-                frame.plan,brightness,frame.current->background_colour_subtract,pica_raster_base_guard,true);
-            if(policy.before_model_groups[i].space==PicaSpace::scenery && !prepared.textures.empty()) {
-                const auto first=bg_images.size();
-                for(auto image:prepared.textures) {
-                    image.source_layers={};image.layer_pitch=0;bg_images.push_back(image);
-                }
-                prepared.textures=std::span<const PicaImage>(bg_images).subspan(first,prepared.textures.size());
-            }
-            groups.push_back(prepared);
-        }
-        before=panorama_.prepare_layers(frame.plan,groups);
+        before=prepare_groups(frame,policy.before_model_groups,panorama_groups_,working_groups_,panorama_,retired_before_work_);
     }
-    GameLayerFrames result{before,
-        after_.prepare(frame.raster->ppu,policy.after_models,frame.plan,brightness,frame.current->background_colour_subtract),
-        backdrop(frame.raster->ppu->cgram[0],brightness)};
+    PicaFrame after;
+    const auto retire_after=[&](PpuRasterWork part) {
+        retired_after_work_.decodes+=part.decodes;retired_after_work_.colour_updates+=part.colour_updates;
+    };
+    if(policy.after_model_groups.empty()) {
+        for(const auto& group:foreground_groups_) retire_after(group->raster.work());
+        foreground_groups_.clear();
+        after=after_.prepare(frame.raster->ppu,policy.after_models,frame.plan,brightness,frame.current->background_colour_subtract);
+    } else {
+        retire_after(after_.work());after_=PicaRaster{};
+        after=prepare_groups(frame,policy.after_model_groups,foreground_groups_,working_foreground_,foreground_,retired_after_work_);
+    }
+    GameLayerFrames result{before,after,backdrop(frame.raster->ppu->cgram[0],brightness)};
     if(native_landscape_scene(frame)) result.before_models=scenery_.prepare(frame,result.before_models);
     if(policy.solid_frontend_margins) result.clear=right_margin(result);
     return result;

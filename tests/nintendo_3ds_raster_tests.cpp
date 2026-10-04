@@ -287,6 +287,81 @@ void composition() {
     rejected([&]{compositor.prepare_layers(plan,oversized);},"Artwork-only composition forgot the reserved lower LCD texture");
     rejected([&]{validate_pica_group(models,pica_texture_budget+1);},"Group validator accepted overflowing reserved residency");
 }
+void compact_strip_contract() {
+    auto ppu=source();ppu->background_mode=1;
+    ppu->cgram[17]=0;ppu->cgram[18]=31<<5;tile(*ppu,0x4000,1,2);
+    for(unsigned row=0;row<32;++row) for(unsigned col=0;col<32;++col)
+        ppu->vram[0xc000+(row*32+col)*2]=std::uint8_t(col&1);
+    const auto unchanged=*ppu;const auto plan=plan_frame(0,true,ScreenUse::world);
+    for(unsigned guard:{32U,80U,512U,1024U,1848U}) {
+        PpuBatch ordinary{{{PpuLayer::bg2}},PicaSpace::scenery,true};
+        auto compact=ordinary;compact.compact_strips=true;
+        PicaRaster baseline,packed;
+        const auto full=baseline.prepare(ppu,ordinary,plan,15,0,guard);
+        const auto frame=packed.prepare(ppu,compact,plan,15,0,guard);
+        const unsigned width=400+guard*2;const float left=-float(guard);
+        unsigned start=0,bytes=0,baseline_bytes=0;
+        require(frame.textures.size()<=4 && frame.draws.size()==frame.textures.size(),
+            "Compact strips exceeded the native draw/storage contract");
+        const auto base=frame.textures.front().pixels.data();const auto mask=frame.textures.front().source_layers.data();
+        for(unsigned page=0;page<frame.textures.size();++page) {
+            const auto& image=frame.textures[page];const auto& draw=frame.draws[page];
+            require(image.width<=1024 && image.pitch==width*4 && image.layer_pitch==width
+                && image.pixels.data()==base+start*4 && image.source_layers.data()==mask+start
+                && frame.vertices[draw.first].position==Point3{left+start,0,0}
+                && frame.vertices[draw.first+2].position==Point3{left+start+image.width,240,0},
+                "Compact strips copied/reduced pixels or lost source UV/origin registration");
+            require(draw.source_layer==2,"Compact isolated BG2 lost its one-hot source ownership");
+            for(unsigned y=0;y<240;y+=7) for(unsigned x=0;x<image.width;++x) {
+                const auto& original=full.textures[(start+x)/1024];const unsigned ox=(start+x)%1024;
+                require(pixel(image,x,y)==pixel(original,ox,y)
+                    && image.source_layers[std::size_t(y)*width+x]==original.source_layers[std::size_t(y)*width+ox],
+                    "Compact strip boundaries changed source color/coverage/opaque black");
+            }
+            bytes+=pica_resident_texture_bytes(image);start+=image.width;
+        }
+        for(const auto& image:full.textures) baseline_bytes+=pica_resident_texture_bytes(image);
+        require(start==width && bytes<=baseline_bytes,"Compact partition dropped coverage or wasted additional padded texture storage");
+        if(guard==512) require(bytes<baseline_bytes,"Water-sized strip split did not avoid power-of-two padding waste");
+        const auto cached=packed.work();
+        const auto repeat=packed.prepare(ppu,compact,plan,15,0,guard);
+        require(repeat.textures.front().pixels.data()==base && packed.work().decodes==cached.decodes
+            && packed.work().colour_updates==cached.colour_updates,"Compact descriptors defeated source reuse");
+        auto bad=compact;bad.water_receiver=true;bad.passes[0].layer=PpuLayer::bg3;
+        rejected([&]{packed.prepare(ppu,bad,plan);},"BG3 was accepted as a finite BG2 water receiver");
+        bad.passes[0].layer=PpuLayer::bg2;bad.space=PicaSpace::screen;
+        rejected([&]{packed.prepare(ppu,bad,plan);},"Screen-space batch was accepted as finite water");
+        bad.space=PicaSpace::scenery;auto mode2=std::make_shared<simulation::SnesPpuState>(*ppu);mode2->background_mode=2;
+        rejected([&]{packed.prepare(mode2,bad,plan);},"Mode-2 source was mistaken for a Mode-1 water receiver");
+        require(packed.work().decodes==cached.decodes && packed.work().colour_updates==cached.colour_updates
+            && repeat.textures.front().pixels.data()==base,"Rejected water batch replaced a valid cached source");
+    }
+    auto bg3=PpuBatch{{{PpuLayer::bg3}},PicaSpace::scenery,true};bg3.compact_strips=true;PicaRaster sky;
+    const auto image=sky.prepare(ppu,bg3,plan);
+    require(!image.draws.empty() && image.draws.front().source_layer==4,"Isolated distant BG3 was mislabeled BG2");
+    require(*ppu==unchanged,"Compact texture preparation modified cartridge state");
+}
+void screen_sprite_crop() {
+    auto ppu=source();for(unsigned i=0;i<128;++i) ppu->oam[i*4+1]=240;
+    object(*ppu,0,190,85,7);ppu->cgram[129]=0;const auto unchanged=*ppu;
+    PpuBatch batch{{{PpuLayer::objects,2}},PicaSpace::screen,true};PicaRaster raster;
+    const auto plan=plan_frame(1,true,ScreenUse::world);const auto full=raster.prepare(ppu,batch,plan);
+    const auto pixels=full.textures[0].pixels.data(),layers=full.textures[0].source_layers.data();
+    const auto crop=raster.prepare(ppu,batch,plan,15,0,32,true);
+    require(crop.textures.size()==1 && crop.vertices.front().position==Point3{262,93,0},
+        "Screen sprite crop shifted the authored LCD position");
+    const auto& image=crop.textures[0];
+    require(image.width==8 && image.height==8 && image.pitch==464*4 && image.layer_pitch==464
+        && image.pixels.data()==pixels+(93*464+294)*4 && image.source_layers.data()==layers+93*464+294,
+        "Screen sprite crop copied or resized source pixels instead of borrowing its rectangle");
+    for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x)
+        require(pixel(image,x,y)==std::array<unsigned,4>{0,0,0,255} && image.source_layers[y*464+x]==16,
+            "Black screen-space sprite became transparent or lost OBJ ownership");
+    require(raster.work().decodes==1 && raster.work().colour_updates==1 && pica_resident_texture_bytes(image)==320,
+        "Screen cropping redecoded source sprites or retained unnecessary padded storage");
+    raster.prepare(ppu,batch,plan,0,0,32,true);
+    require(raster.work().decodes==1 && *ppu==unchanged,"Screen crop fade redecoded or changed source data");
+}
 void colour_effects() {
     const auto plan=plan_frame(1,true,ScreenUse::world);Canvas dashboard;PicaColourEffects effects;
     simulation::CircleEffectState circle;simulation::ColourMathEffectState math;
@@ -455,5 +530,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

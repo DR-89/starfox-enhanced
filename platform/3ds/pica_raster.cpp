@@ -49,6 +49,9 @@ std::array<std::uint8_t,3> colour(std::uint16_t word,unsigned brightness,unsigne
 void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const FramePlan& plan,unsigned brightness,unsigned subtract) {
     if(ppu.background_mode<1 || ppu.background_mode>3 || brightness>15 || subtract>31
         || batch.passes.size()>16 || batch.first_row>=batch.last_row || batch.last_row>native_height
+        || (batch.water_receiver && (ppu.background_mode!=1 || batch.space!=PicaSpace::scenery
+            || batch.passes.empty() || std::any_of(batch.passes.begin(),batch.passes.end(),
+                [](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
         || (batch.space!=PicaSpace::screen && batch.space!=PicaSpace::scenery)
         || (batch.space==PicaSpace::scenery && !batch.expand_horizontal))
         throw std::invalid_argument("Unsupported/incomplete 3DS PPU painter group");
@@ -86,6 +89,17 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     // A genuinely changed source pass can retire excess decoded storage.
     if(!decode) width=std::max(width,unsigned(indexed_->width()));
     decode=decode || indexed_->width()!=width;
+    std::array<unsigned,pica_raster_max_strips+1> boundaries{};unsigned pages=0;
+    while(boundaries[pages]<width) {
+        if(pages==pica_raster_max_strips) throw std::length_error("3DS source strip count exceeded");
+        const auto remaining=width-boundaries[pages];
+        // Water receivers may just cross a power-of-two padding boundary.
+        // Borrow another native-width strip instead of doubling its allocation;
+        // the last of at most four strips can keep a non-power-of-two width.
+        const auto span=(batch.water_receiver || batch.compact_strips) && remaining<=pica_raster_strip_width && pages+1<pica_raster_max_strips
+            ?std::bit_floor(remaining):std::min(pica_raster_strip_width,remaining);
+        boundaries[pages+1]=boundaries[pages]+span;++pages;
+    }
     const int origin=int((width-256)/2);
     auto next=std::unique_ptr<render::Framebuffer>{};
     if(decode) {
@@ -140,7 +154,8 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             normal[ink]=colour(source->cgram[ink],brightness,0);
             background[ink]=colour(source->cgram[ink],brightness,subtract);
         }
-        for(unsigned y=0;y<screen_height;++y) for(unsigned x=0;x<width;++x) {
+        for(unsigned y=0;y<screen_height;++y) for(unsigned page=0;page<pages;++page)
+            for(unsigned x=boundaries[page];x<boundaries[page+1];++x) {
             const int logical_y=int(y)-8;
             if(batch.space==PicaSpace::screen && (logical_y<0 || logical_y>=int(native_height))) continue;
             const unsigned sy=unsigned(std::clamp(logical_y,0,int(native_height-1)));
@@ -155,7 +170,7 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             std::copy(rgb.begin(),rgb.end(),pixels.begin()+out);pixels[out+3]=255;visible=true;
             if(decode) {
                 layers[std::size_t(y)*width+x]=std::uint8_t(layer);
-                auto& bounds=occupied[x/pica_raster_strip_width];const auto local=x%pica_raster_strip_width;
+                auto& bounds=occupied[page];const auto local=x-boundaries[page];
                 bounds[0]=std::min(bounds[0],local);bounds[1]=std::min(bounds[1],y);
                 bounds[2]=std::max(bounds[2],local+1);bounds[3]=std::max(bounds[3],y+1);
             }
@@ -171,9 +186,14 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     const float left=(float(top_width)-width)*.5F;
     constexpr std::array<std::array<float,2>,4> uv{{{0,0},{1,0},{1,1},{0,1}}};
     unsigned strips=0;
-    for(unsigned start=0;start<width;start+=pica_raster_strip_width) {
-        auto bounds=std::array<unsigned,4>{0,0,std::min(pica_raster_strip_width,width-start),screen_height};
-        if(trim_transparent && batch.space==PicaSpace::scenery) bounds=occupied_[start/pica_raster_strip_width];
+    for(unsigned page=0;page<pages;++page) {
+        const auto start=boundaries[page];
+        auto bounds=std::array<unsigned,4>{0,0,boundaries[page+1]-start,screen_height};
+        // A split screen-space OBJ group can contain only one tiny sprite.
+        // Borrow its occupied rectangle too; retaining a whole guarded LCD
+        // page per priority needlessly consumes the water compositor budget.
+        // Geometry retains the exact source origin, including opaque black.
+        if(trim_transparent) bounds=occupied_[page];
         if(bounds[0]>=bounds[2] || bounds[1]>=bounds[3]) continue;
         const unsigned size=bounds[2]-bounds[0],height=bounds[3]-bounds[1];
         unsigned vertex=strips*6;
@@ -185,11 +205,15 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             std::span<const std::uint8_t>(layers_).subspan(offset),width};
         ++strips;
     }
-    // An isolated BG2 group can retain one-hot source ownership when its
-    // raster is projected onto a world receiver. Mixed groups still use A8.
-    if(!batch.passes.empty() && std::all_of(batch.passes.begin(),batch.passes.end(),
-        [](const auto& pass){return pass.layer==PpuLayer::bg2;}))
-        for(unsigned i=0;i<strips;++i) draws_[i].source_layer=2;
+    // Isolated artwork retains its actual one-hot ownership when its A8
+    // descriptor is omitted. In water scenes the distant sky is BG3, not BG2.
+    if(!batch.passes.empty() && batch.passes.front().layer!=PpuLayer::objects
+        && std::all_of(batch.passes.begin(),batch.passes.end(),[&](const auto& pass) {
+            return pass.layer==batch.passes.front().layer;
+        })) {
+        const auto layer=batch.passes.front().layer;
+        for(unsigned i=0;i<strips;++i) draws_[i].source_layer=layer==PpuLayer::bg1?1:layer==PpuLayer::bg2?2:4;
+    }
     return {plan,visible_?std::span<const PicaVertex>(vertices_).first(strips*6):std::span<const PicaVertex>{},
         visible_?std::span<const PicaDraw>(draws_).first(strips):std::span<const PicaDraw>{},
         visible_?std::span<const PicaImage>(images_).first(strips):std::span<const PicaImage>{}};

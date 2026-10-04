@@ -14,6 +14,7 @@ struct GameLayerPlan {
     // Only split at coordinate-space boundaries. Flattening this sequence or
     // collecting all BG2 passes first would change native sprite priorities.
     std::vector<PpuBatch> before_model_groups;
+    std::vector<PpuBatch> after_model_groups;
     bool operator==(const GameLayerPlan&) const=default;
 };
 [[nodiscard]] GameLayerPlan game_layer_plan(const GamePresentation&);
@@ -27,10 +28,17 @@ public:
 private:
     PicaRaster before_,after_;
     GameScenery scenery_;
-    std::vector<std::unique_ptr<PicaRaster>> panorama_groups_;
-    std::vector<PicaFrame> working_groups_;
-    std::vector<PicaImage> working_bg_images_;
-    PicaComposite panorama_;
-    PpuRasterWork retired_before_work_;
+    struct PainterOwner {
+        PicaRaster raster;
+        GameScenery receiver;
+        std::vector<PicaImage> isolated_images;
+    };
+    using Owners=std::vector<std::unique_ptr<PainterOwner>>;
+    PicaFrame prepare_groups(const GamePresentation&,std::span<const PpuBatch>,Owners&,
+        std::vector<PicaFrame>&,PicaComposite&,PpuRasterWork&);
+    Owners panorama_groups_,foreground_groups_;
+    std::vector<PicaFrame> working_groups_,working_foreground_;
+    PicaComposite panorama_,foreground_;
+    PpuRasterWork retired_before_work_,retired_after_work_;
 };
 } // namespace starfox::platform::nintendo_3ds

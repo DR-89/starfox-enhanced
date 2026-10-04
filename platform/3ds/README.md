@@ -9,6 +9,32 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Native water receiver checkpoint
+
+Mode-1 `BG_2_3B` water now uses finite floor and overhead geometry at the
+interpolated cartridge camera-to-shadow height, with source-pixel homogeneous
+UVs. Its BG3 sky remains at infinity; adjacent OBJ and bitmap priorities remain
+screen-space, in their original painter order. This applies to world flows,
+including intro/results/credits, but not setup, title, map or Controls screens.
+Only the far-horizon band remains at infinity; there is no full flat water
+image underneath the finite receiver. Borrowed compact strips and occupied
+sprite rectangles avoid padded texture waste without rescaling artwork.
+
+The original depth regression failed before the receiver was implemented.
+Both-eye coverage/UV tests cover floor/overhead, low camera heights, slider
+motion and strength-2 projection stress. Full native canonical pixels retain
+opaque black, all four visible OBJ priorities and both BG3-priority policies.
+All seventeen rebuilt root host suites and five strict changed-source checks
+pass. A private unmodified-ROM Titania run reaches water at source video phase
+10,722 and checks 240 water frames with models, dots and effects at default and
+maximum menu optics. Peak padded GPU texture residency is 3,245,312 bytes,
+including the lower LCD. That probe uses god mode, infinite lives/bombs and
+bomb assistance; it is not a no-cheat gameplay, native-device or performance
+claim. Root and exact native-source host runs both pass seventeen suites and
+the same natural water probe, including 458,752 canonical pixel/ownership
+comparisons each. Current water changes still need ARM CI acceptance.
+Corridors, full-flow effects/HUD acceptance and playable packaging remain.
+
 ## Distant background depth and source priorities
 
 Scenery coverage follows both eye projections instead of assuming a fixed

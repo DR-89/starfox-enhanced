@@ -5,11 +5,12 @@ namespace {
 using namespace starfox;
 using namespace platform::nintendo_3ds;
 unsigned checks{};
+std::string scenario;
 void require(bool value,const char* message) {++checks;if(!value) throw std::runtime_error(message);}
 GamePresentation source(simulation::GameFlowState flow,unsigned mode) {
     auto scene=std::make_shared<vr::GameSceneSnapshot>();scene->flow=flow;
     auto ppu=std::make_shared<simulation::SnesPpuState>();ppu->background_mode=std::uint8_t(mode);
-    ppu->main_screen=23;ppu->bg1_screen_size=ppu->bg2_screen_size=ppu->bg3_screen_size=0;
+    ppu->main_screen=23;ppu->object_select=0;ppu->bg1_screen_size=ppu->bg2_screen_size=ppu->bg3_screen_size=0;
     // PPU base registers are VRAM WORD addresses; fixture writes below are bytes.
     ppu->bg1_character_base=0;ppu->bg2_character_base=0x1000;ppu->bg3_character_base=0x2000;
     ppu->bg1_screen_base=0x3000;ppu->bg2_screen_base=0x3200;ppu->bg3_screen_base=0x3400;
@@ -41,6 +42,39 @@ std::pair<std::array<std::uint8_t,4>,unsigned> pixel(const PicaFrame& group,unsi
         if(image.pixels[at+3]) result={
             {image.pixels[at],image.pixels[at+1],image.pixels[at+2],image.pixels[at+3]},
             image.source_layers.empty()?draw.source_layer:image.source_layers[std::size_t(iy)*image.layer_pitch+unsigned(ix)]};
+    }
+    return result;
+}
+std::pair<std::array<std::uint8_t,4>,unsigned> mono_receiver_pixel(const PicaFrame& group,unsigned x,unsigned y) {
+    std::pair<std::array<std::uint8_t,4>,unsigned> result{};
+    const std::array<double,2> sample{double(x)+72.5,double(y)+8.5};
+    for(const auto& draw:group.draws) {
+        if(draw.texture==pica_no_texture) continue;
+        const auto& image=group.textures[draw.texture];
+        for(unsigned i=draw.first;i<draw.first+draw.count;i+=3) {
+            std::array<std::array<double,2>,3> triangle{};
+            for(unsigned k=0;k<3;++k) {
+                const auto& p=group.vertices[i+k].position;
+                triangle[k]=draw.space==PicaSpace::world?std::array<double,2>{
+                    200+group.plan.focal_x*p[0]/p[2],120-group.plan.focal_y*p[1]/p[2]}:std::array<double,2>{p[0],p[1]};
+            }
+            const auto cross=[](auto a,auto b,auto p){return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0]);};
+            const double area=cross(triangle[0],triangle[1],triangle[2]);if(std::abs(area)<1.e-12) continue;
+            const std::array weights{cross(triangle[1],triangle[2],sample)/area,
+                cross(triangle[2],triangle[0],sample)/area,cross(triangle[0],triangle[1],sample)/area};
+            if(std::any_of(weights.begin(),weights.end(),[](double weight){return weight< -1.e-5;})) continue;
+            double u=0,v=0,reciprocal=0;
+            for(unsigned k=0;k<3;++k) {
+                const auto& vertex=group.vertices[i+k];
+                const double weight=draw.space==PicaSpace::world && !draw.projected_uv?weights[k]/vertex.position[2]:weights[k];
+                reciprocal+=weight;u+=weight*vertex.uv[0];v+=weight*vertex.uv[1];
+            }
+            const auto tx=unsigned(std::clamp(u/reciprocal*image.width,0.,double(image.width-1)));
+            const auto ty=unsigned(std::clamp(v/reciprocal*image.height,0.,double(image.height-1)));
+            const auto at=std::size_t(ty)*image.pitch+tx*4;
+            if(image.pixels[at+3]) result={{image.pixels[at],image.pixels[at+1],image.pixels[at+2],image.pixels[at+3]},
+                image.source_layers.empty()?draw.source_layer:image.source_layers[std::size_t(ty)*image.layer_pitch+tx]};
+        }
     }
     return result;
 }
@@ -243,6 +277,188 @@ void unique_landscape_policy() {
     try {static_cast<void>(game_layer_plan(frame));} catch(const std::invalid_argument&) {failed=true;}
     require(failed,"Ambiguous source sky half silently substituted another atlas policy");
 }
+void water_depth() {
+    auto frame=source(simulation::GameFlowState::gameplay,1);
+    auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    scene->background_water_surround=true;scene->camera.y=-96;scene->shadow_height=0;
+    frame.current=frame.previous=scene;frame.plan=plan_frame(1,true,ScreenUse::world);
+    GameLayers layers;Canvas lower;
+    const auto group=layers.prepare(frame).before_models;validate_pica_frame(group,lower.view());
+    const auto finite=std::count_if(group.draws.begin(),group.draws.end(),[](const auto& draw) {
+        return draw.space==PicaSpace::world && draw.projected_uv && draw.source_layer==2;
+    });
+    require(finite>0,"Open-water BG2 remains a flat screen-depth image instead of a finite source receiver");
+    for(const auto& draw:group.draws) if(draw.space==PicaSpace::world) {
+        require(draw.depth_test && draw.depth_write && draw.projected_uv,"Water discarded its source depth or homogeneous projector");
+        for(unsigned i=draw.first;i<draw.first+draw.count;++i)
+            require(std::abs(std::abs(group.vertices[i].position[1])-96)<.001,"Water height is an arbitrary stereo plane, not source camera-to-shadow distance");
+    }
+    using enum simulation::GameFlowState;
+    for(auto flow:{gameplay,training,intro,planet_travel,stage_results,game_over,finished,credits}) {
+        scene->flow=flow;require(native_water_scene(frame),"Source water depth was restricted to a gameplay-only shortcut");
+        const auto water=layers.prepare(frame).before_models;
+        require(std::any_of(water.draws.begin(),water.draws.end(),[](const auto& draw) {
+            return draw.space==PicaSpace::world && draw.source_layer==2 && draw.projected_uv;
+        }),"World transition restored water artwork at flat screen depth");
+    }
+    for(auto flow:{simulation::GameFlowState::title,simulation::GameFlowState::ex_pregame_menu,
+        simulation::GameFlowState::controls_type,simulation::GameFlowState::planet_select}) {
+        scene->flow=flow;require(!native_water_scene(frame),"Menu/map water was mistaken for a world receiver");
+    }
+    scene->flow=simulation::GameFlowState::gameplay;
+    auto old=std::make_shared<vr::GameSceneSnapshot>(*scene);old->camera.y=-64;scene->camera.y=-128;frame.previous=old;
+    for(double alpha:{0.,.25,.5,1.}) {
+        frame.interpolation_alpha=alpha;
+        require(source_water_height(frame)==std::lerp(64.,128.,alpha),"Water camera motion stayed locked to a source tick");
+    }
+    old->flow=simulation::GameFlowState::title;frame.interpolation_alpha=0;
+    require(source_water_height(frame)==128,"Water interpolated through a scene change");
+    frame.interpolation_alpha=std::numeric_limits<double>::quiet_NaN();bool rejected=false;
+    try {static_cast<void>(source_water_height(frame));} catch(const std::invalid_argument&) {rejected=true;}
+    require(rejected,"Non-finite water interpolation was accepted");
+}
+void water_priority_pixels() {
+    for(bool high_sky:{false,true}) for(int height:{48,96}) {
+        scenario="Water priorities high-sky="+std::to_string(high_sky)+" height="+std::to_string(height)+": ";
+        auto frame=source(simulation::GameFlowState::gameplay,1);
+        auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->background_water_surround=true;scene->camera.y=std::int16_t(-height);scene->shadow_height=0;
+        frame.current=frame.previous=scene;
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);ppu->bg3_high_priority=high_sky;
+        ppu->bg3_screen_base=0x3800; // Full 32x32 maps need non-overlapping 2 KiB banks.
+        ppu->cgram[33]=0; // Opaque black water belongs to BG2, never transparency.
+        const auto tile=[&](unsigned map,unsigned row,unsigned col,unsigned word) {
+            const unsigned at=map+(row*32+col)*2;ppu->vram[at]=std::uint8_t(word);ppu->vram[at+1]=std::uint8_t(word>>8);
+        };
+        for(unsigned row=0;row<28;++row) for(unsigned col=0;col<32;++col) {
+            tile(0x6400,row,col,row<8 || row>=15?0x0801:0);
+            tile(0x7000,row,col,0x0c01);
+        }
+        for(unsigned row=12;row<=16;++row) for(unsigned col=9;col<=19;++col) tile(0x6400,row,col,0x2801);
+        for(unsigned row=8;row<=10;++row) for(unsigned col=22;col<=23;++col) tile(0x7000,row,col,0x2c01);
+        for(unsigned i=0;i<4;++i) {
+            ppu->oam[i*4]=std::uint8_t(56+i*24);ppu->oam[i*4+1]=80;
+            ppu->oam[i*4+2]=1;ppu->oam[i*4+3]=std::uint8_t(i<<4);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+        const auto unchanged=*ppu;StereoSettings settings;settings.separation=64;settings.convergence=16;
+        frame.plan=plan_frame(1,true,ScreenUse::world,settings);
+        GameLayers layers;PicaRaster oracle;PicaComposite composite;Canvas lower;
+        auto prepared=layers.prepare(frame);const auto policy=game_layer_plan(frame);
+        unsigned sprite_groups=0;
+        for(const auto* group:{&prepared.before_models,&prepared.after_models}) for(const auto& draw:group->draws)
+            if(draw.space==PicaSpace::screen && draw.texture!=pica_no_texture) {
+                const auto& image=group->textures[draw.texture];
+                require(validate_pica_layers(image)==16,"Water screen group lost isolated OBJ ownership");
+                require(image.width<=80 && image.height==8,"Tiny water-scene sprites retained full guarded pages");
+                ++sprite_groups;
+            }
+        require(sprite_groups==(high_sky?3U:4U),"Water fixture lost a nonempty contiguous OBJ painter group");
+        for(const auto& batches:{policy.before_model_groups,policy.after_model_groups}) for(const auto& batch:batches) {
+            require(!batch.passes.empty(),"Water split inserted an empty source group");
+            for(const auto& pass:batch.passes) {
+                require(batch.water_receiver==(pass.layer==PpuLayer::bg2),"Water receiver contains sky/sprites or BG2 stayed planar");
+                require((batch.space==PicaSpace::scenery)==(pass.layer==PpuLayer::bg2 || pass.layer==PpuLayer::bg3),
+                    "Water sky became screen-depth or sprites were moved into world scenery");
+            }
+        }
+        auto raw_policy=policy.before_models;raw_policy.passes.insert(raw_policy.passes.end(),policy.after_models.passes.begin(),policy.after_models.passes.end());
+        const auto raw=oracle.prepare(ppu,raw_policy,frame.plan,15);
+        for(unsigned i=0;i<4;++i) require(pixel(raw,56+i*24,80).second==16,
+            "Water fixture did not exercise all four visible OBJ priorities");
+        const auto native=composite.prepare(frame.plan,std::array{prepared.before_models,prepared.after_models},lower.view());
+        for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+            require(mono_receiver_pixel(native,x,y)==pixel(raw,x,y),"Water finite surfaces/sky priorities changed canonical source pixels or opaque ownership");
+        const auto work=layers.work();
+        for(float slider:{0.F,.5F,1.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world,settings);prepared=layers.prepare(frame);
+            const auto current=layers.work();
+            require(current[0].decodes==work[0].decodes && current[1].decodes==work[1].decodes
+                && current[0].colour_updates==work[0].colour_updates && current[1].colour_updates==work[1].colour_updates,
+                "Water slider reran the source raster/palette walker");
+            validate_pica_frame(composite.prepare(frame.plan,std::array{prepared.before_models,prepared.after_models},lower.view()),lower.view());
+        }
+        raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->brightness=7;frame.raster=raster;
+        prepared=layers.prepare(frame);
+        require(layers.work()[0].decodes==work[0].decodes && layers.work()[1].decodes==work[1].decodes,
+            "Water brightness fade redecoded its source tiles");
+        require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,
+            "Water preparation mutated cartridge VRAM, sprites or palette");
+    }
+    scenario.clear();
+}
+void water_eye_coverage() {
+    // Independent inverse eye projection, not a comparison of the production
+    // guard helper against itself. Check source UV registration and every LCD
+    // row, including the overhead plane and the near/far transition.
+    for(int height:{8,48,96}) for(float convergence:{16.F,1024.F}) for(float strength:{1.F,2.F}) {
+        auto frame=source(simulation::GameFlowState::gameplay,1);
+        auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->background_water_surround=true;scene->camera.y=std::int16_t(-height);
+        frame.current=frame.previous=scene;
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);
+        for(unsigned i=0;i<1024;++i) {ppu->vram[0x6400+i*2]=1;ppu->vram[0x6401+i*2]=8;}
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+        StereoSettings settings;settings.separation=64;settings.convergence=convergence;settings.strength=strength;
+        PicaRaster artwork;GameScenery receiver;Canvas lower;
+        PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};batch.water_receiver=true;
+        for(float slider:{1.F,.5F,0.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world,settings);
+            const auto decoded=artwork.prepare(ppu,batch,frame.plan,15,0,source_water_guard(frame),true);
+            const auto group=receiver.prepare_water(frame,decoded,artwork.coverage_guard());
+            validate_pica_frame(group,lower.view());
+            struct Triangle {std::array<std::array<double,2>,3> p,uv;double area;unsigned image;};
+            const auto cross=[](auto a,auto b,auto p){return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0]);};
+            for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
+                std::vector<Triangle> triangles;
+                for(const auto& draw:group.draws) if(draw.space==PicaSpace::world) {
+                    const auto matrix=pica_draw_matrix(frame.plan,eye,draw);
+                    for(unsigned i=draw.first;i<draw.first+draw.count;i+=3) {
+                        Triangle triangle{};triangle.image=draw.texture;
+                        const auto& image=group.textures[draw.texture];
+                        const auto& origin=decoded.vertices[draw.texture*6].position;
+                        for(unsigned k=0;k<3;++k) {
+                            const auto& vertex=group.vertices[i+k];const auto& p=vertex.position;
+                            std::array<double,4> clip{};
+                            for(unsigned row=0;row<4;++row) {
+                                clip[row]=matrix[row][3];
+                                for(unsigned axis=0;axis<3;++axis) clip[row]+=double(matrix[row][axis])*p[axis];
+                            }
+                            triangle.p[k]={(1-clip[1]/clip[3])*200,(1-clip[0]/clip[3])*120};
+                            triangle.uv[k]={origin[0]+vertex.uv[0]*image.width,origin[1]+vertex.uv[1]*image.height};
+                            require(std::abs(triangle.uv[k][0]-(200+frame.plan.focal_x*double(p[0])/p[2]))<.03
+                                && std::abs(triangle.uv[k][1]-(120-frame.plan.focal_y*double(p[1])/p[2]))<.03,
+                                "Water homogeneous UV no longer registers with its source pixels");
+                        }
+                        triangle.area=cross(triangle.p[0],triangle.p[1],triangle.p[2]);
+                        if(std::abs(triangle.area)>1.e-8) triangles.push_back(triangle);
+                    }
+                }
+                for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;x+=3) {
+                    const std::array<double,2> sample{x+.5,y+.5};
+                    const double q=std::abs(sample[1]-120)/(height*double(frame.plan.focal_y));
+                    if(q<1./frame.plan.far_plane || q>1./frame.plan.near_plane) continue;
+                    const double expected_x=sample[0]-frame.plan.eyes[eye].projection_offset
+                        +frame.plan.focal_x*double(frame.plan.eyes[eye].x)*q;
+                    bool covered=false;
+                    for(const auto& triangle:triangles) {
+                        const std::array weights{cross(triangle.p[1],triangle.p[2],sample)/triangle.area,
+                            cross(triangle.p[2],triangle.p[0],sample)/triangle.area,cross(triangle.p[0],triangle.p[1],sample)/triangle.area};
+                        if(std::any_of(weights.begin(),weights.end(),[](double w){return w< -1.e-6;})) continue;
+                        double sx=0,sy=0;
+                        for(unsigned k=0;k<3;++k) {sx+=weights[k]*triangle.uv[k][0];sy+=weights[k]*triangle.uv[k][1];}
+                        require(std::abs(sx-expected_x)<.03 && std::abs(sy-sample[1])<.03,
+                            "Water eye samples wrong source pixels or perspective-stretches its artwork");
+                        covered=true;
+                    }
+                    require(covered,"Finite water left an uncovered edge in an active eye");
+                }
+            }
+        }
+        require(artwork.work().decodes==1 && artwork.work().colour_updates==1,
+            "Reducing water slider reran cartridge decoding or palette colour conversion");
+    }
+}
 void panorama_depth() {
     using enum simulation::GameFlowState;
     Canvas lower;
@@ -387,6 +603,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
-} catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
+} catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

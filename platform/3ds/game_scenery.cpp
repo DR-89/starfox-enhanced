@@ -10,6 +10,30 @@ bool native_landscape_scene(const GamePresentation& source) noexcept {
         && source.raster->ppu->background_mode==2 && !source.raster->ppu->tunnel_scene
         && s.background_landscape && s.landscape_grid_height<0;
 }
+bool native_water_scene(const GamePresentation& source) noexcept {
+    if(!source.current || !source.raster || !source.raster->ppu || source.raster->boss_roll) return false;
+    const auto& scene=*source.current;const auto& ppu=*source.raster->ppu;
+    using enum simulation::GameFlowState;
+    return scene.background_water_surround && ppu.background_mode==1 && !ppu.tunnel_scene
+        && (scene.flow==gameplay || scene.flow==training || scene.flow==intro || scene.flow==planet_travel
+            || scene.flow==stage_results || scene.flow==game_over || scene.flow==finished || scene.flow==credits);
+}
+double source_water_height(const GamePresentation& source) {
+    if(!native_water_scene(source) || !std::isfinite(source.interpolation_alpha))
+        throw std::invalid_argument("Invalid native 3DS water source");
+    const auto height=[](const auto& scene){return std::abs(double(scene.camera.y)-scene.shadow_height);};
+    const auto& now=*source.current;double result=height(now);
+    if(source.previous && source.previous->background_water_surround && source.previous->flow==now.flow
+        && height(*source.previous)>0 && !timing::camera_transform_is_discontinuous(source.previous->camera,now.camera))
+        result=std::lerp(height(*source.previous),result,std::clamp(source.interpolation_alpha,0.,1.));
+    if(result<=0) throw std::invalid_argument("3DS water camera lies on its receiver plane");
+    return result;
+}
+unsigned source_water_guard(const GamePresentation& source) {
+    const double distance=source_water_height(source)*source.plan.focal_y;
+    return std::max(pica_receiver_guard(source.plan,{0,1/distance,-120/distance}),
+        pica_receiver_guard(source.plan,{0,-1/distance,120/distance}));
+}
 LandscapePlane source_landscape_plane(const GamePresentation& source) {
     if(!native_landscape_scene(source)) throw std::invalid_argument("Not a native 3DS landscape scene");
     const auto& scene=*source.current;const auto& ppu=*source.raster->ppu;
@@ -109,6 +133,67 @@ PicaFrame GameScenery::prepare(const GamePresentation& source,const PicaFrame& b
     }
     PicaFrame result{source.plan,next,draws,images,bg2.clear};validate_pica_group(result,512*256*4);
     vertices_=std::move(next);images_=std::move(images);draws_=std::move(draws);
+    return {source.plan,vertices_,draws_,images_,bg2.clear};
+}
+PicaFrame GameScenery::prepare_water(const GamePresentation& source,const PicaFrame& bg2,unsigned available_guard) {
+    const double height=source_water_height(source),distance=height*source.plan.focal_y;
+    if(!same_pica_plan(source.plan,bg2.plan) || available_guard<source_water_guard(source))
+        throw std::invalid_argument("3DS water source does not cover both eye receivers");
+    if(bg2.draws.size()!=bg2.textures.size() || bg2.draws.size()>pica_raster_max_strips
+        || bg2.vertices.size()!=bg2.draws.size()*6)
+        throw std::invalid_argument("3DS water requires isolated BG2 source strips");
+    using Point=std::array<double,2>;
+    const auto clip=[](std::vector<Point>& polygon,double y,bool below) {
+        auto old=std::move(polygon);polygon.clear();if(old.empty()) return;
+        auto a=old.back();double da=a[1]-y;
+        for(const auto b:old) {
+            const double db=b[1]-y;const bool ia=below?da>=0:da<=0,ib=below?db>=0:db<=0;
+            if(ia!=ib) {
+                const double t=da/(da-db);
+                polygon.push_back({std::lerp(a[0],b[0],t),y});
+            }
+            if(ib) polygon.push_back(b);
+            a=b;da=db;
+        }
+    };
+    std::vector<PicaVertex> vertices;std::vector<PicaDraw> draws;
+    std::vector<PicaImage> images(bg2.textures.begin(),bg2.textures.end());
+    for(unsigned i=0;i<images.size();++i) {
+        auto& image=images[i];const auto& draw=bg2.draws[i];
+        if(draw.first!=i*6 || draw.count!=6 || draw.texture!=i || draw.source_layer!=2
+            || draw.space!=PicaSpace::scenery || image.channels!=4 || image.repeat || image.source_layers.empty())
+            throw std::invalid_argument("Invalid isolated 3DS water artwork");
+        static_cast<void>(pica_texture_layout(image));image.source_layers={};image.layer_pitch=0;
+    }
+    // Only the subpixel far-horizon band remains at infinity. Never leave a
+    // complete old planar water/bridge image beneath the finite surfaces.
+    for(int side:{0,-1,1}) for(unsigned strip=0;strip<images.size();++strip) {
+        const auto& image=images[strip];const auto& origin=bg2.vertices[strip*6].position;
+        const double left=origin[0],top=origin[1],right=left+image.width,bottom=top+image.height;
+        std::vector<Point> polygon{{left,top},{right,top},{right,bottom},{left,bottom}};
+        if(side==0) {
+            clip(polygon,120-distance/source.plan.far_plane,true);
+            clip(polygon,120+distance/source.plan.far_plane,false);
+        } else {
+            clip(polygon,120+side*distance/source.plan.far_plane,side>0);
+            clip(polygon,120+side*distance/source.plan.near_plane,side<0);
+        }
+        const unsigned first=unsigned(vertices.size());
+        for(unsigned corner=1;corner+1<polygon.size();++corner) for(unsigned k:{0U,corner,corner+1}) {
+            const auto point=polygon[k];const double z=side?distance/(side*(point[1]-120)):0;
+            const Point3 position=side?Point3{float((point[0]-200)*z/source.plan.focal_x),
+                float((120-point[1])*z/source.plan.focal_y),float(z)}:Point3{float(point[0]),float(point[1]),0};
+            vertices.push_back({position,{1,1,1,1},
+                {float(std::clamp((point[0]-left)/image.width,0.,1.)),float(std::clamp((point[1]-top)/image.height,0.,1.))}});
+        }
+        if(vertices.size()!=first) {
+            PicaDraw draw;draw.first=first;draw.count=unsigned(vertices.size())-first;draw.texture=strip;
+            draw.source_layer=2;draw.space=side?PicaSpace::world:PicaSpace::scenery;
+            draw.projected_uv=side!=0;draw.depth_test=draw.depth_write=side!=0;draws.push_back(draw);
+        }
+    }
+    validate_pica_group({source.plan,vertices,draws,images,bg2.clear},512U*256U*4U);
+    vertices_=std::move(vertices);draws_=std::move(draws);images_=std::move(images);
     return {source.plan,vertices_,draws_,images_,bg2.clear};
 }
 } // namespace starfox::platform::nintendo_3ds
