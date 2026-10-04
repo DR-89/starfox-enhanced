@@ -15,6 +15,24 @@ struct GameAdvance {
     // The host must replace the cartridge owner, not run EX against Original
     // data (or vice versa). No further ticks are accepted while this is pending.
     std::optional<simulation::Experience> requested_experience;
+    // Preview uses a real cartridge LEVEL1_1 owner, like desktop. A host
+    // rebuild must finish before either the old scene or its SPC can tick again.
+    std::optional<bool> requested_preview;
+    bool start_after_preview{};
+};
+struct GamePreferences {
+    simulation::TimingMode timing{simulation::TimingMode::original_speed};
+    std::uint8_t music{100},sfx{100},language{},laser{},level{};
+    bool swap{},god{},bombs{},boost{},lives{},planet_cheat{};
+    std::uint16_t separation{16},convergence{1024};
+    bool operator==(const GamePreferences&) const=default;
+};
+struct GameSessionOptions {
+    std::optional<GamePreferences> preferences;
+    bool preview{},start_after_preview{};
+    // Pump platform events during the bounded, silent source preview preroll.
+    // False cancels loading; no half-initialized owner may be presented.
+    std::function<bool(unsigned)> preview_progress;
 };
 // Graphics/SDK-independent native game owner. This is the actual simulation,
 // SPC driver and cartridge HUD, not the asset-free frontend diagnostic. Native
@@ -25,7 +43,8 @@ public:
     // The NDSP adapter must copy into a free DSP-owned linear-memory block.
     using PcmSink=std::function<void(std::span<const std::int16_t>)>;
     GameSession(assets::RomImage,assets::SymbolMap,PcmSink,
-        std::string initial_map="BOOT",std::span<const std::uint8_t> cartridge_ram={});
+        std::string initial_map="BOOT",std::span<const std::uint8_t> cartridge_ram={},
+        const GameSessionOptions& options={});
     GameSession(const GameSession&)=delete;
     GameSession& operator=(const GameSession&)=delete;
     GameSession(GameSession&&)=delete; // Internal source references must stay stable.
@@ -42,7 +61,17 @@ public:
     [[nodiscard]] const assets::RomImage& rom() const noexcept {return rom_;}
     [[nodiscard]] const assets::SymbolMap& symbols() const noexcept {return symbols_;}
     [[nodiscard]] simulation::Experience cartridge_experience() const noexcept {return cartridge_experience_;}
-    [[nodiscard]] std::span<const std::uint8_t> cartridge_ram() const noexcept {return game_.ex_save_ram();}
+    [[nodiscard]] std::span<const std::uint8_t> cartridge_ram() const noexcept {
+        // Retail has no battery-backed cartridge save bank. The VM's generic
+        // mapped RAM allocation must not be passed as EX SRAM to retail BOOT.
+        return cartridge_experience_==simulation::Experience::starfox_ex?game_.ex_save_ram():std::span<const std::uint8_t>{};
+    }
+    [[nodiscard]] GamePreferences preferences() const noexcept;
+    [[nodiscard]] StereoSettings stereo_settings() const noexcept {
+        StereoSettings result;
+        result.separation=float(std::min<std::uint16_t>(64,game_.stereo_separation()));
+        result.convergence=float(game_.stereo_convergence());return result;
+    }
 private:
     void prepare_pace_shapes();
     void publish_raster();
@@ -69,5 +98,7 @@ private:
     double fraction_{};
     bool failed_{},suppress_held_{};
     std::optional<simulation::Experience> requested_experience_;
+    std::optional<bool> requested_preview_;
+    bool start_after_preview_{};
 };
 } // namespace starfox::platform::nintendo_3ds

@@ -1,6 +1,13 @@
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/audio/stem_mixer.hpp"
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
+#include "starfox/platform/nintendo_3ds/game_menu.hpp"
+#include "starfox/state/container.hpp"
+#include "starfox/state/archive.hpp"
+#include "starfox/assets/bps.hpp"
+#include "starfox/platform/nintendo_3ds/game_models.hpp"
+#include "starfox/platform/nintendo_3ds/game_layers.hpp"
+#include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include <bit>
 #include <iostream>
 
@@ -74,7 +81,17 @@ void parity(const assets::RomImage& rom,const assets::SymbolMap& symbols,const s
         pcm.insert(pcm.end(),copied.begin(),copied.end());++blocks;
     },map);
     SourceOracle source(rom,symbols,map);
-    require(session.game().save_state()==source.game.save_state(),"Initial native owner changed cartridge state");
+    const auto initial_owner_state=session.game().save_state(),initial_source_state=source.game.save_state();
+    if(initial_owner_state!=initial_source_state) {
+        const auto a=state::unpack(initial_owner_state,0x47414d01U,assets::crc32(rom.bytes()));
+        const auto b=state::unpack(initial_source_state,0x47414d01U,assets::crc32(rom.bytes()));
+        std::cerr<<"Initial state payload bytes owner/source: "<<a.size()<<'/'<<b.size()<<"; differing offsets:";
+        unsigned shown=0;
+        for(std::size_t i=0;i<std::min(a.size(),b.size()) && shown<12;++i)
+            if(a[i]!=b[i]) {std::cerr<<' '<<i;++shown;}
+        std::cerr<<'\n';
+    }
+    require(initial_owner_state==initial_source_state,"Initial native owner changed cartridge state");
     require(session.audio().save_state()==source.spc.save_state(),"Initial SPC bank/preroll differs from source");
     if(map=="BOOT") {
         require(session.game().flow_state()==simulation::GameFlowState::pregame_menu,"Real pre-game menu was skipped");
@@ -181,12 +198,187 @@ void handoff(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
     require(next.requested_experience && !next.video_phases && !next.audio_blocks,"Wrong cartridge kept running after experience selection");
     require(game==session.game().save_state() && apu==session.audio().save_state(),"Pending cartridge handoff changed source/audio");
 }
+struct MenuDriver {
+    GameSession& session;std::int64_t time{};GameAdvance last;
+    explicit MenuDriver(GameSession& source):session(source) {session.advance(0,0);}
+    void tap(input::ButtonMask button) {
+        time+=50'000'000;last=session.advance(time,button);
+        time+=50'000'000;const auto release=session.advance(time,0);
+        if(release.requested_experience || release.requested_preview) last=release;
+    }
+    void select(unsigned id) {
+        const auto order=simulation::pregame_menu_order(session.game().pregame_page());
+        require(std::find(order.begin(),order.end(),id)!=order.end(),"Fixture selected a row absent from source order");
+        for(std::size_t i=0;session.game().pregame_selection()!=id && i<order.size();++i) tap(input::down);
+        require(session.game().pregame_selection()==id,"Actual menu navigation did not reach requested source row");
+    }
+};
+void actual_menu(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::filesystem::path& captures) {
+    GameSession session(rom,symbols,[](auto){});MenuDriver controls(session);
+    GameMenu menu(rom,symbols);
+    const auto observe=[&] {
+        const auto before=session.game().save_state(),spc=session.audio().save_state();
+        const auto state=GameMenu::capture(session.game());menu.update(state);
+        const auto order=simulation::pregame_menu_order(session.game().pregame_page());
+        require(state.rows.size()==order.size(),"Native UI replaced full source menu with a reduced menu");
+        for(std::size_t i=0;i<order.size();++i) require(state.rows[i].id==order[i] && !state.rows[i].label.empty(),"Source menu row was missing/reordered/unlabelled");
+        require(state.selection==session.game().pregame_selection(),"Rendered cursor was detached from source navigation");
+        const auto source=session.presentation(1,true);validate_pica_frame(menu.frame(source.plan),source.dashboard);
+        require(before==session.game().save_state() && spc==session.audio().save_state(),"Menu/font capture mutated source VM/SPC state");
+        const auto redraws=menu.redraws();require(!menu.update(state) && menu.redraws()==redraws,"Unchanged source menu was rasterized again");
+        return state;
+    };
+    observe();
+    if(!captures.empty()) {
+        std::filesystem::create_directories(captures);Canvas canvas(top_width);canvas.image(0,0,menu.plain_view());
+        canvas.write_bmp((captures/"actual-main-menu.bmp").string());
+    }
+    controls.select(2);
+    const auto fps=session.game().presentation_fps();controls.tap(input::a);
+    require(session.game().presentation_fps()==fps,"Unavailable 3DS FPS target was changed anyway");
+    controls.select(14);controls.tap(input::a);
+    require(session.game().pregame_page()==simulation::PregamePage::options,"Source Options action not used");observe();
+    controls.select(6);const auto volume=session.game().music_volume();controls.tap(input::left);
+    require(session.game().music_volume()<volume,"Source music volume did not change");observe();
+    controls.select(12);controls.tap(input::right);
+    require(session.game().language()==1,"Actual source language did not change");observe();
+    controls.select(5);controls.tap(input::a);
+    require(session.game().swap_face_buttons(),"Actual face-swap setting did not change");observe();
+    controls.select(9);controls.tap(input::a);
+    require(session.game().pregame_page()==simulation::PregamePage::stereo,"Source stereo submenu did not open");observe();
+    controls.select(1);const auto separation=session.stereo_settings().separation;controls.tap(input::right);
+    require(session.stereo_settings().separation>separation,"Native projection did not consume source separation control");observe();
+    controls.select(2);const auto convergence=session.stereo_settings().convergence;controls.tap(input::right);
+    require(session.stereo_settings().convergence>convergence,"Native projection did not consume source convergence control");observe();
+    const auto optical=session.presentation(1,true,session.stereo_settings());
+    require(!optical.plan.stereo && optical.plan.eye_count==1
+        && optical.plan.convergence==session.stereo_settings().convergence,"Plain setup text acquired world stereo disparity");
+    controls.tap(input::b);
+    require(session.game().pregame_page()==simulation::PregamePage::options,"Source stereo Back failed");
+    controls.select(0);controls.tap(input::a);
+    require(session.game().pregame_page()==simulation::PregamePage::cheats,"Source Cheats action not used");
+    for(auto id:simulation::pregame_menu_order(simulation::PregamePage::cheats)) {controls.select(id);observe();}
+    controls.select(1);controls.tap(input::right);
+    require(session.game().selected_level()==11,"Source level-selection list not used");
+    controls.select(3);controls.tap(input::a);
+    require(session.game().infinite_bombs(),"Source infinite-bombs action not used");
+    controls.tap(input::b);controls.tap(input::b);
+    require(session.game().pregame_page()==simulation::PregamePage::main,"Actual menu Back transition failed");
+    for(unsigned page_row:{20U,21U,47U}) {
+        controls.select(page_row);controls.tap(input::a);observe();
+        const auto order=simulation::pregame_menu_order(session.game().pregame_page());
+        for(auto id:order) {controls.select(id);observe();}
+        controls.select(order.front());const auto state=observe();controls.tap(input::a);
+        require(GameMenu::capture(session.game())==state,"Unavailable PICA effect silently changed its source setting");
+        controls.tap(input::b);
+        require(session.game().pregame_page()==simulation::PregamePage::main,"Graphics-page source Back failed");
+    }
+    const auto prefs=session.preferences();
+    controls.select(16);controls.tap(input::a);
+    require(controls.last.requested_preview==true && !controls.last.start_after_preview,"Preview did not request a real stage-owner restart");
+    const auto frozen=session.game().save_state(),frozen_spc=session.audio().save_state();
+    const auto pending=session.advance(controls.time+1'000'000'000,0);
+    require(pending.requested_preview==true && !pending.video_phases && !pending.audio_blocks
+        && frozen==session.game().save_state() && frozen_spc==session.audio().save_state(),"Pending preview ticked the old cartridge/audio");
+    GameSessionOptions options;options.preferences=prefs;options.preview=true;unsigned progress{};
+    options.preview_progress=[&](unsigned){++progress;return true;};
+    const auto source_ram=session.cartridge_ram();
+    require(session.cartridge_experience()==simulation::Experience::starfox_ex || source_ram.empty(),
+        "Retail generic VM RAM was misidentified as battery-backed SRAM");
+    const std::vector<std::uint8_t> saved_ram(source_ram.begin(),source_ram.end());
+    GameSession preview(rom,symbols,[](auto){},"LEVEL1_1",saved_ram,options);MenuDriver preview_controls(preview);
+    require(progress>0 && preview.preferences()==prefs,"Preview lost settings or skipped bounded source preroll");
+    require(std::equal(preview.cartridge_ram().begin(),preview.cartridge_ram().end(),saved_ram.begin(),saved_ram.end()),
+        "Preview source preroll changed the user's preserved cartridge SRAM");
+    require(preview.game().menu_preview() && preview.game().peek_meter_state().enabled,"Preview froze the empty source initializer instead of gameplay");
+    GameMenu preview_menu(rom,symbols);preview_menu.update(GameMenu::capture(preview.game()));
+    const auto scene=preview.presentation(1,true,preview.stereo_settings());
+    require(scene.plan.stereo,"Hardware slider was ignored in the real menu preview");
+    require(scene.plan.separation==preview.stereo_settings().separation
+        && scene.plan.convergence==preview.stereo_settings().convergence,"Configured native depth detached from preview eye matrices");
+    GameModels models(preview.rom(),preview.symbols());GameLayers layers;PicaComposite composite;
+    const auto shapes=models.prepare(scene);
+    const auto art=layers.prepare(scene);
+    const auto frame=composite.prepare(scene.plan,std::array{art.before_models,shapes,art.after_models,preview_menu.frame(scene.plan)},scene.dashboard,art.clear);
+    validate_pica_frame(frame,scene.dashboard);
+    require(!shapes.vertices.empty() && !art.before_models.textures.empty(),"Preview substituted a mono placeholder for real PICA models/backgrounds");
+    const auto game=preview.game().save_state(),apu=preview.audio().save_state();
+    for(float slider:{0.F,.5F,1.F}) {
+        const auto eye=preview.presentation(slider,true);
+        preview_menu.update(GameMenu::capture(preview.game()));validate_pica_frame(preview_menu.frame(eye.plan),eye.dashboard);
+    }
+    require(game==preview.game().save_state() && apu==preview.audio().save_state(),"Preview/slider changed frozen cartridge state");
+    preview_controls.tap(input::start);
+    require(preview_controls.last.requested_preview==false && preview_controls.last.start_after_preview,"Preview Start did not request the real BOOT/Start path");
+    options.preview=false;options.start_after_preview=true;
+    GameSession started(rom,symbols,[](auto){},"BOOT",{},options);started.advance(0,0);
+    for(unsigned phase=1;phase<=180;++phase) started.advance(timestamp(phase),0);
+    require(!started.game().in_setup_menu() && started.preferences()==prefs,"Preview Start failed to launch through source fade/selected level");
+    options.preview=true;options.start_after_preview=false;options.preview_progress=[](unsigned){return false;};
+    rejects([&]{GameSession cancelled(rom,symbols,[](auto){},"LEVEL1_1",{},options);},"Cancelled preview was published as a playable owner");
+    std::cout<<"  Actual setup: all source pages/rows, font/cache/protected UI, real preview geometry, settings and Start handoff checked\n";
+}
+void merged_menu_compatibility(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    simulation::GameSimulation game(rom,symbols,"BOOT",{},true);
+    game.set_experience(symbols.find("SPECWEPCNTONE").empty()
+        ?simulation::Experience::original:simulation::Experience::starfox_ex);
+    const auto tap=[&](input::ButtonMask button) {
+        static_cast<void>(game.tick({button,button,0}));static_cast<void>(game.tick({}));
+    };
+    const auto select=[&](unsigned id) {
+        const auto order=simulation::pregame_menu_order(game.pregame_page());
+        for(std::size_t i=0;game.pregame_selection()!=id && i<order.size();++i) tap(input::down);
+        require(game.pregame_selection()==id,"Merged graphics row disappeared");
+    };
+    select(21);tap(input::a);select(79);
+    require(game.pregame_page()==simulation::PregamePage::three_d,"Merged asteroid row moved to wrong page");
+    for(unsigned mode=1;mode<=4;++mode) {
+        tap(input::right);
+        require(static_cast<unsigned>(game.asteroid_models())==mode%4,"Merged asteroid action was lost");
+        require(game.aa_type()==0,"Asteroid row also changed AA type");
+    }
+    game.set_asteroid_models(2);select(42);tap(input::right);
+    require(game.aa_type()==1 && static_cast<unsigned>(game.asteroid_models())==2,
+        "AA TYPE still collides with merged asteroid control");
+    game.configure_neural_filter(true,true);
+    require(!game.neural_filter_available() && !game.neural_filter_requested(),"Retired neural/ReShade path was re-enabled");
+    require(simulation::GameSimulation::constrain_renderer_mode(simulation::RendererMode::software,true)
+        ==simulation::RendererMode::gpu,"PS5 hardware-only renderer constraint was lost");
+    require(simulation::GameSimulation::constrain_renderer_mode(simulation::RendererMode::software,false)
+        ==simulation::RendererMode::software,"Ordinary renderer selection became hardware-only");
+    const auto saved=game.save_state();
+    const auto restored=game.restored_state(saved);
+    require(restored->aa_type()==1 && static_cast<unsigned>(restored->asteroid_models())==2,
+        "State restore lost merged device asteroid/AA settings");
+    // Independently encode precisely the new optional tail, then construct the
+    // old branch's archive shape. Do not guess an offset in the VM payload.
+    state::Writer tail;
+    tail(game.aa_type(),game.integer_scaling(),std::uint8_t(2),game.extra_effects(),
+        game.global_enhancements(),game.scene_enhancements(),game.depth_enhancements(),
+        game.particle_enhancements(),game.phosphor_persistence(),game.adaptive_exposure(),
+        game.water_caustics(),game.shadow_softness(),game.camera_response(),game.volumetric_fog(),
+        game.stereo_separation(),game.stereo_convergence(),game.stereo_crosshair_depth(),game.motion_blur());
+    const auto crc=assets::crc32(rom.bytes());const auto payload=state::unpack(saved,0x47414d01U,crc);
+    require(payload.size()>tail.bytes().size() && std::equal(tail.bytes().rbegin(),tail.bytes().rend(),payload.rbegin()),
+        "Legacy compatibility fixture no longer matches optional archive tail");
+    const auto legacy=state::pack(0x47414d01U,crc,payload.first(payload.size()-tail.bytes().size()));
+    const auto migrated=game.restored_state(legacy);
+    require(migrated->pregame_selection()==79 && migrated->aa_type()==0
+        && static_cast<unsigned>(migrated->asteroid_models())==2,
+        "Legacy asteroid cursor restored as AA TYPE");
+    GameMenu menu(rom,symbols);menu.update(GameMenu::capture(*migrated));
+    require(menu.state().selection==79,"Legacy cursor no longer renders in full source menu");
+    std::cout<<"  Shared menu compatibility: separate AA/asteroids, legacy cursor, PS5 constraint, retired neural path checked\n";
+}
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=3) throw std::invalid_argument("Usage: game_session_check ROM SYMBOLS");
+        if(argc!=3 && !(argc==5 && std::string_view(argv[3])=="--capture"))
+            throw std::invalid_argument("Usage: game_session_check ROM SYMBOLS [--capture DIRECTORY]");
         const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
         parity(rom,symbols,"BOOT");parity(rom,symbols,"LEVEL1_1");handoff(rom,symbols);
+        actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
+        merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});
         failed.advance(0,0);rejects([&]{failed.advance(50'000'000,0);},"PCM failure ignored");
         rejects([&]{failed.advance(100'000'000,0);},"Failed source tick retried against partly advanced state");

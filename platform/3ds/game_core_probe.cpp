@@ -5,6 +5,7 @@
 #include "starfox/platform/nintendo_3ds/game_assets.hpp"
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/platform/nintendo_3ds/game_models.hpp"
+#include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
 #include "pica_scene_shader.hpp"
@@ -55,6 +56,7 @@ int main() {
     std::unique_ptr<ctr::NativeAudio> audio;
     std::unique_ptr<ctr::GameSession> session;
     std::unique_ptr<ctr::GameModels> models;
+    std::unique_ptr<ctr::GameMenu> menu;
     std::unique_ptr<Suspension> suspension;
 #if defined(STARFOX_3DS_CORE_PICA)
     std::unique_ptr<ctr::NativeGpu> gpu;
@@ -63,7 +65,7 @@ int main() {
     // Explicitly label this experimental source-scene test. This small host
     // strip is not a replacement pre-game menu or part of source colour math.
     ctr::Canvas label_canvas(ctr::top_width);
-    label_canvas.clear({8,15,28});label_canvas.text(4,4,"SOURCE SCENE CHECK / TERRAIN + MENU PENDING",{240,181,86});
+    label_canvas.clear({8,15,28});label_canvas.text(4,4,"NATIVE PORT CHECK / FULL FLOW STILL PENDING",{240,181,86});
     constexpr std::array<ctr::Point3,4> label_corners{{{0,0,0},{400,0,0},{400,16,0},{0,16,0}}};
     constexpr std::array<std::array<float,2>,4> label_uv{{{0,0},{1,0},{1,1},{0,1}}};
     std::array<ctr::PicaVertex,6> label_vertices{};unsigned label_index=0;
@@ -75,6 +77,39 @@ int main() {
     auto experience=simulation::Experience::original;
     bool running=false;input::ButtonMask previous{};
     unsigned rasters{},logic{},blocks{};
+    bool first_load=true;
+    std::array<std::vector<std::uint8_t>,2> cartridge_ram;
+    const auto release_owners=[&] {
+        if(audio) audio->pause(true);
+#if defined(STARFOX_3DS_CORE_PICA)
+        gpu.reset();layers.reset();
+#endif
+        // All GPU views/asset references and the APT hook retire first.
+        menu.reset();suspension.reset();models.reset();session.reset();audio.reset();
+    };
+    const auto load=[&](const char* map,ctr::GameSessionOptions options={}) {
+        release_owners();
+        top.clear({8,15,28});lower.clear({8,15,28});
+        top.text(24,100,"RENDERING",{240,181,86},2);
+        lower.text(12,16,options.preview?"PREPARING REAL CARTRIDGE PREVIEW":"LOADING CARTRIDGE AND SETTINGS",{183,224,240});
+        display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),top.view(),{},lower.view());
+        std::ifstream file(companion_path,std::ios::binary);
+        auto cartridge=ctr::read_game_cartridge(file,ctr::companion_manifest,experience);
+        audio=std::make_unique<ctr::NativeAudio>();
+        options.preview_progress=[&](unsigned) {return display.poll().running;};
+        session=std::make_unique<ctr::GameSession>(std::move(cartridge.rom),std::move(cartridge.symbols),
+            [&](auto pcm){audio->submit(pcm);},map,cartridge_ram[unsigned(experience)],options);
+        models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
+        menu=std::make_unique<ctr::GameMenu>(session->rom(),session->symbols());
+        suspension=std::make_unique<Suspension>(*session,*audio);
+#if defined(STARFOX_3DS_CORE_PICA)
+        layers=std::make_unique<ctr::GameLayers>();
+        gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
+#endif
+        running=true;rasters=logic=blocks=0;error.clear();
+        // The initiating physical A/Start belongs to loading, not the new menu.
+        session->advance(monotonic_time(),0,false);
+    };
     while(true) {
         const auto controls=display.poll();if(!controls.running) break;
         if((controls.held&(input::select|input::start))==(input::select|input::start)) break;
@@ -82,39 +117,37 @@ int main() {
         try {
             if(!running && (pressed&input::x)) experience=experience==simulation::Experience::original
                 ?simulation::Experience::starfox_ex:simulation::Experience::original;
-            if(!running && (pressed&(input::a|input::y))) {
+            if(first_load || (!running && (pressed&(input::a|input::y)))) {
+                first_load=false;
                 const auto initial_map=(pressed&input::y)?"LEVEL1_1":"BOOT";
-                std::ifstream file(companion_path,std::ios::binary);
-                auto cartridge=ctr::read_game_cartridge(file,ctr::companion_manifest,experience);
-                // Owner destruction order is important: neither the model cache
-                // nor an APT callback may outlive their immutable cartridge.
-                suspension.reset();models.reset();session.reset();audio.reset();
-#if defined(STARFOX_3DS_CORE_PICA)
-                gpu.reset();layers.reset();
-#endif
-                audio=std::make_unique<ctr::NativeAudio>();
-                session=std::make_unique<ctr::GameSession>(std::move(cartridge.rom),std::move(cartridge.symbols),
-                    [&](auto pcm){audio->submit(pcm);},initial_map);
-                models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
-                suspension=std::make_unique<Suspension>(*session,*audio);
-#if defined(STARFOX_3DS_CORE_PICA)
-                layers=std::make_unique<ctr::GameLayers>();
-                gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
-#endif
-                running=true;rasters=logic=blocks=0;error.clear();
-                // A started the bring-up, not the real BOOT menu. Suppress it
-                // until released using the same suspend/resume input contract.
-                session->advance(monotonic_time(),0,false);
+                load(initial_map);
             }
             if(running) {
                 if(!suspension->error().empty()) throw std::runtime_error(suspension->error());
                 const auto advanced=session->advance(monotonic_time(),controls.held);
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
-                if(advanced.requested_experience)
-                    throw std::runtime_error("Cartridge handoff requested; native settings/renderer handoff still pending");
-                const auto source=session->presentation(controls.slider,controls.stereoscopic_hardware);
-                const auto model_frame=models->prepare(source);
+                if(advanced.requested_experience || advanced.requested_preview) {
+                    ctr::GameSessionOptions options;
+                    options.preferences=session->preferences();
+                    options.preview=advanced.requested_preview.value_or(session->game().menu_preview());
+                    options.start_after_preview=advanced.start_after_preview;
+                    const auto ram=session->cartridge_ram();
+                    cartridge_ram[unsigned(session->cartridge_experience())].assign(ram.begin(),ram.end());
+                    if(advanced.requested_experience) experience=*advanced.requested_experience;
+                    load(options.preview?"LEVEL1_1":"BOOT",options);
+                    continue;
+                }
+                const auto source=session->presentation(controls.slider,controls.stereoscopic_hardware,session->stereo_settings());
+                if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())
+                    menu->update(ctr::GameMenu::capture(session->game()));
+                const bool plain=menu->state().visible && !menu->state().preview;
 #if defined(STARFOX_3DS_CORE_PICA)
+                if(plain) {
+                    // Preview OFF does not prepare models, decode BG layers,
+                    // allocate scene textures, or submit either world eye.
+                    gpu->present(menu->frame(source.plan),source.dashboard);continue;
+                }
+                const auto model_frame=models->prepare(source);
                 const auto artwork=layers->prepare(source);
                 const auto math=colour.prepare(source.raster->circle,source.raster->colour_math,
                     source.raster->brightness,source.plan);
@@ -126,26 +159,26 @@ int main() {
                 // eye matrices differ. The lower cockpit never joins a wipe.
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
                 const auto frame=composite.prepare(source.plan,
-                    std::array{artwork.before_models,model_frame,artwork.after_models,math,mask,label},source.dashboard,artwork.clear);
+                    std::array{artwork.before_models,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},source.dashboard,artwork.clear);
                 gpu->present(frame,source.dashboard);
                 continue; // Sole GPU owner: never also swap through NativeDisplay.
 #else
-                static_cast<void>(model_frame);
+                if(plain) {
+                    display.present(source.plan,menu->plain_view(),{},source.dashboard);continue;
+                }
+                static_cast<void>(models->prepare(source));
 #endif
                 lower.clear({0,0,0});lower.image(0,0,source.dashboard);
             }
         } catch(const std::exception& failure) {
             error=failure.what();running=false;
-#if defined(STARFOX_3DS_CORE_PICA)
-            gpu.reset();layers.reset();
-#endif
-            suspension.reset();models.reset();session.reset();audio.reset();
+            release_owners();
         }
         // Explicit diagnostic panel, not a fabricated/replacement pre-game
         // menu, nor a mono image pretending to be native stereoscopic gameplay.
         top.clear({8,15,28});
         top.text(12,12,"STAR FOX ENHANCED / ACTUAL SOURCE CORE",{183,224,240});
-        top.text(12,38,"BRING-UP ONLY / TERRAIN + MENU PENDING",{240,181,86});
+        top.text(12,38,"BRING-UP ONLY / FULL FLOW PENDING",{240,181,86});
         top.text(12,64,experience==simulation::Experience::original?"CARTRIDGE: ORIGINAL":"CARTRIDGE: EX",{227,235,242},2);
         if(running) {
             const auto coverage=models->coverage();
@@ -160,8 +193,5 @@ int main() {
         display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),top.view(),{},lower.view());
     }
     // Hook, model and session references retire before DSP storage / LCDs.
-    suspension.reset();models.reset();session.reset();audio.reset();
-#if defined(STARFOX_3DS_CORE_PICA)
-    gpu.reset();layers.reset();
-#endif
+    release_owners();
 }

@@ -55,8 +55,8 @@ void Canvas::text(int x,int y,std::string_view value,Rgb c,unsigned scale,
     }
 }
 void Canvas::image(int x,int y,ImageView source) {
-    if(!source.width || source.width>bottom_width || !source.height || source.height>screen_height
-        || !valid_image(source,source.width,source.height)) throw std::invalid_argument("Invalid 3DS HUD image");
+    if(!source.width || source.width>width_ || !source.height || source.height>screen_height
+        || !valid_image(source,source.width,source.height)) throw std::invalid_argument("Invalid 3DS canvas image");
     if(x>=int(width_) || y>=int(screen_height) || std::int64_t(x)+source.width<=0
         || std::int64_t(y)+source.height<=0) return;
     for(unsigned row=0;row<source.height;++row) for(unsigned col=0;col<source.width;++col) {

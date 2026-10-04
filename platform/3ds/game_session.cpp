@@ -1,6 +1,7 @@
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/audio/stem_mixer.hpp"
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
+#include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include <cctype>
 
 namespace starfox::platform::nintendo_3ds {
@@ -19,7 +20,7 @@ input::ButtonMask gameplay_buttons(input::ButtonMask held,bool swap) noexcept {
 }
 }
 GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink sink,
-    std::string initial_map,std::span<const std::uint8_t> cartridge_ram)
+    std::string initial_map,std::span<const std::uint8_t> cartridge_ram,const GameSessionOptions& options)
     :rom_(std::move(rom)),symbols_(std::move(symbols)),
      cartridge_experience_(symbols_.find("SPECWEPCNTONE").empty()
          ?simulation::Experience::original:simulation::Experience::starfox_ex),
@@ -42,7 +43,60 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
             static_cast<void>(audio_.render_logic_tick({}));
         game_.synchronize_apu_output_ports(audio_.output_ports());
     }
+    if(options.preferences) {
+        const auto& prefs=*options.preferences;
+        game_.set_timing_mode(prefs.timing);game_.set_music_volume(prefs.music);game_.set_sfx_volume(prefs.sfx);
+        game_.set_language(prefs.language);game_.set_swap_face_buttons(prefs.swap);
+        game_.set_god_mode(prefs.god);game_.set_infinite_bombs(prefs.bombs);game_.set_infinite_boost(prefs.boost);
+        game_.set_infinite_lives(prefs.lives);game_.set_planet_select_cheat(prefs.planet_cheat);
+        game_.set_default_laser(prefs.laser);game_.set_selected_level(prefs.level);
+        game_.set_stereo_separation(std::min<std::uint16_t>(64,prefs.separation));
+        game_.set_stereo_convergence(prefs.convergence);
+    }
+    if(options.preview) {
+        if(initial_map=="BOOT" || options.start_after_preview)
+            throw std::invalid_argument("3DS preview requires a real stage owner, not BOOT/Start");
+        // The same real Corneria/chatter reference as the desktop preview,
+        // not an empty stage initializer or a prerecorded mono screenshot.
+        const bool god=game_.god_mode();game_.set_god_mode(true);
+        std::optional<unsigned> first_meter;
+        std::uint32_t previous_dialogue{};unsigned dialogues{};
+        bool stable=false;
+        for(unsigned tick=0;tick<2'400;++tick) {
+            if(tick%16==0 && options.preview_progress && !options.preview_progress(tick))
+                throw std::runtime_error("3DS preview loading cancelled");
+            const auto advance=game_.tick({});
+            static_cast<void>(audio_.render_logic_tick(advance.audio_port_writes));
+            game_.synchronize_apu_output_ports(audio_.output_ports());
+            static_cast<void>(game_.map().take_msu_register_writes());
+            const auto meters=game_.peek_meter_state();const auto dialogue=game_.dialogue_state();
+            if(meters.enabled && !first_meter) first_meter=tick;
+            if(meters.enabled && dialogue.active && dialogue.text_visible && dialogue.text_address!=previous_dialogue) {
+                previous_dialogue=dialogue.text_address;
+                if(++dialogues>=4) {
+                    for(unsigned settle=0;settle<12;++settle) {
+                        const auto next=game_.tick({});
+                        static_cast<void>(audio_.render_logic_tick(next.audio_port_writes));
+                        game_.synchronize_apu_output_ports(audio_.output_ports());
+                        static_cast<void>(game_.map().take_msu_register_writes());
+                    }
+                    stable=true;break;
+                }
+            }
+            if(first_meter && tick-*first_meter>=720) {stable=true;break;}
+        }
+        game_.set_god_mode(god);
+        if(!stable) throw std::runtime_error("Cartridge did not produce a stable 3DS preview frame");
+        game_.enable_menu_preview();
+    }
+    start_after_preview_=options.start_after_preview;
     history_.capture();history_.reset_interpolation();publish_raster();
+}
+GamePreferences GameSession::preferences() const noexcept {
+    return {game_.timing_mode(),game_.music_volume(),game_.sfx_volume(),game_.language(),
+        game_.default_laser(),game_.selected_level(),game_.swap_face_buttons(),game_.god_mode(),
+        game_.infinite_bombs(),game_.infinite_boost(),game_.infinite_lives(),game_.planet_select_cheat(),
+        game_.stereo_separation(),game_.stereo_convergence()};
 }
 void GameSession::prepare_pace_shapes() {
     if(game_.timing_mode()!=simulation::TimingMode::original_speed) return;
@@ -76,7 +130,8 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     if(failed_) throw std::runtime_error("Reconstruct 3DS game after a failed source/audio tick");
     if(time<0) throw std::invalid_argument("Invalid 3DS monotonic frame time");
     GameAdvance result;result.requested_experience=requested_experience_;
-    if(requested_experience_) return result;
+    result.requested_preview=requested_preview_;result.start_after_preview=start_after_preview_;
+    if(requested_experience_ || requested_preview_) return result;
     if(!focused) {
         previous_time_.reset();clock_.reset();input_.reset();fraction_=0;
         suppress_held_=true;history_.reset_interpolation();return result;
@@ -103,7 +158,16 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
             prepare_pace_shapes();game_.present_frame();++result.video_phases;
             if(game_.logic_tick_ready()) {
                 const bool runtime=game_.runtime_options_open(),paused=game_.paused();
-                const auto tick=game_.tick(input_.consume());++result.logic_ticks;
+                auto controls=GameMenu::filter(game_,input_.consume());
+                if(start_after_preview_ && game_.in_setup_menu() && !game_.menu_preview()) {
+                    // A single source Start action, not a jump into gameplay or
+                    // a held Start that could pause the newly launched stage.
+                    controls.held|=input::start;controls.pressed|=input::start;start_after_preview_=false;
+                }
+                const auto tick=game_.tick(controls);++result.logic_ticks;
+                // The native eye projector has a bounded 64-world-unit range,
+                // unlike desktop stereo displays' larger separation overrides.
+                if(game_.stereo_separation()>64) game_.set_stereo_separation(64);
                 if(!runtime) pending_audio_.insert(pending_audio_.end(),
                     tick.audio_port_writes.begin(),tick.audio_port_writes.end());
                 // No MSU consumer is enabled. Retire the unused register stream
@@ -117,6 +181,13 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                     result.requested_experience=requested_experience_;
                     clock_.reset();fraction_=result.raster_fraction=0;
                     history_.reset_interpolation();break;
+                }
+                if(!runtime && !game_.runtime_options_open() && game_.in_setup_menu()
+                    && (game_.preview_requested()!=game_.menu_preview() || game_.preview_start_requested())) {
+                    start_after_preview_=game_.preview_start_requested();
+                    requested_preview_=game_.preview_requested() && !start_after_preview_;
+                    result.requested_preview=requested_preview_;result.start_after_preview=start_after_preview_;
+                    clock_.reset();fraction_=result.raster_fraction=0;history_.reset_interpolation();break;
                 }
             }
             if(!game_.runtime_options_open() && ++audio_phase_==3) {

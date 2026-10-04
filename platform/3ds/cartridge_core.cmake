@@ -38,7 +38,7 @@ set(cartridge_sources
     src/timing/fixed_step.cpp src/vr/game_scene.cpp src/vr/source_pose_interpolation.cpp)
 list(TRANSFORM cartridge_sources PREPEND "${cartridge_root}/")
 add_library(starfox_3ds_cartridge_core STATIC ${cartridge_sources}
-    game_assets.cpp game_hud.cpp game_session.cpp game_models.cpp game_layers.cpp game_scenery.cpp)
+    game_assets.cpp game_hud.cpp game_session.cpp game_models.cpp game_layers.cpp game_scenery.cpp game_menu.cpp)
 target_include_directories(starfox_3ds_cartridge_core PUBLIC "${cartridge_root}/include")
 target_compile_features(starfox_3ds_cartridge_core PUBLIC cxx_std_20)
 target_compile_definitions(starfox_3ds_cartridge_core PUBLIC STARFOX_SCENE_SOURCE_ONLY=1)
