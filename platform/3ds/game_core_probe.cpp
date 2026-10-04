@@ -6,6 +6,8 @@
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/platform/nintendo_3ds/game_models.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
+#include "starfox/platform/nintendo_3ds/game_storage.hpp"
+#include "starfox/assets/bps.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
 #include "pica_scene_shader.hpp"
@@ -30,7 +32,8 @@ std::int64_t monotonic_time() {
 // Preserve source/audio cadence but rebase input/time around Home and sleep.
 class Suspension {
 public:
-    Suspension(ctr::GameSession& session,ctr::NativeAudio& audio):session_(session),audio_(audio) {
+    Suspension(ctr::GameSession& session,ctr::NativeAudio& audio,std::function<void()> checkpoint)
+        :session_(session),audio_(audio),checkpoint_(std::move(checkpoint)) {
         aptHook(&cookie_,callback,this);
     }
     ~Suspension() {aptUnhook(&cookie_);}
@@ -42,10 +45,12 @@ private:
             if(event==APTHOOK_ONSUSPEND || event==APTHOOK_ONSLEEP || event==APTHOOK_ONEXIT) {
                 self.audio_.pause(true);
                 self.session_.advance(monotonic_time(),0,false);
+                self.checkpoint_();
             } else if(event==APTHOOK_ONRESTORE || event==APTHOOK_ONWAKEUP) self.audio_.pause(false);
         } catch(const std::exception& error) {self.error_=error.what();}
     }
-    ctr::GameSession& session_;ctr::NativeAudio& audio_;aptHookCookie cookie_{};std::string error_;
+    ctr::GameSession& session_;ctr::NativeAudio& audio_;std::function<void()> checkpoint_;
+    aptHookCookie cookie_{};std::string error_;
 };
 }
 
@@ -79,6 +84,42 @@ int main() {
     unsigned rasters{},logic{},blocks{};
     bool first_load=true;
     std::array<std::vector<std::uint8_t>,2> cartridge_ram;
+    std::array<std::uint32_t,2> bank_crc{};
+    ctr::GameStorage storage("sdmc:/3ds/starfox-enhanced",ctr::companion_manifest);
+    ctr::GameSaveData saved;
+    std::string save_warning;
+    bool save_enabled=false;
+    std::uint32_t cartridge_crc{};
+    std::int64_t last_save_check{};
+    try {
+        const auto& loaded=storage.load();saved=loaded.data;experience=saved.experience;
+        save_enabled=loaded.writable;save_warning=loaded.warning;
+        cartridge_ram[unsigned(simulation::Experience::starfox_ex)]=saved.ex_sram;
+        bank_crc[unsigned(simulation::Experience::starfox_ex)]=saved.ex_rom_crc;
+    } catch(const std::exception& failure) {save_warning=failure.what();}
+    const auto checkpoint=[&](bool force) {
+        if(!session || !save_enabled) return;
+        const auto now=monotonic_time();
+        // No disk activity per eye/frame. Unchanged data does not write, and
+        // ordinary checks are bounded to once per second. APT/exit/handoffs
+        // checkpoint immediately before the source/SD owners are retired.
+        if(!force && now-last_save_check<1'000'000'000LL) return;
+        last_save_check=now;
+        try {
+            auto next=saved;next.experience=session->game().experience();
+            next.preferences=session->preferences();
+            if(session->game().in_setup_menu() && !session->game().runtime_options_open())
+                next.preview=session->game().preview_requested();
+            if(session->cartridge_experience()==simulation::Experience::starfox_ex) {
+                const auto ram=session->cartridge_ram();
+                next.ex_sram.assign(ram.begin(),ram.end());next.ex_rom_crc=cartridge_crc;
+            }
+            storage.save(next);saved=std::move(next);save_warning=storage.current().warning;
+        } catch(const std::exception& failure) {
+            save_warning=std::string(failure.what())+"\nSD saving disabled until restart. Existing valid slot preserved.";
+            save_enabled=false;
+        }
+    };
     const auto release_owners=[&] {
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
@@ -95,13 +136,21 @@ int main() {
         display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),top.view(),{},lower.view());
         std::ifstream file(companion_path,std::ios::binary);
         auto cartridge=ctr::read_game_cartridge(file,ctr::companion_manifest,experience);
+        cartridge_crc=assets::crc32(cartridge.rom.bytes());
+        auto& bank=cartridge_ram[unsigned(experience)];
+        if(experience==simulation::Experience::starfox_ex && !bank.empty() && bank_crc[unsigned(experience)]!=cartridge_crc) {
+            // Do not feed SRAM to a different cartridge or overwrite its save
+            // with that cartridge's first-boot defaults.
+            bank.clear();save_enabled=false;
+            save_warning="EX save belongs to a different cartridge.\nSD saving disabled; back up journal files before recovery.";
+        }
         audio=std::make_unique<ctr::NativeAudio>();
         options.preview_progress=[&](unsigned) {return display.poll().running;};
         session=std::make_unique<ctr::GameSession>(std::move(cartridge.rom),std::move(cartridge.symbols),
             [&](auto pcm){audio->submit(pcm);},map,cartridge_ram[unsigned(experience)],options);
         models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
         menu=std::make_unique<ctr::GameMenu>(session->rom(),session->symbols());
-        suspension=std::make_unique<Suspension>(*session,*audio);
+        suspension=std::make_unique<Suspension>(*session,*audio,[&]{checkpoint(true);});
 #if defined(STARFOX_3DS_CORE_PICA)
         layers=std::make_unique<ctr::GameLayers>();
         gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
@@ -119,25 +168,36 @@ int main() {
                 ?simulation::Experience::starfox_ex:simulation::Experience::original;
             if(first_load || (!running && (pressed&(input::a|input::y)))) {
                 first_load=false;
-                const auto initial_map=(pressed&input::y)?"LEVEL1_1":"BOOT";
-                load(initial_map);
+                ctr::GameSessionOptions options;options.preferences=saved.preferences;
+                options.preview=saved.preview && !(pressed&input::y);
+                const auto initial_map=((pressed&input::y) || options.preview)?"LEVEL1_1":"BOOT";
+                load(initial_map,options);
             }
             if(running) {
                 if(!suspension->error().empty()) throw std::runtime_error(suspension->error());
                 const auto advanced=session->advance(monotonic_time(),controls.held);
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
                 if(advanced.requested_experience || advanced.requested_preview) {
+                    checkpoint(true);
                     ctr::GameSessionOptions options;
                     options.preferences=session->preferences();
                     options.preview=advanced.requested_preview.value_or(session->game().menu_preview());
                     options.start_after_preview=advanced.start_after_preview;
                     const auto ram=session->cartridge_ram();
                     cartridge_ram[unsigned(session->cartridge_experience())].assign(ram.begin(),ram.end());
+                    bank_crc[unsigned(session->cartridge_experience())]=cartridge_crc;
                     if(advanced.requested_experience) experience=*advanced.requested_experience;
                     load(options.preview?"LEVEL1_1":"BOOT",options);
                     continue;
                 }
+                checkpoint(false);
                 const auto source=session->presentation(controls.slider,controls.stereoscopic_hardware,session->stereo_settings());
+                auto dashboard=source.dashboard;
+                if(!save_warning.empty() && session->game().in_setup_menu()) {
+                    lower.clear({0,0,0});lower.image(0,0,dashboard);
+                    lower.text(8,8,"SD SAVE WARNING\n"+save_warning,{239,90,99},1,304,216);
+                    dashboard=lower.view();
+                }
                 if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())
                     menu->update(ctr::GameMenu::capture(session->game()));
                 const bool plain=menu->state().visible && !menu->state().preview;
@@ -145,7 +205,7 @@ int main() {
                 if(plain) {
                     // Preview OFF does not prepare models, decode BG layers,
                     // allocate scene textures, or submit either world eye.
-                    gpu->present(menu->frame(source.plan),source.dashboard);continue;
+                    gpu->present(menu->frame(source.plan),dashboard);continue;
                 }
                 const auto model_frame=models->prepare(source);
                 const auto artwork=layers->prepare(source);
@@ -159,16 +219,18 @@ int main() {
                 // eye matrices differ. The lower cockpit never joins a wipe.
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
                 const auto frame=composite.prepare(source.plan,
-                    std::array{artwork.before_models,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},source.dashboard,artwork.clear);
-                gpu->present(frame,source.dashboard);
+                    std::array{artwork.before_models,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
+                gpu->present(frame,dashboard);
                 continue; // Sole GPU owner: never also swap through NativeDisplay.
 #else
                 if(plain) {
-                    display.present(source.plan,menu->plain_view(),{},source.dashboard);continue;
+                    display.present(source.plan,menu->plain_view(),{},dashboard);continue;
                 }
                 static_cast<void>(models->prepare(source));
 #endif
-                lower.clear({0,0,0});lower.image(0,0,source.dashboard);
+                if(dashboard.pixels.data()!=lower.view().pixels.data()) {
+                    lower.clear({0,0,0});lower.image(0,0,dashboard);
+                }
             }
         } catch(const std::exception& failure) {
             error=failure.what();running=false;
@@ -188,10 +250,11 @@ int main() {
         } else {
             lower.clear({8,15,28});lower.text(12,12,"SOURCE CORE CHECK / NOT THE GAME",{183,224,240});
             top.text(12,100,"A: LOAD STANDARD COMPANION AND RUN BOOT\nY: DIRECT LEVEL1_1 SOURCE SCENE CHECK\nX: SELECT ORIGINAL / EX\nSELECT + START: EXIT\n\nSD CARD: /3ds/starfox-enhanced/\nStarfox-Assets.BIN",{227,235,242});
-            if(!error.empty()) lower.text(12,40,"LOAD / CORE ERROR\n"+error,{239,90,99},1,296,186);
+            if(!error.empty() || !save_warning.empty()) lower.text(12,40,"LOAD / CORE / SD ERROR\n"+error+"\n"+save_warning,{239,90,99},1,296,186);
         }
         display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),top.view(),{},lower.view());
     }
     // Hook, model and session references retire before DSP storage / LCDs.
+    checkpoint(true);
     release_owners();
 }

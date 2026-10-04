@@ -2,6 +2,7 @@
 #include "starfox/audio/stem_mixer.hpp"
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
+#include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/state/container.hpp"
 #include "starfox/state/archive.hpp"
 #include "starfox/assets/bps.hpp"
@@ -9,6 +10,9 @@
 #include "starfox/platform/nintendo_3ds/game_layers.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include <bit>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -371,6 +375,61 @@ void merged_menu_compatibility(const assets::RomImage& rom,const assets::SymbolM
     std::cout<<"  Shared menu compatibility: separate AA/asteroids, legacy cursor, PS5 constraint, retired neural path checked\n";
 }
 }
+namespace {
+void actual_disk_handoff(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    struct Temp {
+        std::filesystem::path path;
+        Temp() {
+            const auto stamp=std::chrono::steady_clock::now().time_since_epoch().count();
+            for(unsigned i=0;i<64;++i) {
+                const auto candidate=std::filesystem::temp_directory_path()/("sfe-3ds-real-save-"+std::to_string(stamp)+"-"+std::to_string(i));
+                if(std::filesystem::create_directory(candidate)) {path=candidate;return;}
+            }
+            throw std::runtime_error("Cannot create local cartridge-save fixture directory");
+        }
+        ~Temp() {
+            std::error_code ignored;
+            for(unsigned i=0;i<2;++i) std::filesystem::remove(path/("3ds-save-"+std::to_string(i)+".dat"),ignored);
+            std::filesystem::remove(path,ignored);
+        }
+    } temp;
+    constexpr std::uint32_t manifest=0x76543210;
+    GamePreferences prefs{simulation::TimingMode::original_speed,35,55,2,2,35,true,true,true,true,true,true,32,4096};
+    GameSessionOptions options;options.preferences=prefs;
+    GameSession source(rom,symbols,[](auto){},"BOOT",{},options);
+    require(source.preferences()==prefs,"Real cartridge did not accept persisted supported settings");
+    const auto vm=source.game().save_state(),spc=source.audio().save_state();
+    GameSaveData record;record.experience=source.cartridge_experience();record.preferences=source.preferences();
+    const auto ram=source.cartridge_ram();record.ex_sram.assign(ram.begin(),ram.end());
+    if(!ram.empty()) record.ex_rom_crc=assets::crc32(rom.bytes());
+    GameStorage storage(temp.path.generic_string(),manifest);static_cast<void>(storage.load());
+    require(storage.save(record),"Actual cartridge settings/SRAM did not reach disk");
+    require(vm==source.game().save_state() && spc==source.audio().save_state(),"Disk checkpoint mutated actual source VM/SPC");
+    GameStorage reopened(temp.path.generic_string(),manifest);
+    const auto loaded=reopened.load();require(loaded.found && loaded.data==record,"Reopening lost real cartridge save data");
+    options.preferences=loaded.data.preferences;
+    GameSession resumed(rom,symbols,[](auto){},"BOOT",loaded.data.ex_sram,options);
+    require(resumed.preferences()==prefs && resumed.cartridge_experience()==record.experience,
+        "Disk settings were not applied to the real native session");
+    require(std::equal(resumed.cartridge_ram().begin(),resumed.cartridge_ram().end(),record.ex_sram.begin(),record.ex_sram.end()),
+        "Real EX boot changed/ignored the loaded SRAM bank");
+    if(source.cartridge_experience()==simulation::Experience::starfox_ex)
+        require(record.ex_sram.size()==65'536 && record.ex_rom_crc==assets::crc32(rom.bytes()),"Native EX save bank lost its cartridge identity");
+    else require(record.ex_sram.empty() && record.ex_rom_crc==0,"Retail generic VM RAM leaked into disk SRAM");
+    auto newer=record;newer.preferences.music=75;require(reopened.save(newer),"Second actual settings generation failed");
+    {
+        std::ofstream partial(storage.slot_path(1),std::ios::binary|std::ios::trunc);
+        partial.exceptions(std::ios::badbit|std::ios::failbit);partial.write("bad",3);partial.close();
+    }
+    GameStorage recovered(temp.path.generic_string(),manifest);const auto fallback=recovered.load();
+    require(fallback.found && fallback.writable && !fallback.warning.empty() && fallback.data==record,
+        "Interrupted actual settings save did not retain the preceding cartridge save");
+    options.preferences=fallback.data.preferences;
+    GameSession old_valid(rom,symbols,[](auto){},"BOOT",fallback.data.ex_sram,options);
+    require(old_valid.preferences()==prefs,"Recovered settings did not rebind the actual native owner");
+    std::cout<<"  Disk handoff: actual settings/ROM-bound EX SRAM reopen and interrupted-slot recovery checked\n";
+}
+}
 int main(int argc,char** argv) {
     try {
         if(argc!=3 && !(argc==5 && std::string_view(argv[3])=="--capture"))
@@ -378,6 +437,7 @@ int main(int argc,char** argv) {
         const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
         parity(rom,symbols,"BOOT");parity(rom,symbols,"LEVEL1_1");handoff(rom,symbols);
         actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
+        actual_disk_handoff(rom,symbols);
         merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});
         failed.advance(0,0);rejects([&]{failed.advance(50'000'000,0);},"PCM failure ignored");

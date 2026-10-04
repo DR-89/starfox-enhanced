@@ -4,8 +4,90 @@ The primary target is **original Nintendo 3DS and 3DS XL**, not New 3DS.
 This directory contains a host-verified cartridge game session and native
 LCD/input/audio and PICA200 GPU diagnostics. The new cartridge-core bring-up
 target connects the actual simulation, SPC and dashboard to a console entry
-point; all three targets now compile and link with the actual ARM SDK.
+point. All three diagnostics, including the actual menu integration below,
+compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
+on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
+
+## Actual pre-game menu integration (ARM-linked, October 4)
+
+`GameMenu` observes `GameSimulation`'s full page/row order and selected row;
+it is not another options state machine. The renderer uses the cartridge menu
+font and localization, preserves all current pages, and protects its screen-space
+text from source windows/colour math/stereo displacement. Native-inapplicable or
+not-yet-connected controls remain visible and unavailable rather than silently
+changing a setting that PICA ignores. Actual cheats, audio volumes, language,
+face swapping and timing use the shared simulation. Separation/convergence use
+the existing stereo menu and the real native eye plan (separation bounded at 64).
+
+The entry now loads the real BOOT menu, prepares only a cached screen UI with
+Preview OFF, and displays RENDERING while rebuilding a real cartridge preview.
+Preview is silently prerolled to the ordinary stable Corneria/chatter frame;
+its PICA models and background remain genuine independent eye geometry. Start
+from preview rebuilds BOOT and uses the actual source Start/fade/selected-level
+path. Experience changes replace cartridge/SPC/model/renderer owners in reference
+order rather than ticking an EX selection against Original data. Implemented
+settings and per-cartridge SRAM survive these in-process handoffs; disk
+settings/SRAM persistence and physical handoff/audio behavior remain pending.
+
+Nine lean host suites pass, including a synthetic-public-font menu renderer
+contract. The real Original and EX fixtures additionally check every current
+source menu page/row, protected/cached glyph drawing, read-only disabled controls,
+native stereo settings, real preview geometry, preview Start and silent-load
+cancellation. A shared `boss_roll_active()` observation was fixed to use RAM peek,
+so it cannot change the emulated open-bus latch during frame capture. Exact BOOT
+and direct-stage VM/SPC/PCM parity pass. These are host checks, not console pixels,
+physical console acceptance, a playable release, or the full goal.
+
+The exact source-only branch snapshot is now synchronized with the current
+menu API while preserving the merged asteroid control, PS5 hardware-only
+renderer policy and portable bit casts. AA TYPE keeps row 42; 3D ASTEROIDS uses
+row 79, and old asteroid-menu save cursors migrate correctly. Asteroid models
+remain unavailable in the native menu until a PICA adapter is connected; the
+shared option/action is not deleted. Compatibility calls cannot reactivate the
+retired neural/ReShade menu path. Both real cartridge fixtures pass 4,792
+session/menu/preview/compatibility checks, and the longer source-model checks
+pass 50,941 Original / 58,336 EX with 404 outdoor phases each.
+
+[Native CI run 37185299509](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37185299509)
+at `01bfe252b72bc7e3156811144409c81dd4797078` passes nine lean host suites
+and all three real devkitARM links. Downloaded ELF32 ARM and 3DSX headers were
+checked; the source-core 3DSX is 1,954,004 bytes. Static text/data/BSS are
+1,893,064 / 9,872 / 33,604 bytes, not a measurement of peak runtime memory.
+The 488-byte shader matches the previous accepted terrain shader. This branch
+snapshot is separate from the dirty desktop worktree; it is not a main-branch
+release or verification of the old desktop host against the revised menu API.
+Disk persistence, remaining scene/effect integrations and physical original
+3DS gameplay/optics/audio/APT/memory/performance remain open.
+
+## SD settings and EX save journal
+
+The native source entry reads `/3ds/starfox-enhanced/3ds-save-0.dat` and
+`3ds-save-1.dat`. These are a two-generation journal of implemented settings,
+last experience/preview selection and EX's real 65,536-byte battery save bank.
+Original has no battery bank; generic retail VM RAM is never saved as SRAM.
+The journal envelope is tied to the companion manifest, and EX SRAM is also
+bound to its cartridge CRC. A different EX cartridge may boot with defaults,
+but cannot consume or overwrite that bank. This is not a full VM save state.
+
+Only the older/incomplete journal slot is written, then closed and re-read
+before advancing the cached generation. A damaged newest slot recovers the
+preceding valid generation. If both files are invalid/incompatible, the app
+can use defaults but disables disk writes and shows a lower-screen setup
+warning; it does not silently destroy existing files. Back up those files
+before manually moving them aside for recovery. File sizes, schema/checksum,
+fields and generations are bounded/validated. Unchanged settings perform no
+disk work. Changed data is checked at most once per second; cartridge/preview
+handoffs, Home/sleep and exit checkpoint immediately. A write failure warns
+and disables further disk saves until restart; it does not stop gameplay.
+
+Ten host suites pass. The journal has 70 public synthetic I/O/recovery checks;
+real Original/EX sessions each pass 4,802 checks including disk-reopened settings
+and the actual EX bank. Native APT/SD behavior and power-loss durability still
+need original-console testing; two-slot recovery is not an SD-controller flush
+guarantee or a multi-process locking protocol. Full VM/SPC save-state slots,
+control remapping/custom HUD, the remaining scene/effect adapters and physical
+whole-flow/performance acceptance remain separate unfinished work.
 
 ## Screen layout and controls
 
@@ -152,8 +234,13 @@ at `184b3245da19495ca481e83a2051d01873679fad`: eight lean host suites and all
 three real ARM executables link. Its downloaded core package is 1,899,356 bytes;
 the ARM ELF32/3DSX headers and unchanged 440-byte shader were verified. Static
 text/data/BSS are 1,843,316 / 9,872 / 33,604 bytes, not peak runtime RAM.
-The subsequent finite-terrain/source-projection changes below are undergoing
-their own native cross-check. **This is not a completed game or pre-game menu.**
+The subsequent finite-terrain/source-projection changes below passed native CI
+[37183379840](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37183379840)
+at `aa1fd65f603f38c7f36bcbdd0f9aa82cfb97ec09`: all eight host suites and all
+three ARM links pass. The downloaded core package is 1,905,812 bytes and the
+488-byte native shader matches independent host Picasso assembly. These are
+link/contract checks, not physical PICA/NDSP or performance acceptance.
+**This is not a completed game or pre-game menu.**
 Do not use it as a playable release: remaining panorama policies, EX spans/
 grid/dust and host menu/text integration are not complete.
 It does not flatten a finished model scene into two eyes or fabricate a menu.
@@ -246,6 +333,8 @@ valid captured ground height. EX's pre-game backgrounds stay planar and
 tunnels/other background types are not guessed to be terrain. The model
 fixture now runs 1,440 native phases for direct Corneria and requires that the
 outdoor scene actually appeared; the older 240-phase check ended too early.
+Current-worktree Original/EX checks pass 50,941 / 58,336 assertions, each with
+404 actual outdoor phases and unchanged VM/SPC state across slider reads.
 Original-hardware pixels, ground/model occlusion, default-slider edge coverage,
 optical comfort and performance still require physical acceptance. Space,
 water, tunnel, intro and other panorama policies still need native integration.
