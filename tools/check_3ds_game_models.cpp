@@ -3,6 +3,7 @@
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
+#include "starfox/platform/nintendo_3ds/game_dots.hpp"
 #include "starfox/platform/nintendo_3ds/pica_window.hpp"
 #include "starfox/platform/nintendo_3ds/pica_colour.hpp"
 #include <iostream>
@@ -73,8 +74,9 @@ void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbo
 void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map) {
     GameSession session(rom,symbols,[](auto){},map);GameModels models(session.rom(),session.symbols());
     PicaRaster background,objects,native_bitmap;PicaComposite composite;PicaWindow window;
-    PicaColourEffects colour;GameLayers cartridge_layers;
+    PicaColourEffects colour;GameLayers cartridge_layers;GameDots dots(session.rom(),session.symbols());
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
+    unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
     session.advance(0,0);
     const unsigned phases=map=="BOOT"?240:1440;unsigned outdoor_frames=0;
     for(unsigned phase=1;phase<=phases;++phase) {
@@ -85,6 +87,7 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         session.advance(time,held);
         auto source=session.presentation(1,true);const auto state=session.game().save_state(),apu=session.audio().save_state();
         const auto frame=models.prepare(source);validate_pica_frame(frame,source.dashboard);
+        const auto dot_frame=dots.prepare(source);validate_pica_frame(dot_frame,source.dashboard);
         // Resource/ordering bridge check, NOT the final all-flow compositor:
         // native ground, EX spans and menu host UI still remain.
         PpuBatch bg{{{PpuLayer::bg2}},PicaSpace::scenery,true};
@@ -114,10 +117,18 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
                 "Actual cartridge terrain lost its finite source-owned receiver");
         }
         const auto ordered_frame=composite.prepare(source.plan,
-            std::array{ordered.before_models,frame,ordered.after_models,effects,mask},source.dashboard,ordered.clear);
-        require(ordered_frame.vertices.size()==ordered.before_models.vertices.size()+frame.vertices.size()
+            std::array{ordered.before_models,dot_frame,frame,ordered.after_models,effects,mask},source.dashboard,ordered.clear);
+        require(ordered_frame.vertices.size()==ordered.before_models.vertices.size()+dot_frame.vertices.size()+frame.vertices.size()
             +ordered.after_models.vertices.size()+effects.vertices.size()+mask.vertices.size(),
             "Actual cartridge priority adapter lost a model/PPU/effect painter group");
+        require(std::equal(dot_frame.vertices.begin(),dot_frame.vertices.end(),ordered_frame.vertices.begin()+ordered.before_models.vertices.size())
+            && std::equal(frame.vertices.begin(),frame.vertices.end(),ordered_frame.vertices.begin()+ordered.before_models.vertices.size()+dot_frame.vertices.size()),
+            "Actual cartridge dust/grid must precede models, after source scenery");
+        combined_vertices=std::max(combined_vertices,unsigned(ordered_frame.vertices.size()));
+        combined_draws=std::max(combined_draws,unsigned(ordered_frame.draws.size()));
+        combined_textures=std::max(combined_textures,unsigned(ordered_frame.textures.size()));
+        const auto dot_coverage=dots.coverage();dust_points+=dot_coverage.dust;
+        grid_points+=dot_coverage.grid;connected_points+=dot_coverage.connections;
         const auto ordered_work=cartridge_layers.work();
         const auto background_work=background.work(),object_work=objects.work();
         const auto effect_builds=colour.builds();
@@ -131,8 +142,19 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         const std::vector<PicaDraw> saved_draws(frame.draws.begin(),frame.draws.end());
         std::vector<std::vector<std::uint8_t>> saved_textures;
         for(const auto image:frame.textures) saved_textures.emplace_back(image.pixels.begin(),image.pixels.end());
+        const std::vector<PicaVertex> saved_dots(dot_frame.vertices.begin(),dot_frame.vertices.end());
+        const std::vector<PicaDraw> saved_dot_draws(dot_frame.draws.begin(),dot_frame.draws.end());
+        std::vector<std::vector<std::uint8_t>> saved_dot_textures;
+        for(const auto image:dot_frame.textures) saved_dot_textures.emplace_back(image.pixels.begin(),image.pixels.end());
         for(float slider:{0.F,.5F,1.F}) {
             source=session.presentation(slider,true);const auto other=models.prepare(source);
+            const auto other_dots=dots.prepare(source);validate_pica_frame(other_dots,source.dashboard);
+            require(other_dots.vertices.size()==saved_dots.size() && std::equal(saved_dots.begin(),saved_dots.end(),other_dots.vertices.begin())
+                && same_draws(saved_dot_draws,other_dots.draws) && other_dots.textures.size()==saved_dot_textures.size()
+                && dots.coverage().ink_updates==dot_coverage.ink_updates,"Slider changed cartridge dust/grid ink or reran its rasterizer");
+            for(unsigned i=0;i<saved_dot_textures.size();++i)
+                require(std::equal(saved_dot_textures[i].begin(),saved_dot_textures[i].end(),other_dots.textures[i].pixels.begin()),
+                    "Slider changed cartridge connected-grid palette/coverage");
             validate_pica_frame(other,source.dashboard);
             require(other.vertices.size()==saved.size() && std::equal(saved.begin(),saved.end(),other.vertices.begin())
                 && same_draws(saved_draws,other.draws),"Slider/eye projection rebuilt different world geometry or source order");
@@ -158,8 +180,11 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     }
     require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
     if(map!="BOOT") require(outdoor_frames>0,"Stage check stopped before the outdoor terrain actually appeared");
+    require(dust_points+grid_points+connected_points>0,"Actual fixture did not exercise cartridge dust/grid");
     std::cout<<map<<": "<<frames<<" source frames, "<<models_seen<<" models, "<<shadows<<" shadows, "<<glyphs<<" glyphs, "
         <<particles<<" particles, "<<outdoor_frames<<" terrain frames; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
+    std::cout<<map<<": dust/grid/connected points "<<dust_points<<" / "<<grid_points<<" / "<<connected_points
+        <<"; combined peak "<<combined_vertices<<" vertices / "<<combined_draws<<" draws / "<<combined_textures<<" textures\n";
 }
 }
 int main(int argc,char** argv) try {

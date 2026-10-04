@@ -13,6 +13,7 @@
 #include "native_gpu.hpp"
 #include "pica_scene_shader.hpp"
 #include "starfox/platform/nintendo_3ds/game_layers.hpp"
+#include "starfox/platform/nintendo_3ds/game_dots.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include "starfox/platform/nintendo_3ds/pica_colour.hpp"
 #include "starfox/platform/nintendo_3ds/pica_window.hpp"
@@ -68,6 +69,7 @@ int main() {
 #if defined(STARFOX_3DS_CORE_PICA)
     std::unique_ptr<ctr::NativeGpu> gpu;
     std::unique_ptr<ctr::GameLayers> layers;
+    std::unique_ptr<ctr::GameDots> dots;
     ctr::PicaComposite composite;ctr::PicaColourEffects colour;ctr::PicaWindow window;
     // Explicitly label this experimental source-scene test. This small host
     // strip is not a replacement pre-game menu or part of source colour math.
@@ -130,7 +132,7 @@ int main() {
         remap.reset();
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
-        gpu.reset();layers.reset();
+        gpu.reset();layers.reset();dots.reset();
 #endif
         // All GPU views/asset references and the APT hook retire first.
         menu.reset();suspension.reset();models.reset();session.reset();audio.reset();
@@ -160,6 +162,7 @@ int main() {
         suspension=std::make_unique<Suspension>(*session,*audio,[&]{if(remap) remap->suspend();checkpoint(true);});
 #if defined(STARFOX_3DS_CORE_PICA)
         layers=std::make_unique<ctr::GameLayers>();
+        dots=std::make_unique<ctr::GameDots>(session->rom(),session->symbols());
         gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
 #endif
         running=true;rasters=logic=blocks=0;error.clear();
@@ -265,6 +268,7 @@ int main() {
                 }
                 const auto model_frame=models->prepare(source);
                 const auto artwork=layers->prepare(source);
+                const auto dot_frame=dots->prepare(source);
                 const auto math=colour.prepare(source.raster->circle,source.raster->colour_math,
                     source.raster->brightness,source.plan);
                 const bool world=source.current->flow==simulation::GameFlowState::gameplay
@@ -275,7 +279,7 @@ int main() {
                 // eye matrices differ. The lower cockpit never joins a wipe.
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
                 const auto frame=composite.prepare(source.plan,
-                    std::array{artwork.before_models,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
+                    std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
                 gpu->present(frame,dashboard);
                 continue; // Sole GPU owner: never also swap through NativeDisplay.
 #else

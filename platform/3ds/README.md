@@ -9,6 +9,38 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Cartridge dust and connected ground grid
+
+`GameDots` now consumes the actual captured STAR_COLS table, recycled dust
+identities, Q15 ground lattice and canonical carried grid-line endpoint. Stars
+and ordinary ground dots become angular source-pixel quads at their real source
+depth, shared between the independently projected eyes. Interpolation uses the
+camera/view only, so recycling a point cannot create a streak across the scene;
+pause and scene cuts discard stale camera interpolation. Source Controls-view
+offsets, map/Continue suppression, near double dots and depth clamps are retained.
+
+Connected lines preserve the cartridge's unusual asymmetric pixel walk, rather
+than replacing it with a generic wire mesh. A single isolated RGBA ink texture
+keeps the canonical 224x192 pattern unchanged, with extra LCD/eye guard coverage.
+It is projected onto the ground plane derived from the actual Q15 lattice,
+with finite depth and homogeneous source UVs. Authored carried ink beyond the
+finite receiver stays at infinity, not HUD depth. A zero-distance plane retains
+that far-field ink; this edge case still needs physical visual acceptance.
+Transparent holes discard before depth/stencil writes; black ink stays opaque
+during raster fades. Unchanged cameras/sliders reuse ink; leaving the connected
+mode releases its CPU image. Disabled/map dots allocate no vertex buffer.
+
+The native compositor inserts this stream after scenery and before models;
+Preview OFF still skips all world preparation. Twelve lean host suites pass,
+including 529,492 public dust/grid checks: independent Q15/connected-ink
+oracles, signed wrapping, live brightness, stereo disparity, source UV/plane
+registration, bounded texture storage, cache retirement and failure preservation.
+BOOT/outdoor checks additionally exercise actual Original/EX dust and ground
+dots without VM/SPC mutation. Those fixtures do not naturally enable connected
+lines; connected-line pixel comparisons use synthetic public snapshots. Native
+ARM cross-link and original-console pixel/performance acceptance are separate
+gates; a host pass is not a playable-release or whole-goal completion claim.
+
 ## Actual pre-game menu integration (ARM-linked, October 4)
 
 `GameMenu` observes `GameSimulation`'s full page/row order and selected row;
@@ -159,6 +191,20 @@ source-core 3DSX 1,978,428 bytes, unchanged shader 488 bytes. Static sections
 do not prove peak memory. Exact branch Original/EX fixture checks pass 5,040
 each; the local dirty desktop worktree's separate shared API passes 4,983 each.
 No physical-original-console, full-flow, performance, release or full-goal claim.
+
+## October 4 controller checkpoint
+
+[Native controller CI 37188702923](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37188702923)
+at `b9775b82e9f6654d60b28207dc23ef5bd67a49a1` passes eleven lean host
+suites and all three actual ARM links. Public remap/journal contracts pass
+188/87 checks; exact Original and EX source fixtures each pass 5,896, including
+60 independently mapped gameplay rasters and 24 post-editor source/SPC/PCM
+comparisons. The separate dirty desktop source passes 5,839 each. Downloaded
+ELF32 ARM/3DSX headers pass; source-core 3DSX is 1,993,808 bytes and the shader
+remains 488 bytes with the accepted hash. Static text/data/BSS are
+1,932,380 / 9,872 / 33,604 bytes, not peak runtime RAM. Physical console input,
+SD/APT, optics, audio, memory/performance and whole-flow acceptance remain open.
+This is not a playable release or renewed desktop rendering-effects acceptance.
 
 ## Screen layout and controls
 
@@ -630,16 +676,18 @@ remote CI run, release publication or console installation was performed.
    original 3DS/XL. Check eyes are not reversed, the slider is smooth, stereo
    switches off cleanly, resume works and Circle Pad/face buttons match.
 2. Promote the linked `GameSession`/SD/NDSP diagnostic into the actual console
-   game entry: complete experience and preview handoffs and saves/settings.
-   Reuse the real pre-game menu and source timing
-   rather than replacing them with the diagnostic page. Show clear unsupported
-   states for desktop-only graphics features; do not silently enable them.
+   game entry. Real pre-game menu, experience/preview/Start handoffs, settings,
+   EX SRAM, mapped reset and controller remapping are now connected; finish
+   full VM/SPC state slots, runtime menu access, native HUD customization and
+   appropriate FPS controls. Verify all handoff/failure paths on hardware.
+   Preserve the full source menu/timing and clear unsupported states for
+   desktop-only graphics features; do not silently enable ignored settings.
 3. Complete the **PICA200/Citro3D** compositor around the now-converted cartridge
    primitives and cached PPU layers: terrain depth/panorama placement, complete
    game pass order, EX overlays/spans, full-flow circle/colour-math/death effect
-   placement and physical pixel fidelity, grid/dust,
-   clipping and transparency. Connect the GameModels stream to the
-   native owner. Feed both eyes from one interpolated snapshot, with the same
+   placement and physical pixel fidelity, physical grid/dust depth/alignment,
+   clipping and transparency. The GameModels stream is already connected to
+   the native owner. Feed both eyes from one interpolated snapshot, with the same
    off-axis projection contract as the diagnostic; no screen-space fake depth.
 4. Retain the now-linked `GameHud` bridge in the game presenter, complete EX
    player-two reserve/bomb export and native overlay routing. Apply split-HUD
