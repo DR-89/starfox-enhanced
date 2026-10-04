@@ -185,7 +185,7 @@ void BackgroundRenderer::draw_bg1(
         if(y<0 || y>=int(target.height()) || x+horizontal_origin<0
             || x+horizontal_origin>=int(target.width())) return false;
         if(!extend_horizontal) {
-            const int inset=int(std::min(horizontal_inset,128U));
+            const int inset=int(std::min<std::uint32_t>(horizontal_inset,128U));
             const int step=mosaic_staging_inset && (ppu.mosaic&1U)?(ppu.mosaic>>4U)+1:1;
             if(x<((inset+step-1)/step)*step
                 || x>=std::min(256,((256-inset+step-1)/step)*step)) return false;
@@ -210,16 +210,16 @@ void BackgroundRenderer::draw_bg1(
             + ppu.bg1_scroll_y, height_pixels);
         const auto tile_y = static_cast<std::uint32_t>(source_y) / tile_edge;
         const auto inset = static_cast<std::int32_t>(
-            std::min(horizontal_inset, 128U));
+            std::min<std::uint32_t>(horizontal_inset, 128U));
         const int step=mosaic_staging_inset && (ppu.mosaic&1U)?(ppu.mosaic>>4U)+1:1;
         const int left_inset=((inset+step-1)/step)*step;
-        const int right_limit=std::min(256,((256-inset+step-1)/step)*step);
+        const int right_limit=int(std::min<std::int32_t>(256,((256-inset+step-1)/step)*step));
         const auto first_x = extend_horizontal ? 0U
-            : static_cast<std::uint32_t>(std::max(
+            : static_cast<std::uint32_t>(std::max<std::int32_t>(
                 horizontal_origin + left_inset, 0));
         const auto final_x = extend_horizontal ? target.width()
             : std::min(target.width(), static_cast<std::uint32_t>(
-                std::max(horizontal_origin + right_limit, 0)));
+                std::max<std::int32_t>(horizontal_origin + right_limit, 0)));
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
@@ -422,7 +422,7 @@ void BackgroundRenderer::draw_bg2(
             // continues through column zero without duplicating its phase.
             // Preserve the cartridge-width guard exactly in 4:3.
             const auto distance = expanded_mode2
-                ? visible_column - 1 : std::min(visible_column + 1, 0);
+                ? visible_column - 1 : std::min<std::int32_t>(visible_column + 1, 0);
             return wrap_offset(extend_slope(vertical_value(0), distance));
         }
         if (visible_column > 32 && vertical_valid(31)) {
@@ -434,10 +434,10 @@ void BackgroundRenderer::draw_bg2(
 
     const auto extend_ground_down = expanded_mode2 && target.height() > 192U;
     const auto first_x = extend_horizontal ? 0U
-        : static_cast<std::uint32_t>(std::max(horizontal_origin, 0));
+        : static_cast<std::uint32_t>(std::max<std::int32_t>(horizontal_origin, 0));
     const auto final_x = extend_horizontal ? target.width()
         : std::min(target.width(), static_cast<std::uint32_t>(
-            std::max(horizontal_origin + 256, 0)));
+            std::max<std::int32_t>(horizontal_origin + 256, 0)));
     std::vector<std::int32_t> column_scroll_y;
     constexpr auto no_column_scroll = std::numeric_limits<std::int32_t>::min();
     if (ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled) {
@@ -556,14 +556,14 @@ void BackgroundRenderer::draw_bg2(
             }
             const auto sample_x = mosaic_coordinate(
                 ppu.tunnel_scene && extend_horizontal && priority!=TilePriorityPass::high
-                    ? std::clamp(logical_x, 0, 255) : logical_x,
+                    ? std::clamp<std::int32_t>(logical_x, 0, 255) : logical_x,
                 ppu.mosaic, 0x02U);
             const auto sampled_screen_x = std::clamp(
                 sample_x + horizontal_origin,
                 static_cast<std::int32_t>(first_x),
                 static_cast<std::int32_t>(final_x - 1U));
             const auto register_scroll_y = ppu.bg2_scanline_scroll_enabled
-                ? ppu.bg2_scanline_scroll_y[std::clamp(sample_y, 0, 223)]
+                ? ppu.bg2_scanline_scroll_y[std::clamp<std::int32_t>(sample_y, 0, 223)]
                 : scroll_y;
             const auto tile_scroll_y = column_scroll_y.empty() ? no_column_scroll
                 : column_scroll_y[static_cast<std::size_t>(sampled_screen_x) - first_x];
@@ -663,7 +663,7 @@ void BackgroundRenderer::draw_bg2(
                 // rather than wrapping a second bridge into ultrawide edges.
                 // Mode 2 open water (EX 6-2) is a repeating landscape instead.
                 const auto water_x = wrap(128 + row_scroll_x, width_pixels) + sample_x - 128;
-                source_x = std::clamp(water_x, 0, width_pixels - 1);
+                source_x = std::clamp<std::int32_t>(water_x, 0, width_pixels - 1);
             }
             const auto tile_x = static_cast<std::uint32_t>(source_x) / tile_edge;
             const auto page = (tile_x >> 5U) + (tile_y >> 5U) * pages_wide;
@@ -767,10 +767,10 @@ void BackgroundRenderer::draw_bg3(
             + ppu.bg3_scroll_y, height_pixels);
         const auto tile_y = static_cast<std::uint32_t>(source_y) / tile_edge;
         const auto first_x = extend_horizontal ? 0U
-            : static_cast<std::uint32_t>(std::max(horizontal_origin, 0));
+            : static_cast<std::uint32_t>(std::max<std::int32_t>(horizontal_origin, 0));
         const auto final_x = extend_horizontal ? target.width()
             : std::min(target.width(), static_cast<std::uint32_t>(
-                std::max(horizontal_origin + 256, 0)));
+                std::max<std::int32_t>(horizontal_origin + 256, 0)));
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
