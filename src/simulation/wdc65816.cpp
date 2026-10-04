@@ -1733,7 +1733,7 @@ struct Wdc65816::Impl {
             m_textrightclip == 0U
                 ? 224
                 : static_cast<std::int32_t>(read_superfx16(m_textrightclip)));
-        line_width_limit = std::max(0, line_width_limit);
+        line_width_limit = std::max<std::int32_t>(0, line_width_limit);
 
         std::size_t line_start{};
         while (line_start < characters.size() && y < 192) {
@@ -2034,10 +2034,10 @@ struct Wdc65816::Impl {
         const auto palette = static_cast<std::uint8_t>(
             read_superfx16(mspr_pal) & 15U);
         for (std::int32_t y = 0; y < output_size; ++y) {
-            const auto source_y = std::clamp(
+            const auto source_y = std::clamp<std::int32_t>(
                 y * source_size / output_size, 0, 31);
             for (std::int32_t x = 0; x < output_size; ++x) {
-                const auto source_x = std::clamp(
+                const auto source_x = std::clamp<std::int32_t>(
                     x * source_size / output_size, 0, 31);
                 const auto texel = static_cast<std::uint8_t>(
                     texture_byte(sprite, source,
@@ -2165,7 +2165,7 @@ struct Wdc65816::Impl {
                     static_cast<std::int8_t>(
                         static_cast<std::uint16_t>(light_fixed) >> 8U));
                 const auto light_magnitude = static_cast<std::uint8_t>(
-                    std::min(127, std::abs(light_high)));
+                    std::min<std::int32_t>(127, std::abs(light_high)));
                 auto shade_offset = static_cast<std::uint8_t>(
                     ((light_magnitude & 0x78U) ^ 0x78U) << 1U);
                 // The source explicitly keeps palette 15 out of sphere

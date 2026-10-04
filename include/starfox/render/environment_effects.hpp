@@ -590,7 +590,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             for(unsigned c=0;c<3;++c) {
                 float value=0;
                 for(unsigned by=0;by<2;++by) for(unsigned bx=0;bx<2;++bx) {
-                    const auto n=std::size_t(std::min(ay+by,height-1))*width+std::min(ax+bx,width-1);
+                    const auto n=std::size_t(std::min<std::uint32_t>(ay+by,height-1))*width+std::min<std::uint32_t>(ax+bx,width-1);
                     const auto safe=frame.layer_tags()[n]==unsigned(PixelLayer::background)?n:i;
                     value+=source[safe*4+c]*(bx?sx-ax:1-(sx-ax))*(by?sy-ay:1-(sy-ay));
                 }
@@ -706,7 +706,7 @@ inline void apply_environment(const EnvironmentEffects& e,const Framebuffer& fra
             const unsigned x0=unsigned(sx),y0=unsigned(sy);const float fx=sx-x0,fy=sy-y0;
             std::array<float,3> reflected{};float weight=0;
             for(unsigned dy=0;dy<2;++dy) for(unsigned dx=0;dx<2;++dx) {
-                const auto sample=std::size_t(std::min(y0+dy,frame.stored_height()-1))*width+std::min(x0+dx,width-1);
+                const auto sample=std::size_t(std::min<std::uint32_t>(y0+dy,frame.stored_height()-1))*width+std::min<std::uint32_t>(x0+dx,width-1);
                 if(frame.layer_tags()[sample]==unsigned(PixelLayer::two_d)) continue;
                 const float w=(dx?fx:1-fx)*(dy?fy:1-fy);weight+=w;
                 for(unsigned k=0;k<3;++k) reflected[k]+=float(reflection[sample*4+k])*w;
