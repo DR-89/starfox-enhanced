@@ -2,6 +2,8 @@
 #include "native_display.hpp"
 #include "native_gpu.hpp"
 #include "starfox/platform/nintendo_3ds/pica_shapes.hpp"
+#include "starfox/platform/nintendo_3ds/pica_raster.hpp"
+#include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 #include "pica_scene_shader.hpp"
 
 namespace {
@@ -35,8 +37,20 @@ int diagnostic(NativeDisplay& display) {
         {188,72,24},{24,130,132},{82,20,26},{35,52,120},{118,46,132},{38,110,52},
         {82,82,92},{118,118,128},{156,156,166},{202,202,210},{238,238,242},{255,255,255}}};
     starfox::render::SoftwareRenderer source_renderer;PicaShapes source_geometry;
+    PicaRaster source_raster;PicaComposite compositor;
+    auto sky=std::make_shared<starfox::simulation::SnesPpuState>();
+    sky->main_screen=2;sky->bg2_screen_size=0;
+    sky->bg2_character_base=0x4000;sky->bg2_screen_base=0x6000;
+    sky->cgram[1]=uint16_t(7|(17<<5)|(28<<10));sky->cgram[2]=uint16_t(25|(28<<5)|(31<<10));
+    for(unsigned row=0;row<8;++row) {
+        sky->vram[0x8000+row*2]=(row==4)?0:255;
+        sky->vram[0x8000+row*2+1]=(row==4)?255:0;
+    }
+    // Synthetic SNES tiles, not cartridge assets or a gameplay backdrop.
+    PpuBatch sky_batch{{{PpuLayer::bg2}},PicaSpace::scenery,true,0,208};
     std::vector<PicaVertex> vertices;
     std::vector<PicaDraw> draws;std::vector<PicaImage> images;
+    std::vector<PicaVertex> alpha_vertices;std::vector<PicaDraw> alpha_draws;
     bool setup=true,caption_dirty=true;float x{},y{};
     starfox::input::ButtonMask previous{};
     StereoSettings settings;settings.near_plane=16;
@@ -63,27 +77,26 @@ int diagnostic(NativeDisplay& display) {
         quad(vertices,{{{0,0,0},{float(top_width),0,0},{float(top_width),float(screen_height),0},{0,float(screen_height),0}}});
         draws.push_back({0,6,0,pica_identity,PicaSpace::screen,false,false,false});
         images.push_back({top.pixels,top.width,top.height,top.pitch,3});
+        std::vector<PicaFrame> groups{{plan,vertices,draws,images}};
         if(!setup) {
+            groups.push_back(source_raster.prepare(sky,sky_batch,plan));
             starfox::render::RenderPose pose;pose.vanish_x=128;pose.vanish_y=112;
             pose.x=x;pose.y=-y;pose.z=300;pose.continuous_geometry=true;
             source_geometry.append(source_renderer.prepare_primitives(shape,pose),colours);
             pose.x=32;pose.y=-24;pose.z=650;
             source_geometry.append(source_renderer.prepare_primitives(shape,pose),colours);
             const auto converted=source_geometry.frame(plan);
-            vertices.insert(vertices.end(),converted.vertices.begin(),converted.vertices.end());
-            for(auto draw:converted.draws) {
-                draw.first+=6;if(draw.texture!=pica_no_texture) ++draw.texture;draws.push_back(draw);
-            }
-            images.insert(images.end(),converted.textures.begin(),converted.textures.end());
+            groups.push_back(converted);
             // The separate translucent pass still exercises depth/alpha state.
-            const unsigned first=vertices.size();
-            quad(vertices,{{{-75,-60,450},{75,-60,450},{75,60,450},{-75,60,450}}},{.2F,.8F,1,.35F});
-            draws.push_back({first,6,pica_no_texture,pica_identity,PicaSpace::world,true,false,true});
+            alpha_vertices.clear();alpha_draws.clear();
+            quad(alpha_vertices,{{{-75,-60,450},{75,-60,450},{75,60,450},{-75,60,450}}},{.2F,.8F,1,.35F});
+            alpha_draws.push_back({0,6,pica_no_texture,pica_identity,PicaSpace::world,true,false,true});
+            groups.push_back({plan,alpha_vertices,alpha_draws,{}});
         }
-        PicaFrame frame{plan,vertices,draws,images};
         HudState hud;hud.lives=2;hud.bombs=3;hud.shield_percent=76;hud.boost_percent=92;
         hud.ally_percent={84,58,95};hud.radio_message="SYNTHETIC GPU CHECK / NO GAME DATA";
-        lower.update(hud);gpu.present(frame,lower.view());
+        lower.update(hud);
+        const auto frame=compositor.prepare(plan,groups,lower.view());gpu.present(frame,lower.view());
     }
 }
 }
