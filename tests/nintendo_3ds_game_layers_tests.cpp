@@ -625,6 +625,8 @@ void panorama_depth() {
         for(const auto& batch:plan.before_model_groups) {
             for(const auto& pass:batch.passes) {
                 require((batch.space==PicaSpace::scenery)==(pass.layer==PpuLayer::bg2),"Screen-space sprite/BG3 moved into the distant sky");
+                require(batch.visible_scenery_only==(batch.space==PicaSpace::scenery),
+                    "Only infinite panorama artwork may omit unseen disjoint-frustum gaps");
                 flattened.push_back(pass);
             }
         }

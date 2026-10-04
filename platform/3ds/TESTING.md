@@ -19,6 +19,10 @@ have not been established; source scenery/effect transitions still need testing.
 4. Launch **Star Fox Enhanced - TEST** in Homebrew Launcher. It opens the
    pre-game setup, not a forced direct-to-stage diagnostic.
 
+Audio requires your console's DSP firmware at `/3ds/dspfirm.cdc`, as with
+other NDSP homebrew. If initialization reports it missing, provide your own
+console's dump through your existing homebrew setup; firmware is not bundled.
+
 If assets are missing or incompatible, the error stays on screen. Correct the
 SD file and press A to retry. Y on this error screen starts a direct Corneria
 test; it is not the normal boot route. X selects Original/EX for the retry.

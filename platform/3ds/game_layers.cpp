@@ -147,6 +147,7 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
                     || groups.back().corridor_receiver!=tunnel) {
                     PpuBatch group;group.space=space;group.expand_horizontal=true;group.water_receiver=receiver;
                     group.corridor_receiver=tunnel;group.compact_strips=(water || corridor) && space==PicaSpace::scenery;
+                    group.visible_scenery_only=!water && !corridor && space==PicaSpace::scenery;
                     groups.push_back(std::move(group));
                 }
                 groups.back().passes.push_back(source_pass);

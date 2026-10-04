@@ -15,6 +15,25 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## Distant-sky residency at maximum 3D strength
+
+Infinity-only background groups retain the union of both eye-visible source
+intervals and the canonical mono LCD. At extreme separation the eyes see
+disjoint columns; the unseen gap is no longer uploaded as another large
+texture. Colour, alpha, source priority and requested strength/separation are
+unchanged. Finite terrain, water and corridors never use this infinity-only
+cropping. Ordinary base-guard presentations retain their existing fast path;
+slider changes reuse decoded source pixels.
+
+The actual scene checker now supports `--all-optics` after MAP/SOURCE_FRAMES.
+It checks every requested source frame with retained owners at strength 2,
+separation 64 and convergence 16. Earlier first-policy samples used strength 1
+and were not full-intro maximum-strength acceptance. The stronger checker caught
+an intro texture-budget failure at phase 24 before the disjoint-frustum fix.
+Independent regressions compare all canonical and both-eye LCD pixels against
+the uncropped source, including fractional offsets, priorities and opaque black.
+This is source/resource verification, not Original 3DS/XL hardware performance.
+
 ## Native finite corridor checkpoint
 
 Verified source tunnel IDs now carry dimensions from their own `STUNNEL_`,

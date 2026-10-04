@@ -87,14 +87,20 @@ void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbo
     require(session.game().save_state()==before && session.audio().save_state()==before_audio,
         "Synthetic source observation or fade modified cartridge/audio state");
 }
-void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map,unsigned requested_phases=0) {
+void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map,unsigned requested_phases=0,
+    bool all_optics=false) {
     GameSession session(rom,symbols,[](auto){},map);GameModels models(session.rom(),session.symbols());
     PicaRaster background,objects,native_bitmap,priority_oracle;PicaComposite composite;PicaWindow window;
     PicaColourEffects colour;GameLayers cartridge_layers;GameDots dots(session.rom(),session.symbols());
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
     unsigned panorama_frames{},combined_resident_bytes{},optical_frames{},optical_resident_bytes{};
-    unsigned water_frames{},tunnel_frames{},unique_frames{},orbital_frames{},disabled_dot_frames{};
+    unsigned water_frames{},tunnel_frames{},unique_frames{},orbital_frames{},disabled_dot_frames{},intro_frames{};
+    // Retain the actual owner graph through scene changes. Recreating it per
+    // maximum-optics sample cannot detect growing cached receiver domains.
+    GameLayers wide_layers;GameModels wide_models(session.rom(),session.symbols());
+    GameDots wide_dots(session.rom(),session.symbols());PicaColourEffects wide_colour;
+    PicaWindow wide_window;PicaComposite wide_composite;
     std::array<bool,2> optical_checked{};
     std::array<bool,4> panorama_modes_checked{};
     std::array<bool,2> unique_halves_checked{};
@@ -112,6 +118,7 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         unique_frames+=source.current->background_unique_top_rows!=0
             || source.current->background_landscape_unique_half || source.current->background_landscape_unique_right_half;
         orbital_frames+=source.current->background_orbital_planet;
+        intro_frames+=source.current->flow==simulation::GameFlowState::intro;
         const auto frame=models.prepare(source);validate_pica_frame(frame,source.dashboard);
         const auto dot_frame=dots.prepare(source);validate_pica_frame(dot_frame,source.dashboard);
         // Resource/ordering bridge check, NOT the final all-flow compositor:
@@ -193,11 +200,10 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         combined_resident_bytes=std::max(combined_resident_bytes,resident);
         require(resident<=pica_texture_budget,"Actual source painter separation exceeded total padded native residency including lower LCD");
         const unsigned optical_kind=native_landscape_scene(source)?1:0;
-        if((native_landscape_scene(source) || native_panorama_scene(source)) && !optical_checked[optical_kind]) {
-            auto wide=source;auto settings=session.stereo_settings();settings.separation=64;settings.convergence=16;
+        if(all_optics || ((native_landscape_scene(source) || native_panorama_scene(source)) && !optical_checked[optical_kind])) {
+            auto wide=source;auto settings=session.stereo_settings();
+            settings.strength=2;settings.separation=64;settings.convergence=16;
             wide.plan=plan_frame(1,true,ScreenUse::world,settings);
-            GameLayers wide_layers;GameModels wide_models(session.rom(),session.symbols());
-            GameDots wide_dots(session.rom(),session.symbols());PicaColourEffects wide_colour;PicaWindow wide_window;PicaComposite wide_composite;
             const auto phase_context=context;
             context+=" maximum-optics source layers";
             const auto layers=wide_layers.prepare(wide);
@@ -213,7 +219,7 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
                 require(image.width<=1024,"Actual optical source strip exceeds PICA texture dimensions");
                 wide_bytes+=pica_resident_texture_bytes(image);
             }
-            require(wide_bytes<=pica_texture_budget && composed_wide.plan.separation==64,
+            require(wide_bytes<=pica_texture_budget && composed_wide.plan.separation==128,
                 "Actual wide source composition exceeded residency or silently reduced optics");
             optical_resident_bytes=std::max(optical_resident_bytes,wide_bytes);++optical_frames;
             optical_checked[optical_kind]=true;
@@ -284,8 +290,10 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     std::cout<<map<<": source policy observations water/tunnel/unique/orbital "<<water_frames<<" / "<<tunnel_frames
         <<" / "<<unique_frames<<" / "<<orbital_frames<<"; cartridge-disabled dot frames "<<disabled_dot_frames
         <<"; counts do not prove visual policy acceptance\n";
-    std::cout<<map<<": "<<optical_frames<<" actual maximum-menu optical fixtures / "<<optical_resident_bytes
-        <<" padded GPU bytes including lower LCD; not all rolled scenes or whole-flow peak RAM\n";
+    std::cout<<map<<": "<<optical_frames<<" actual strength-2 maximum-menu optical fixtures / "<<optical_resident_bytes
+        <<" padded GPU bytes including lower LCD; "<<intro_frames<<" observed intro frames; "
+        <<(all_optics?"every requested source frame checked":"first eligible policy samples only")
+        <<"; not whole-flow peak RAM or hardware acceptance\n";
     require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
     // These mandatory-positive checks belong to the original default fixtures.
     // Other stages can legitimately disable dots, or never contain terrain.
@@ -295,14 +303,16 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
 }
 }
 int main(int argc,char** argv) try {
-    constexpr auto usage="Usage: check_3ds_game_models ROM SYMBOLS [MAP [SOURCE_FRAMES]]\n"
+    constexpr auto usage="Usage: check_3ds_game_models ROM SYMBOLS [MAP [SOURCE_FRAMES [--all-optics]]]\n"
         "Default: BOOT (240 frames) and LEVEL1_1 (1440 frames).\n"
         "Optional MAP: an exact cartridge map symbol; SOURCE_FRAMES: 1..3600.\n"
+        "--all-optics: check every requested frame at strength 2, separation 64, convergence 16, retaining native owners.\n"
         "Uses private local assets; host policy/resource checks, not native gameplay or hardware acceptance.\n";
     if(argc==2 && std::string_view(argv[1])=="--help") {std::cout<<usage;return 0;}
-    if(argc<3 || argc>5) throw std::invalid_argument(usage);
+    if(argc<3 || argc>6 || (argc==6 && std::string_view(argv[5])!="--all-optics"))
+        throw std::invalid_argument(usage);
     unsigned phases=0;
-    if(argc==5) {
+    if(argc>=5) {
         const auto value=std::string_view(argv[4]);
         const auto parsed=std::from_chars(value.data(),value.data()+value.size(),phases);
         if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || phases<1 || phases>3600)
@@ -310,7 +320,7 @@ int main(int argc,char** argv) try {
     }
     const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
     auxiliary_checks(rom,symbols);
-    if(argc>=4) fixture(rom,symbols,argv[3],phases);
+    if(argc>=4) fixture(rom,symbols,argv[3],phases,argc==6);
     else {fixture(rom,symbols,"BOOT");fixture(rom,symbols,"LEVEL1_1");}
     std::cout<<checks<<" native model-stream checks passed; NOT full compositor, ARM gameplay or hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<context<<": "<<error.what()<<'\n';return 1;}

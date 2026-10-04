@@ -55,6 +55,8 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
         || (batch.corridor_receiver && (batch.water_receiver || ppu.background_mode>2 || !ppu.tunnel_scene
             || batch.space!=PicaSpace::scenery || batch.passes.empty()
             || std::any_of(batch.passes.begin(),batch.passes.end(),[](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
+        || (batch.visible_scenery_only && (batch.space!=PicaSpace::scenery || !batch.expand_horizontal
+            || batch.water_receiver || batch.corridor_receiver))
         || (batch.space!=PicaSpace::screen && batch.space!=PicaSpace::scenery)
         || (batch.space==PicaSpace::scenery && !batch.expand_horizontal))
         throw std::invalid_argument("Unsupported/incomplete 3DS PPU painter group");
@@ -189,15 +191,9 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     const float left=(float(top_width)-width)*.5F;
     constexpr std::array<std::array<float,2>,4> uv{{{0,0},{1,0},{1,1},{0,1}}};
     unsigned strips=0;
-    for(unsigned page=0;page<pages;++page) {
-        const auto start=boundaries[page];
-        auto bounds=std::array<unsigned,4>{0,0,boundaries[page+1]-start,screen_height};
-        // A split screen-space OBJ group can contain only one tiny sprite.
-        // Borrow its occupied rectangle too; retaining a whole guarded LCD
-        // page per priority needlessly consumes the water compositor budget.
-        // Geometry retains the exact source origin, including opaque black.
-        if(trim_transparent) bounds=occupied_[page];
-        if(bounds[0]>=bounds[2] || bounds[1]>=bounds[3]) continue;
+    const auto emit=[&](unsigned start,std::array<unsigned,4> bounds) {
+        if(bounds[0]>=bounds[2] || bounds[1]>=bounds[3]) return;
+        if(strips==pica_raster_max_strips) throw std::length_error("3DS visible source strip count exceeded");
         const unsigned size=bounds[2]-bounds[0],height=bounds[3]-bounds[1];
         unsigned vertex=strips*6;
         for(unsigned corner:{0U,1U,2U,0U,2U,3U})
@@ -207,6 +203,49 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
         images_[strips]={std::span<const std::uint8_t>(rgba_).subspan(offset*4),size,height,width*4,4,false,
             std::span<const std::uint8_t>(layers_).subspan(offset),width};
         ++strips;
+    };
+    if(batch.visible_scenery_only && width>top_width+pica_raster_base_guard*2) {
+        // Infinity projection translates each eye by its exact off-axis
+        // offset. The gap between disjoint frusta contains no visible pixel.
+        // Keep the entire canonical mono LCD too, including opaque black,
+        // for mono presentations and independent source-pixel comparisons.
+        std::array<std::array<unsigned,2>,3> intervals{};unsigned count=1;
+        const auto interval=[&](double offset) {
+            const auto first=std::clamp(std::floor(-double(left)-offset),0.,double(width));
+            const auto last=std::clamp(std::ceil(top_width-double(left)-offset),0.,double(width));
+            return std::array<unsigned,2>{unsigned(first),unsigned(last)};
+        };
+        intervals[0]=interval(0);
+        for(unsigned eye=0;eye<plan.eye_count;++eye) intervals[count++]=interval(background_offset(plan,eye));
+        // At most three intervals; an explicit bounded insertion sort also
+        // avoids GCC's generic 16-element insertion-sort bounds warning.
+        for(unsigned i=1;i<count;++i) for(unsigned j=i;j>0 && intervals[j]<intervals[j-1];--j)
+            std::swap(intervals[j],intervals[j-1]);
+        unsigned merged=0;
+        for(unsigned i=0;i<count;++i) {
+            if(merged && intervals[i][0]<=intervals[merged-1][1])
+                intervals[merged-1][1]=std::max(intervals[merged-1][1],intervals[i][1]);
+            else intervals[merged++]=intervals[i];
+        }
+        for(unsigned i=0;i<merged;++i) for(unsigned start=intervals[i][0];start<intervals[i][1];) {
+            const unsigned end=std::min(start+pica_raster_strip_width,intervals[i][1]);
+            auto bounds=std::array<unsigned,4>{end-start,screen_height,0,0};
+            for(unsigned y=0;y<screen_height;++y) for(unsigned x=start;x<end;++x)
+                if(layers_[std::size_t(y)*width+x]) {
+                    bounds[0]=std::min(bounds[0],x-start);bounds[1]=std::min(bounds[1],y);
+                    bounds[2]=std::max(bounds[2],x-start+1);bounds[3]=std::max(bounds[3],y+1);
+                }
+            emit(start,bounds);start=end;
+        }
+    } else for(unsigned page=0;page<pages;++page) {
+        const auto start=boundaries[page];
+        auto bounds=std::array<unsigned,4>{0,0,boundaries[page+1]-start,screen_height};
+        // A split screen-space OBJ group can contain only one tiny sprite.
+        // Borrow its occupied rectangle too; retaining a whole guarded LCD
+        // page per priority needlessly consumes the water compositor budget.
+        // Geometry retains the exact source origin, including opaque black.
+        if(trim_transparent) bounds=occupied_[page];
+        emit(start,bounds);
     }
     // Isolated artwork retains its actual one-hot ownership when its A8
     // descriptor is omitted. In water scenes the distant sky is BG3, not BG2.

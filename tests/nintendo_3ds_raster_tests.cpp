@@ -41,6 +41,73 @@ std::array<unsigned,4> pixel(const PicaImage& image,unsigned x,unsigned y) {
     const auto offset=std::size_t(y)*image.pitch+x*4;
     return {image.pixels[offset],image.pixels[offset+1],image.pixels[offset+2],image.pixels[offset+3]};
 }
+std::array<unsigned,5> scenery_pixel(const PicaFrame& frame,int x,unsigned y) {
+    std::array<unsigned,5> result{};
+    for(const auto& draw:frame.draws) {
+        const auto& image=frame.textures[draw.texture];
+        const auto& origin=frame.vertices[draw.first].position;
+        const int ix=x-int(origin[0]),iy=int(y)-int(origin[1]);
+        if(ix<0 || iy<0 || ix>=int(image.width) || iy>=int(image.height)) continue;
+        const auto rgb=pixel(image,unsigned(ix),unsigned(iy));
+        if(!rgb[3]) continue;
+        result={rgb[0],rgb[1],rgb[2],rgb[3],image.source_layers[std::size_t(iy)*image.layer_pitch+unsigned(ix)]};
+    }
+    return result;
+}
+void disjoint_scenery_coverage() {
+    auto ppu=source();ppu->main_screen=2;ppu->background_mode=2;
+    tile(*ppu,0x4000,1,2);tile(*ppu,0x4000,2,3);
+    ppu->cgram[18]=31<<5;ppu->cgram[19]=31<<10;
+    for(unsigned y=0;y<32;++y) for(unsigned x=0;x<32;++x) {
+        ppu->vram[0xc000+(y*32+x)*2]=std::uint8_t((x+2*y)%3);
+        ppu->vram[0xc001+(y*32+x)*2]=std::uint8_t(4+(((x+y)%2)?32:0));
+    }
+    ppu->bg2_scroll_x=13;ppu->bg2_scroll_y=-7;
+    const auto unchanged=*ppu;
+    for(int priority:{-1,0,1}) for(float convergence:{16.F,32.F,1024.F}) {
+        PpuBatch ordinary;ordinary.space=PicaSpace::scenery;ordinary.expand_horizontal=true;
+        ordinary.passes.push_back({PpuLayer::bg2,priority});
+        auto compact=ordinary;compact.visible_scenery_only=true;
+        PicaRaster oracle,packed;StereoSettings settings;settings.strength=2;settings.separation=64;settings.convergence=convergence;
+        for(float slider:{1.F,.5F,0.F,.123F,1.F}) {
+            const auto plan=plan_frame(slider,true,ScreenUse::world,settings);
+            const auto full=oracle.prepare(ppu,ordinary,plan);
+            const auto frame=packed.prepare(ppu,compact,plan);
+            unsigned bytes=512*256*4;
+            for(auto image:frame.textures) {
+                image.source_layers={};image.layer_pitch=0;
+                bytes+=pica_resident_texture_bytes(image);
+                require(image.width<=1024,"Disjoint scenery exceeded native sampler dimensions");
+            }
+            require(bytes<=2U*1024U*1024U && frame.textures.size()<=3,
+                "Disjoint infinity frusta retained a resident unseen gap or reduced optical coverage");
+            for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;++x) {
+                require(scenery_pixel(frame,int(x),y)==scenery_pixel(full,int(x),y),
+                    "Disjoint scenery changed canonical source pixels, priority, ownership or opaque black");
+                for(unsigned eye=0;eye<plan.eye_count;++eye) {
+                    // Independent inverse of the off-axis infinity projection:
+                    // use pixel centres, including non-integer eye offsets.
+                    const double offset=double(plan.focal_x)*plan.eyes[eye].x/plan.convergence;
+                    const int source_x=int(std::floor(x+.5-offset));
+                    require(scenery_pixel(frame,source_x,y)==scenery_pixel(full,source_x,y),
+                        "A disjoint eye frustum lost source pixels or left an LCD edge/strip seam");
+                }
+            }
+            const auto cached=packed.work();packed.prepare(ppu,compact,plan);
+            require(packed.work().decodes==cached.decodes && packed.work().colour_updates==cached.colour_updates,
+                "Visible infinity descriptors defeated source raster/cache reuse");
+        }
+        auto invalid=compact;invalid.space=PicaSpace::screen;
+        rejected([&]{packed.prepare(ppu,invalid,plan_frame(1,true,ScreenUse::world,settings));},
+            "Screen artwork accepted infinity-only cropping");
+        invalid=compact;invalid.water_receiver=true;ppu->background_mode=1;
+        rejected([&]{packed.prepare(ppu,invalid,plan_frame(1,true,ScreenUse::world,settings));},
+            "Finite water accepted infinity-only cropping");
+        ppu->background_mode=2;
+    }
+    require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,
+        "Disjoint scenery preparation changed cartridge source storage");
+}
 void unique_sky_halves() {
     for(bool right:{false,true}) for(int scroll:{0,255,-1}) {
         auto ppu=std::make_shared<simulation::SnesPpuState>();
@@ -549,5 +616,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();corridor_batch_contract();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();optical_coverage();disjoint_scenery_coverage();transparent_priority_crop();unique_sky_halves();composition();corridor_batch_contract();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
