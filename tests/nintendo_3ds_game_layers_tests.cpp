@@ -29,7 +29,7 @@ GamePresentation source(simulation::GameFlowState flow,unsigned mode) {
     GamePresentation frame;frame.current=frame.previous=scene;frame.raster=raster;
     frame.plan=plan_frame(0,true,ScreenUse::front_end);return frame;
 }
-std::pair<std::array<std::uint8_t,4>,unsigned> pixel(const PicaFrame& group,unsigned x,unsigned y) {
+std::pair<std::array<std::uint8_t,4>,unsigned> pixel(const PicaFrame& group,int x,int y) {
     std::pair<std::array<std::uint8_t,4>,unsigned> result{};
     for(const auto& draw:group.draws) {
         if(draw.texture==pica_no_texture) continue;
@@ -80,6 +80,42 @@ std::pair<std::array<std::uint8_t,4>,unsigned> mono_receiver_pixel(const PicaFra
 }
 bool has(const PpuBatch& batch,PpuLayer layer,int priority) {
     return std::any_of(batch.passes.begin(),batch.passes.end(),[&](const auto& pass){return pass.layer==layer && pass.priority==priority;});
+}
+void map_single_occurrence() {
+    using enum simulation::GameFlowState;
+    for(auto flow:{planet_select,planet_travel}) for(unsigned priority:{0U,1U}) {
+        auto frame=source(flow,3);
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);
+        ppu->main_screen=1; // Isolate the source's eight-bit map artwork.
+        // Deliberately mark both canonical edges. An extended 256-pixel tile
+        // map repeats the right marker into the left LCD margin and vice versa.
+        for(unsigned column:{0U,31U}) {
+            const unsigned at=0x6000+(5*32+column)*2,word=1|(priority?0x2000:0);
+            ppu->vram[at]=std::uint8_t(word);ppu->vram[at+1]=std::uint8_t(word>>8);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);
+        raster->ppu=ppu;frame.raster=raster;
+        GameLayers layers;const auto result=layers.prepare(frame);
+        require(pixel(result.before_models,0,40).first[3]==255
+            && pixel(result.before_models,248,40).first[3]==255,
+            "Map policy removed its canonical edge artwork");
+        require(pixel(result.before_models,-8,40).first[3]==0
+            && pixel(result.before_models,256,40).first[3]==0,
+            "Map travel repeats menu artwork in the outer LCD margins");
+        const auto policy=game_layer_plan(frame);
+        for(const auto& pass:policy.before_models.passes)
+            require(!pass.extend_horizontal,"Map travel extends an authored menu pass");
+        for(const auto& pass:policy.after_models.passes)
+            require(!pass.extend_horizontal,"Map travel extends foreground menu artwork");
+    }
+    // Mode-1/2 travel can legitimately contain a world surround. Restrict
+    // only the Mode-3 map, not its scenery or either eye's camera geometry.
+    for(unsigned mode:{1U,2U}) {
+        const auto policy=game_layer_plan(source(planet_travel,mode));
+        require(std::any_of(policy.before_models.passes.begin(),policy.before_models.passes.end(),
+            [](const auto& pass){return pass.layer==PpuLayer::bg2 && pass.extend_horizontal;}),
+            "Map restriction suppressed travel's world surround");
+    }
 }
 void priority_pixels() {
     using enum simulation::GameFlowState;
@@ -946,6 +982,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_source_symbols();corridor_depth();corridor_eye_coverage();corridor_eye_coverage(true);corridor_eye_coverage(false,true);corridor_eye_coverage(true,true);corridor_eye_coverage(false,true,true);corridor_eye_coverage(true,true,true);colony_depth();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
+    priority_pixels();map_single_occurrence();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_source_symbols();corridor_depth();corridor_eye_coverage();corridor_eye_coverage(true);corridor_eye_coverage(false,true);corridor_eye_coverage(true,true);corridor_eye_coverage(false,true,true);corridor_eye_coverage(true,true,true);colony_depth();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

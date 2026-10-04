@@ -26,9 +26,15 @@ host/link/package checks did not establish successful boot. The source follow-up
 reserves a bounded native stack, validated in the R8 ARM build. R8 then exposed
 a null secondary-texture binding in the native presenter. R9 fixes both and
 reaches the native menu/intro, but actual GPU-window inspection exposed vertically
-flipped uploaded artwork. The latest colour/A8 upload follow-up addresses that;
-fresh ARM/runtime validation is still in progress. Do not treat an earlier
-package's host/link checks as proof that its displayed artwork is correct.
+flipped uploaded artwork. R10's colour/A8 upload follow-up passes the actual ARM
+build/package gates and isolated native pre-game/title/Controls/Training visual
+check, including live lower-LCD radio/meters. A normal campaign recording also
+reaches the Original map/travel briefing and initial gameplay geometry, with
+distinct upper-screen eyes at maximum emulated slider and an unchanged lower
+HUD. R10's travel map repeats artwork in the outer columns; the next source
+follow-up restricts its Mode-3 menu panel, and needs a fresh native check.
+Full Original/EX stage-flow and physical-device checks remain in progress. Do not treat an
+earlier package's host/link checks as proof that its displayed artwork is correct.
 
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.
    This package does not modify firmware or install a CIA.

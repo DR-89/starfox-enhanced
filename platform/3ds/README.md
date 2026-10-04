@@ -70,7 +70,30 @@ observed double flip. Projection, physical eye separation and source coordinates
 are unchanged. Regression tests independently follow logical pixel centres
 through padded shader UVs, sampler inversion and Morton storage, checking RGBA
 and per-pixel ownership together, including 320/400 x 240 LCD artwork.
-Fresh ARM/runtime and physical device acceptance of this follow-up remain pending.
+The R10 actual ARM build and downloaded package pass all gates. Its isolated
+Original-3DS-configured emulator shows upright pre-game, title and Controls
+artwork, accepting normal recorded Start input with neither earlier memory
+fault. A second normal-input run proceeds through the Controls Training choice
+into actual Training, with native models/scenery above and live radio, shield,
+ally meters and counters below. This is emulator bring-up evidence, not physical
+LCD/slider, speed or peak-memory acceptance. A further normal-input run reaches
+the Original planet map, travel briefing and initial campaign geometry. At
+maximum emulated slider, the world LCD has distinct eyes while the lower HUD
+remains identical. This is not physical stereo comfort, sustained performance
+or full Original/EX stage/effect coverage.
+
+## Single-occurrence planet-map artwork
+
+The R10 native map/travel capture exposed complete planets and labels repeating
+in the outer LCD columns. Mode-3 travel still uses an authored map, not a world
+surround. The source follow-up keeps its BG/OBJ artwork within the same canonical
+256-pixel panel as planet select; the remaining LCD field uses the source
+backdrop. Mode-1/2 world travel surrounds retain their wide/depth behavior.
+
+The independent edge-marker fixture fails on the former travel policy and
+passes after the restriction, preserving both canonical edges, both tile
+priorities and the other travel modes. Fresh ARM/package/native-window checks
+for this follow-up are still required; R10 does not contain the map correction.
 
 ## Signed tunnel entrance/exit faces
 

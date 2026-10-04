@@ -62,7 +62,12 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     const bool ex_menu=scene.flow==ex_pregame_menu;
     const bool menu_panorama=ex_menu && native_panorama_scene(frame);
     const bool controls=scene.flow==controls_type || scene.flow==controls_choice;
-    const bool extend=world_hud || scene.flow==intro || scene.flow==planet_travel
+    // Mode-3 travel still displays the authored map. Extending its tile map
+    // wrapped complete planets/labels into the native LCD margins. Keep the
+    // canonical artwork once, as on planet_select; world travel surrounds in
+    // Mode 1/2 retain their existing wide/depth policy.
+    const bool travel_surround=scene.flow==planet_travel && ppu.background_mode!=3;
+    const bool extend=world_hud || scene.flow==intro || travel_surround
         || scene.flow==stage_results || scene.flow==game_over || scene.flow==finished
         || (scene.flow==credits && !frame.raster->boss_roll);
     const bool ex_title=title_screen && scene.meters.extended;
