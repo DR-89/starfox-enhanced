@@ -155,7 +155,15 @@ GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
     if(policy.before_model_groups.empty()) {
         for(const auto& group:panorama_groups_) retire(group->work());
         panorama_groups_.clear();
-        before=before_.prepare(frame.raster->ppu,policy.before_models,frame.plan,brightness,frame.current->background_colour_subtract);
+        unsigned guard=pica_raster_base_guard;
+        if(native_landscape_scene(frame)) {
+            const auto plane=source_landscape_plane(frame);
+            const double distance=plane.height*frame.plan.focal_y;
+            guard=pica_receiver_guard(frame.plan,{-plane.slope/distance,1/distance,
+                (200*plane.slope-plane.centre)/distance});
+        }
+        before=before_.prepare(frame.raster->ppu,policy.before_models,frame.plan,brightness,
+            frame.current->background_colour_subtract,guard);
     } else {
         retire(before_.work());before_=PicaRaster{};
         while(panorama_groups_.size()>policy.before_model_groups.size()) {
@@ -167,13 +175,16 @@ GameLayerFrames GameLayers::prepare(const GamePresentation& frame) {
         // Strip redundant A8 only from isolated BG2 descriptors. The decoder's
         // owned mask still validates source ownership; mixed screen groups
         // retain provenance for colour math. No texture pixels are copied.
-        auto& bg_images=working_bg_images_;bg_images.clear();bg_images.reserve(panorama_groups_.size());
+        auto& bg_images=working_bg_images_;bg_images.clear();bg_images.reserve(panorama_groups_.size()*pica_raster_max_strips);
         for(unsigned i=0;i<panorama_groups_.size();++i) {
             auto prepared=panorama_groups_[i]->prepare(frame.raster->ppu,policy.before_model_groups[i],
-                frame.plan,brightness,frame.current->background_colour_subtract);
+                frame.plan,brightness,frame.current->background_colour_subtract,pica_raster_base_guard,true);
             if(policy.before_model_groups[i].space==PicaSpace::scenery && !prepared.textures.empty()) {
-                auto image=prepared.textures.front();image.source_layers={};image.layer_pitch=0;
-                bg_images.push_back(image);prepared.textures=std::span<const PicaImage>(&bg_images.back(),1);
+                const auto first=bg_images.size();
+                for(auto image:prepared.textures) {
+                    image.source_layers={};image.layer_pitch=0;bg_images.push_back(image);
+                }
+                prepared.textures=std::span<const PicaImage>(bg_images).subspan(first,prepared.textures.size());
             }
             groups.push_back(prepared);
         }

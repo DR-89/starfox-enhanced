@@ -156,10 +156,15 @@ void connected() {
             const auto field=lattice(f.scene->camera,matrix);const auto [expected,count]=ink(field,f.scene->grid_line_start);
             const auto frame=owner.prepare(f.source);validate_pica_frame(frame,f.source.dashboard);
             require(owner.coverage().connections==count && owner.coverage().ink_updates==++expected_updates,"Connected ink source count/cache key");
-            require(frame.textures.size()==1 && pica_resident_texture_bytes(frame.textures[0])==512*256*4,"Connected ink must use one bounded isolated texture");
+            const unsigned width=frame.textures[0].pitch/4,canonical_left=(width-224)/2;
+            require(frame.textures.size()==(width+1023)/1024 && width>=464,
+                "Connected ink must cover finite parallax with bounded borrowed strips");
+            for(unsigned strip=0;strip<frame.textures.size();++strip)
+                require(frame.textures[strip].width<=1024 && frame.textures[strip].pixels.data()==frame.textures[0].pixels.data()+strip*4096,
+                    "Connected grid strips duplicated source pixels or exceeded native texture dimensions");
             const auto image=frame.textures[0];unsigned occupied=0;
             for(unsigned yy=0;yy<192;++yy) for(unsigned x=0;x<224;++x) {
-                const auto at=(std::size_t(yy+24)*image.width+x+120)*4;
+                const auto at=(std::size_t(yy+24)*width+x+canonical_left)*4;
                 require(image.pixels[at+3]==(expected[yy*224+x]?255:0),"Connected canonical source ink was altered by native guard expansion");
                 occupied+=expected[yy*224+x];
             }
@@ -169,7 +174,7 @@ void connected() {
             const double d=n[0]*field.origin[0]+n[1]*field.origin[1]+n[2]*field.origin[2];
             unsigned finite=0;
             for(auto draw:frame.draws) {
-                require(draw.source_layer==1 && draw.texture==0 && draw.alpha_blend,"Grid ink source provenance/opacity policy");
+                require(draw.source_layer==1 && draw.texture<frame.textures.size() && draw.alpha_blend,"Grid ink source provenance/opacity policy");
                 if(draw.space==PicaSpace::scenery) {require(!draw.depth_test && !draw.depth_write,"Far carry must be scenery, not HUD/finite depth");continue;}
                 ++finite;require(draw.projected_uv && draw.depth_test && draw.depth_write,"Connected grid needs finite depth and homogeneous source UV");
                 for(unsigned i=draw.first;i<draw.first+draw.count;++i) {
@@ -180,13 +185,14 @@ void connected() {
                         *(std::abs(n[0]*p[0])+std::abs(n[1]*p[1])+std::abs(n[2]*p[2]));
                     close(n[0]*p[0]-n[1]*p[1]+n[2]*p[2],d,"Grid receiver is not the actual Q15 source ground plane",std::max(1.,roundoff));
                     require(p[2]>=frame.plan.near_plane-.005 && p[2]<=frame.plan.far_plane+.005,"Receiver crosses near/far clip");
-                    close(v.uv[0],(200+frame.plan.focal_x*p[0]/p[2]+32)/464.,"Ground source UV registration X",.00001);
+                    const double strip_left=(400.-width)/2+draw.texture*1024;
+                    close(v.uv[0],(200+frame.plan.focal_x*p[0]/p[2]-strip_left)/frame.textures[draw.texture].width,"Ground source UV registration X",.00001);
                     close(v.uv[1],(120-frame.plan.focal_y*p[1]/p[2])/240.,"Ground source UV registration Y",.00001);
                     const auto left=screen(frame.plan,0,p),right=screen(frame.plan,1,p);
                     close(right[0]-left[0],frame.plan.focal_x*(frame.plan.eyes[1].x-frame.plan.eyes[0].x)*(1/1024.-1/p[2]),"Grid stereo disparity",.02);
                 }
             }
-            if(y<0) require(finite==1,"Visible ground must not fall back to mono screen depth");
+            if(y<0) require(finite>=1,"Visible ground must not fall back to mono screen depth");
             const std::vector<PicaVertex> saved(frame.vertices.begin(),frame.vertices.end());
             const std::vector<std::uint8_t> pixels(image.pixels.begin(),image.pixels.end());
             const auto saved_carry=f.scene->grid_line_start;const auto saved_points=f.scene->dust_points;
@@ -214,7 +220,7 @@ void connected() {
         auto bad=f.source;
         if(invalid==0) bad.interpolation_alpha=std::numeric_limits<double>::quiet_NaN();
         if(invalid==1) bad.current.reset();
-        if(invalid==2) {bad.plan.eyes[0].projection_offset=33;}
+        if(invalid==2) {bad.plan.eyes[0].projection_offset=2000;}
         if(invalid==3) {auto malformed=std::make_shared<vr::GameSceneSnapshot>(*f.scene);malformed->dust_point_count=512;bad.current=malformed;}
         bool rejected=false;try {owner.prepare(bad);} catch(const std::exception&) {rejected=true;}
         require(rejected && owner.coverage().ink_updates==work && std::equal(saved.begin(),saved.end(),frame.vertices.begin()),
@@ -228,7 +234,37 @@ void connected() {
     f.scene->dots_mode=1;owner.prepare(f.source);
     require(owner.coverage().ink_updates==work+1,"Leaving connected mode must release and rebuild its cache");
 }
+void connected_optics() {
+    for(float convergence:{16.F,32.F,1024.F}) for(const auto matrix:{identity,
+        simulation::MatrixQ15{30000,12000,0,-12000,30000,0,0,0,32767}}) {
+        Fixture f;GameDots owner(f.colours);f.scene->dots_mode=1;f.scene->grid_lines=true;
+        f.scene->camera={0,-512,0};f.scene->view_matrix=matrix;f.scene->grid_line_start={87,142};
+        StereoSettings settings;settings.strength=2;settings.separation=64;settings.convergence=convergence;
+        f.source.plan=plan_frame(1,true,ScreenUse::world,settings);
+        const auto frame=owner.prepare(f.source);validate_pica_frame(frame,f.source.dashboard);
+        const auto width=frame.textures[0].pitch/4,canonical_left=(width-224)/2;
+        const auto [expected,count]=ink(lattice(f.scene->camera,matrix),f.scene->grid_line_start);
+        require(frame.textures.size()==(width+1023)/1024 && owner.coverage().connections==count,
+            "High separation grid lost its native strip/count contract");
+        for(unsigned y=0;y<192;++y) for(unsigned x=0;x<224;++x)
+            require(frame.textures[0].pixels[(std::size_t(y+24)*width+canonical_left+x)*4+3]==(expected[y*224+x]?255:0),
+                "High separation altered the exact carried source grid ink");
+        bool finite=false;
+        for(const auto& draw:frame.draws) {
+            if(draw.space==PicaSpace::world) finite=true;
+            else require(!finite,"High separation grid sky overwrote an earlier finite strip");
+            require(draw.texture<frame.textures.size(),"Grid strip references an omitted texture");
+        }
+        const auto* pixels=frame.textures[0].pixels.data();const auto updates=owner.coverage().ink_updates;
+        for(float slider:{.5F,0.F,1.F}) {
+            f.source.plan=plan_frame(slider,true,ScreenUse::world,settings);
+            const auto cached=owner.prepare(f.source);validate_pica_frame(cached,f.source.dashboard);
+            require(cached.textures[0].pixels.data()==pixels && owner.coverage().ink_updates==updates,
+                "Slider-only changes decoded/copied already sufficient wide source grid artwork");
+        }
+    }
+}
 }
 int main() try {
-    dust();ground();connected();std::cout<<checks<<" native dust/grid checks passed (host geometry, not device pixels)\n";
+    dust();ground();connected();connected_optics();std::cout<<checks<<" native dust/grid checks passed (host geometry, not device pixels)\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

@@ -1,4 +1,5 @@
 #include "starfox/platform/nintendo_3ds/game_scenery.hpp"
+#include "starfox/platform/nintendo_3ds/raster_coverage.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
 
 namespace starfox::platform::nintendo_3ds {
@@ -42,26 +43,24 @@ PicaFrame GameScenery::prepare(const GamePresentation& source,const PicaFrame& b
     const auto plane=source_landscape_plane(source);
     if(!same_pica_plan(source.plan,bg2.plan)) throw std::invalid_argument("3DS terrain belongs to another source eye plan");
     if(bg2.draws.empty()) {vertices_.clear();return {source.plan,{},{},{},bg2.clear};}
-    if(bg2.draws.size()!=1 || bg2.textures.size()!=1 || bg2.vertices.size()!=6
-        || bg2.draws[0].texture!=0 || bg2.draws[0].space!=PicaSpace::scenery || bg2.draws[0].source_layer!=2
-        || bg2.textures[0].width!=top_width+64 || bg2.textures[0].height!=screen_height
-        || bg2.textures[0].channels!=4 || bg2.textures[0].repeat
-        || bg2.textures[0].source_layers.empty())
+    if(bg2.draws.size()!=bg2.textures.size() || bg2.draws.size()>pica_raster_max_strips
+        || bg2.vertices.size()!=bg2.draws.size()*6)
         throw std::invalid_argument("3DS terrain requires an isolated guarded BG2 source raster");
     // Isolated BG2 is identified by its source painter contract, not palette
     // colors or model rectangles. Retain opaque black. Never re-walk its
     // complete provenance image for every slider/eye presentation.
-    const auto& art=bg2.textures[0];
-    for(unsigned eye=0;eye<source.plan.eye_count;++eye) {
-        static_cast<void>(PicaProjection(source.plan,eye));
-        if(std::abs(background_offset(source.plan,eye))>32)
-            throw std::invalid_argument("3DS scenery exceeds source guard coverage");
-    }
     const double focal_x=source.plan.focal_x,focal_y=source.plan.focal_y;
+    const double distance_scale=plane.height*focal_y;
+    const auto guard=pica_receiver_guard(source.plan,{-plane.slope/distance_scale,1/distance_scale,
+        (200*plane.slope-plane.centre)/distance_scale});
+    const double coverage_left=bg2.vertices.front().position[0];
+    // Last vertex of each source quad is its left-bottom corner, not right.
+    const double right=bg2.vertices[bg2.vertices.size()-4].position[0];
+    if(coverage_left> -double(guard) || right<top_width+double(guard))
+        throw std::invalid_argument("3DS terrain raster does not cover both eye receivers");
     using Point=std::array<double,2>;
-    std::vector<Point> polygon{{-32,0},{432,0},{432,240},{-32,240}};
     const auto distance=[&](Point point) {return point[1]-plane.centre-plane.slope*(point[0]-200);};
-    const auto clip=[&](double limit,bool above) {
+    const auto clip=[&](std::vector<Point>& polygon,double limit,bool above) {
         auto old=std::move(polygon);polygon.clear();
         if(old.empty()) return;
         auto a=old.back();double da=distance(a)-limit;
@@ -76,23 +75,40 @@ PicaFrame GameScenery::prepare(const GamePresentation& source,const PicaFrame& b
             a=b;da=db;
         }
     };
-    // The far interval is retained by the same infinite BG2 artwork beneath
-    // the finite receiver, not filled with an invented flat color or sky.
-    clip(plane.height*focal_y/source.plan.far_plane,true);
-    clip(plane.height*focal_y/source.plan.near_plane,false);
     std::vector<PicaVertex> next(bg2.vertices.begin(),bg2.vertices.end());
-    const auto vertex=[&](Point point) {
-        const double z=plane.height*focal_y/distance(point);
-        return PicaVertex{{float((point[0]-200)*z/focal_x),float((120-point[1])*z/focal_y),float(z)},
-            {1,1,1,1},{float(std::clamp((point[0]+32)/art.width,0.,1.)),float(std::clamp(point[1]/screen_height,0.,1.))}};
-    };
-    for(unsigned corner=1;corner+1<polygon.size();++corner)
-        for(unsigned i:{0U,corner,corner+1}) next.push_back(vertex(polygon[i]));
-    auto image=art;image.source_layers={};image.layer_pitch=0; // BG2 one-hot draw replaces mixed-layer A8.
-    auto sky=bg2.draws[0];sky.space=PicaSpace::scenery;sky.source_layer=2;sky.alpha_blend=false;
-    PicaDraw ground;ground.first=6;ground.count=unsigned(next.size()-6);ground.texture=0;
-    ground.source_layer=2;ground.projected_uv=true;
-    vertices_=std::move(next);image_[0]=image;draws_={sky,ground};
-    return {source.plan,vertices_,std::span(draws_).first(ground.count?2:1),image_,bg2.clear};
+    std::vector<PicaImage> images(bg2.textures.begin(),bg2.textures.end());
+    std::vector<PicaDraw> draws(bg2.draws.begin(),bg2.draws.end());
+    double previous=coverage_left;
+    for(unsigned strip=0;strip<images.size();++strip) {
+        auto& image=images[strip];auto& sky=draws[strip];
+        const double left=bg2.vertices[strip*6].position[0],end=left+image.width;
+        if(sky.first!=strip*6 || sky.count!=6 || sky.texture!=strip || sky.space!=PicaSpace::scenery
+            || sky.source_layer!=2 || image.height!=screen_height || image.channels!=4
+            || image.repeat || image.source_layers.empty() || left!=previous)
+            throw std::invalid_argument("Invalid 3DS source receiver strip");
+        static_cast<void>(pica_texture_layout(image));previous=end;
+        image.source_layers={};image.layer_pitch=0;sky.alpha_blend=false;
+    }
+    // All infinity strips precede every finite strip: interleaving would let
+    // a later no-depth sky overwrite an earlier receiver after eye parallax.
+    for(unsigned strip=0;strip<images.size();++strip) {
+        const auto& image=images[strip];const double left=bg2.vertices[strip*6].position[0],end=left+image.width;
+        std::vector<Point> polygon{{left,0},{end,0},{end,240},{left,240}};
+        clip(polygon,distance_scale/source.plan.far_plane,true);
+        clip(polygon,distance_scale/source.plan.near_plane,false);
+        const unsigned first=unsigned(next.size());
+        for(unsigned corner=1;corner+1<polygon.size();++corner) for(unsigned i:{0U,corner,corner+1}) {
+            const auto point=polygon[i];const double z=distance_scale/distance(point);
+            next.push_back({{float((point[0]-200)*z/focal_x),float((120-point[1])*z/focal_y),float(z)},
+                {1,1,1,1},{float(std::clamp((point[0]-left)/image.width,0.,1.)),float(std::clamp(point[1]/screen_height,0.,1.))}});
+        }
+        if(next.size()>first) {
+            PicaDraw ground;ground.first=first;ground.count=unsigned(next.size())-first;ground.texture=strip;
+            ground.source_layer=2;ground.projected_uv=true;draws.push_back(ground);
+        }
+    }
+    PicaFrame result{source.plan,next,draws,images,bg2.clear};validate_pica_group(result,512*256*4);
+    vertices_=std::move(next);images_=std::move(images);draws_=std::move(draws);
+    return {source.plan,vertices_,draws_,images_,bg2.clear};
 }
 } // namespace starfox::platform::nintendo_3ds

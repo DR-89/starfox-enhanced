@@ -1,5 +1,6 @@
 #pragma once
 #include "starfox/platform/nintendo_3ds/pica_frame.hpp"
+#include "starfox/platform/nintendo_3ds/raster_coverage.hpp"
 #include "starfox/render/background_renderer.hpp"
 #include "starfox/render/sprite_renderer.hpp"
 #include <memory>
@@ -33,9 +34,11 @@ class PicaRaster {
 public:
     // Immutable PPU storage must outlive preparation through the shared owner.
     // Spans remain valid until the next successful prepare; failures retain
-    // the complete previous layer. Scenery owns 32px horizontal guard coverage.
+    // the complete previous layer. Eye/receiver coverage may grow beyond the
+    // normal 32px guard; oversized artwork is borrowed as native GPU strips.
     PicaFrame prepare(std::shared_ptr<const simulation::SnesPpuState>,const PpuBatch&,
-        const FramePlan&,unsigned brightness=15,unsigned bg2_subtract=0);
+        const FramePlan&,unsigned brightness=15,unsigned bg2_subtract=0,
+        unsigned receiver_guard=pica_raster_base_guard,bool trim_transparent=false);
     [[nodiscard]] PpuRasterWork work() const noexcept {return work_;}
 private:
     std::shared_ptr<const simulation::SnesPpuState> source_;
@@ -43,9 +46,10 @@ private:
     std::unique_ptr<render::Framebuffer> indexed_;
     std::vector<std::uint8_t> rgba_;
     std::vector<std::uint8_t> layers_;
-    std::array<PicaVertex,6> vertices_{};
-    std::array<PicaDraw,1> draws_{};
-    std::array<PicaImage,1> images_{};
+    std::array<PicaVertex,pica_raster_max_strips*6> vertices_{};
+    std::array<PicaDraw,pica_raster_max_strips> draws_{};
+    std::array<PicaImage,pica_raster_max_strips> images_{};
+    std::array<std::array<unsigned,4>,pica_raster_max_strips> occupied_{};
     std::array<std::uint16_t,256> palette_{};
     unsigned brightness_{},subtract_{};
     bool visible_{};

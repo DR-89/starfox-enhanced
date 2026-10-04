@@ -81,7 +81,7 @@ void raster() {
     auto bad=batch;bad.passes[0].priority=3;
     rejected([&]{renderer.prepare(rolled,bad,plan);},"Invalid priority was silently substituted");
     require(std::equal(saved.begin(),saved.end(),retained.textures[0].pixels.begin()) && renderer.work().decodes==work.decodes,"Failed source pass invalidated previous layer");
-    auto impossible=plan;impossible.eyes[0].projection_offset=-33;
+    auto impossible=plan;impossible.eyes[0].projection_offset=-2000;
     rejected([&]{renderer.prepare(rolled,batch,impossible);},"Scenery outside allocated eye coverage accepted");
     require(*ppu==original,"Layer preparation mutated cartridge data");
     PicaRaster overlay;PpuBatch ui;ui.passes.push_back({PpuLayer::objects});ui.passes[0].sprites=render::SpriteSelection::world_only;
@@ -113,6 +113,76 @@ void raster() {
     require(pixel(texture,5,100)==std::array<unsigned,4>{0,0,0,255} && texture.source_layers[5]==0,
         "Opaque black and uncovered vertical guard ownership confused");
     require(validate_pica_layers(texture)==19,"Mixed PPU group did not retain precisely its occupied source classes");
+}
+void optical_coverage() {
+    auto ppu=source();const auto untouched=*ppu;Canvas lower;PicaRaster renderer;
+    PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};
+    // Patterned source columns make both eye borders and strip joins observable.
+    ppu->cgram[17]=31;ppu->cgram[18]=31<<5;
+    tile(*ppu,0x4000,1,2);
+    for(unsigned row=0;row<32;++row) for(unsigned col=0;col<32;++col)
+        ppu->vram[0xc000+(row*32+col)*2]=std::uint8_t(col&1);
+    const auto patterned=*ppu;
+    for(float separation:{0.F,12.F,32.F,64.F}) for(float strength:{.5F,1.F,2.F})
+        for(float convergence:{16.F,32.F,64.F,1024.F}) for(float slider:{0.F,.5F,1.F}) {
+            StereoSettings settings;settings.separation=separation;settings.strength=strength;settings.convergence=convergence;
+            const auto plan=plan_frame(slider,true,ScreenUse::world,settings);
+            const auto frame=renderer.prepare(ppu,batch,plan);validate_pica_frame(frame,lower.view());
+            const unsigned width=frame.textures.front().pitch/4;
+            const int left=(int(top_width)-int(width))/2;
+            require(frame.textures.size()==(width+1023)/1024 && width>=464,
+                "Eye coverage was clamped or failed to split an oversized native texture");
+            require(plan.separation==slider*strength*separation,"Rendering changed requested optics");
+            for(unsigned i=0;i<frame.textures.size();++i) {
+                const auto& image=frame.textures[i];
+                require(image.width<=1024 && image.pitch==width*4
+                    && image.pixels.data()==frame.textures.front().pixels.data()+i*1024*4
+                    && frame.vertices[i*6].position[0]==left+int(i*1024),
+                    "Native strips copied source pixels or left a horizontal gap");
+            }
+            for(unsigned eye=0;eye<plan.eye_count;++eye) for(unsigned x=0;x<400;++x) {
+                const double source_x=double(x)+.5-background_offset(plan,eye);
+                require(source_x>=left && source_x<left+width,"LCD eye border escaped decoded source coverage");
+                const unsigned column=unsigned(std::floor(source_x-left)),strip=column/1024;
+                const auto rgb=pixel(frame.textures[strip],column%1024,120);
+                const int native_x=int(std::floor(source_x))-72;
+                const bool green=((native_x&255)/8)&1;
+                require(rgb==std::array<unsigned,4>{green?0U:255U,green?255U:0U,0,255},
+                    "Eye border/strip join did not sample the exact authored BG tile");
+            }
+        }
+    require(*ppu==patterned && untouched.oam==ppu->oam,"Optical coverage changed source data");
+}
+void transparent_priority_crop() {
+    auto ppu=source();ppu->vram[0xc001+(10*32+5)*2]|=32; // One high-priority opaque-black tile.
+    const auto unchanged=*ppu;PpuBatch batch{{{PpuLayer::bg2,1}},PicaSpace::scenery,true};
+    StereoSettings settings;settings.strength=2;settings.separation=64;settings.convergence=16;
+    const auto plan=plan_frame(1,true,ScreenUse::world,settings);PicaRaster renderer;Canvas lower;
+    const auto full=renderer.prepare(ppu,batch,plan);validate_pica_frame(full,lower.view());
+    const auto width=full.textures[0].pitch/4;
+    const std::vector<std::uint8_t> pixels(full.textures[0].pixels.begin(),full.textures[0].pixels.end());
+    unsigned bytes=0;for(auto image:full.textures) bytes+=pica_resident_texture_bytes(image);
+    const auto cropped=renderer.prepare(ppu,batch,plan,15,0,32,true);validate_pica_frame(cropped,lower.view());
+    unsigned crop_bytes=0;for(auto image:cropped.textures) crop_bytes+=pica_resident_texture_bytes(image);
+    require(crop_bytes<bytes/8 && renderer.work().decodes==1 && renderer.work().colour_updates==1,
+        "Empty priority rows still consumed full texture pages or cropping decoded the source again");
+    unsigned black=0;
+    for(unsigned y=0;y<240;++y) for(unsigned x=0;x<width;++x) {
+        std::array<unsigned,4> actual{};
+        for(auto draw:cropped.draws) {
+            const auto& origin=cropped.vertices[draw.first].position;const auto image=cropped.textures[draw.texture];
+            const int ix=int(x)+int((400.-width)/2)-int(origin[0]),iy=int(y)-int(origin[1]);
+            if(ix>=0 && iy>=0 && ix<int(image.width) && iy<int(image.height)) actual=pixel(image,unsigned(ix),unsigned(iy));
+        }
+        const auto at=(std::size_t(y)*width+x)*4;
+        require(actual==std::array<unsigned,4>{pixels[at],pixels[at+1],pixels[at+2],pixels[at+3]},
+            "Trimming an empty priority region changed source pixels/black opacity or strip joins");
+        black+=actual[3]==255;
+    }
+    require(black>0 && *ppu==unchanged,"Priority crop erased black ink or mutated source");
+    const auto faded=renderer.prepare(ppu,batch,plan,0,0,32,true);
+    require(renderer.work().decodes==1 && faded.draws.size()==cropped.draws.size(),
+        "Palette-only fade changed occupied source priority bounds");
 }
 void composition() {
     const auto plan=plan_frame(1,true,ScreenUse::world);
@@ -313,5 +383,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();optical_coverage();transparent_priority_crop();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

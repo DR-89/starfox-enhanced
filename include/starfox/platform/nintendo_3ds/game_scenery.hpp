@@ -14,13 +14,13 @@ bool native_landscape_scene(const GamePresentation&) noexcept;
 
 // Reuses the isolated BG2 raster, NOT a final scene image. Background artwork
 // is at infinity; a finite camera plane provides terrain disparity/occlusion.
-// One small immutable mesh and one borrowed texture serve both LCD eyes.
+// One immutable mesh and borrowed horizontal texture strips serve both eyes.
 class GameScenery {
 public:
     PicaFrame prepare(const GamePresentation&,const PicaFrame& bg2);
 private:
     std::vector<PicaVertex> vertices_;
-    std::array<PicaDraw,2> draws_{};
-    std::array<PicaImage,1> image_{};
+    std::vector<PicaDraw> draws_;
+    std::vector<PicaImage> images_;
 };
 } // namespace starfox::platform::nintendo_3ds

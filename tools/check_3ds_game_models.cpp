@@ -31,9 +31,13 @@ std::array<unsigned,5> source_pixel(const PicaFrame& frame,unsigned x,unsigned y
     for(const auto& draw:frame.draws) {
         if(draw.texture==pica_no_texture) continue;
         const auto& image=frame.textures[draw.texture];
-        const auto at=std::size_t(y+8)*image.width+(image.width-256)/2+x;
-        if(image.pixels[at*4+3]) result={image.pixels[at*4],image.pixels[at*4+1],image.pixels[at*4+2],255,
-            image.source_layers.empty()?draw.source_layer:image.source_layers[at]};
+        if(draw.space==PicaSpace::world) continue;
+        const auto& origin=frame.vertices[draw.first].position;
+        const int ix=int(x)+72-int(origin[0]),iy=int(y)+8-int(origin[1]);
+        if(ix<0 || iy<0 || ix>=int(image.width) || iy>=int(image.height)) continue;
+        const auto at=std::size_t(iy)*image.pitch+unsigned(ix)*4;
+        if(image.pixels[at+3]) result={image.pixels[at],image.pixels[at+1],image.pixels[at+2],255,
+            image.source_layers.empty()?draw.source_layer:image.source_layers[std::size_t(iy)*image.layer_pitch+unsigned(ix)]};
     }
     return result;
 }
@@ -88,7 +92,8 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     PicaColourEffects colour;GameLayers cartridge_layers;GameDots dots(session.rom(),session.symbols());
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
-    unsigned panorama_frames{},combined_resident_bytes{};
+    unsigned panorama_frames{},combined_resident_bytes{},optical_frames{},optical_resident_bytes{};
+    std::array<bool,2> optical_checked{};
     std::array<bool,4> panorama_modes_checked{};
     session.advance(0,0);
     const unsigned phases=map=="BOOT"?240:1440;unsigned outdoor_frames=0;
@@ -163,6 +168,33 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         for(const auto& image:ordered_frame.textures) resident+=pica_resident_texture_bytes(image);
         combined_resident_bytes=std::max(combined_resident_bytes,resident);
         require(resident<=pica_texture_budget,"Actual source painter separation exceeded total padded native residency including lower LCD");
+        const unsigned optical_kind=native_landscape_scene(source)?1:0;
+        if((native_landscape_scene(source) || native_panorama_scene(source)) && !optical_checked[optical_kind]) {
+            auto wide=source;auto settings=session.stereo_settings();settings.separation=64;settings.convergence=16;
+            wide.plan=plan_frame(1,true,ScreenUse::world,settings);
+            GameLayers wide_layers;GameModels wide_models(session.rom(),session.symbols());
+            GameDots wide_dots(session.rom(),session.symbols());PicaColourEffects wide_colour;PicaWindow wide_window;PicaComposite wide_composite;
+            const auto phase_context=context;
+            context+=" maximum-optics source layers";
+            const auto layers=wide_layers.prepare(wide);
+            context=phase_context+" maximum-optics geometry/grid";
+            const auto geometry=wide_models.prepare(wide),ink=wide_dots.prepare(wide);
+            const auto tint=wide_colour.prepare(wide.raster->circle,wide.raster->colour_math,wide.raster->brightness,wide.plan);
+            const auto wipe=wide_window.prepare(wide.raster->wipe,wide.plan,WindowCoverage::full_scene);
+            context=phase_context+" maximum-optics complete composition";
+            const auto composed_wide=wide_composite.prepare(wide.plan,
+                std::array{layers.before_models,ink,geometry,layers.after_models,tint,wipe},wide.dashboard,layers.clear);
+            unsigned wide_bytes=512*256*4;
+            for(const auto image:composed_wide.textures) {
+                require(image.width<=1024,"Actual optical source strip exceeds PICA texture dimensions");
+                wide_bytes+=pica_resident_texture_bytes(image);
+            }
+            require(wide_bytes<=pica_texture_budget && composed_wide.plan.separation==64,
+                "Actual wide source composition exceeded residency or silently reduced optics");
+            optical_resident_bytes=std::max(optical_resident_bytes,wide_bytes);++optical_frames;
+            optical_checked[optical_kind]=true;
+            context=phase_context;
+        }
         const auto dot_coverage=dots.coverage();dust_points+=dot_coverage.dust;
         grid_points+=dot_coverage.grid;connected_points+=dot_coverage.connections;
         const auto ordered_work=cartridge_layers.work();
@@ -222,6 +254,8 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
     std::cout<<map<<": dust/grid/connected points "<<dust_points<<" / "<<grid_points<<" / "<<connected_points
         <<"; combined peak "<<combined_vertices<<" vertices / "<<combined_draws<<" draws / "<<combined_textures<<" textures\n";
     std::cout<<map<<": "<<panorama_frames<<" panorama frames; padded texture residency peak "<<combined_resident_bytes<<" bytes including lower LCD\n";
+    std::cout<<map<<": "<<optical_frames<<" actual maximum-menu optical fixtures / "<<optical_resident_bytes
+        <<" padded GPU bytes including lower LCD; not all rolled scenes or whole-flow peak RAM\n";
 }
 }
 int main(int argc,char** argv) try {

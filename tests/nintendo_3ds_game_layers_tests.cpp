@@ -33,10 +33,14 @@ std::pair<std::array<std::uint8_t,4>,unsigned> pixel(const PicaFrame& group,unsi
     for(const auto& draw:group.draws) {
         if(draw.texture==pica_no_texture) continue;
         const auto& image=group.textures[draw.texture];
-        const auto at=std::size_t(y+8)*image.width+(image.width-256)/2+x;
-        if(image.pixels[at*4+3]) result={
-            {image.pixels[at*4],image.pixels[at*4+1],image.pixels[at*4+2],image.pixels[at*4+3]},
-            image.source_layers.empty()?draw.source_layer:image.source_layers[at]};
+        if(draw.space==PicaSpace::world) continue;
+        const auto& origin=group.vertices[draw.first].position;
+        const int ix=int(x)+72-int(origin[0]),iy=int(y)+8-int(origin[1]);
+        if(ix<0 || iy<0 || ix>=int(image.width) || iy>=int(image.height)) continue;
+        const auto at=std::size_t(iy)*image.pitch+unsigned(ix)*4;
+        if(image.pixels[at+3]) result={
+            {image.pixels[at],image.pixels[at+1],image.pixels[at+2],image.pixels[at+3]},
+            image.source_layers.empty()?draw.source_layer:image.source_layers[std::size_t(iy)*image.layer_pitch+unsigned(ix)]};
     }
     return result;
 }
@@ -300,8 +304,61 @@ void panorama_depth() {
     raster->boss_roll=false;auto ppu=std::make_shared<simulation::SnesPpuState>(*raster->ppu);raster->ppu=ppu;ppu->tunnel_scene=true;
     require(!native_panorama_scene(frame),"Corridor artwork was projected at infinity");
 }
+void receiver_eye_coverage() {
+    auto frame=source(simulation::GameFlowState::gameplay,2);
+    auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    scene->background_landscape=true;scene->landscape_grid_height=-145;scene->landscape_atlas_origin=232;
+    frame.current=frame.previous=scene;
+    auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);
+    ppu->bg2_scroll_y=232;ppu->bg2_screen_size=3;ppu->bg2_vertical_offsets_enabled=true;
+    for(unsigned i=0;i<4096;++i) {ppu->vram[0x6400+i*2]=1;ppu->vram[0x6401+i*2]=8;}
+    Canvas lower;
+    for(int roll:{-3,0,3}) for(float convergence:{16.F,32.F,1024.F}) {
+        for(unsigned i=0;i<32;++i) {
+            const unsigned word=0x4000|((232-roll*16+roll*int(i+1))&8191),at=(0x2fa0+i)*2;
+            ppu->vram[at]=std::uint8_t(word);ppu->vram[at+1]=std::uint8_t(word>>8);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=std::make_shared<simulation::SnesPpuState>(*ppu);frame.raster=raster;
+        StereoSettings settings;settings.strength=2;settings.separation=64;settings.convergence=convergence;
+        frame.plan=plan_frame(1,true,ScreenUse::world,settings);GameLayers layers;
+        const auto group=layers.prepare(frame).before_models;validate_pica_frame(group,lower.view());
+        const auto plane=source_landscape_plane(frame);bool finite_started=false;
+        for(const auto& draw:group.draws) {
+            if(draw.space==PicaSpace::world) finite_started=true;
+            else require(!finite_started,"Infinity strip was painted after finite ground");
+        }
+        for(unsigned eye=0;eye<2;++eye) for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;x+=3) {
+            const double px=x+.5,py=y+.5,motion=256.*frame.plan.eyes[eye].x,offset=frame.plan.eyes[eye].projection_offset;
+            const double sx=(px-offset+motion*(py-plane.centre+200*plane.slope)/(145*256))
+                /(1+motion*plane.slope/(145*256));
+            const double reciprocal=(py-plane.centre-plane.slope*(sx-200))/(145*256);
+            if(reciprocal<1./65536 || reciprocal>1) continue;
+            bool covered=false;
+            for(const auto& draw:group.draws) if(draw.space==PicaSpace::world) {
+                const auto& image=group.textures[draw.texture];const double left=(400.-image.pitch/4)/2+draw.texture*1024;
+                for(unsigned i=draw.first;i<draw.first+draw.count;i+=3) {
+                    std::array<std::array<double,2>,3> triangle;
+                    for(unsigned k=0;k<3;++k) {
+                        const auto& v=group.vertices[i+k];const auto& p=v.position;
+                        triangle[k]={200+256.*(p[0]-frame.plan.eyes[eye].x)/p[2]+offset,120-256.*p[1]/p[2]};
+                        require(std::abs(200+256.*p[0]/p[2]-left-v.uv[0]*image.width)<.02,
+                            "Finite strip lost homogeneous source pixel registration");
+                    }
+                    bool positive=true,negative=true;
+                    for(unsigned k=0;k<3;++k) {
+                        const auto a=triangle[k],b=triangle[(k+1)%3];
+                        const double cross=(b[0]-a[0])*(py-a[1])-(b[1]-a[1])*(px-a[0]);
+                        positive&=cross>=-.02;negative&=cross<=.02;
+                    }
+                    covered|=positive || negative;
+                }
+            }
+            require(covered,"Visible finite receiver pixel fell outside both-eye source coverage");
+        }
+    }
+}
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();panorama_depth();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

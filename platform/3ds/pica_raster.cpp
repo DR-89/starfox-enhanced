@@ -2,7 +2,7 @@
 
 namespace starfox::platform::nintendo_3ds {
 namespace {
-constexpr unsigned guard=32,native_height=224;
+constexpr unsigned native_height=224;
 unsigned darkest(const std::array<std::uint16_t,256>& palette) {
     unsigned selected=0,luma=~0U;
     for(unsigned i=0;i<palette.size();++i) {
@@ -55,8 +55,6 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
     if(plan.eye_count!=(plan.stereo?2U:1U)) throw std::invalid_argument("Invalid 3DS PPU eye plan");
     for(unsigned eye=0;eye<plan.eye_count;++eye) {
         static_cast<void>(PicaProjection(plan,eye));
-        if(batch.space==PicaSpace::scenery && std::abs(background_offset(plan,eye))>guard)
-            throw std::invalid_argument("3DS infinite scenery exceeds its native guard coverage");
     }
     for(const auto& pass:batch.passes) {
         if((pass.layer!=PpuLayer::bg1 && pass.layer!=PpuLayer::bg2 && pass.layer!=PpuLayer::bg3 && pass.layer!=PpuLayer::objects)
@@ -71,14 +69,21 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
 }
 }
 PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> source,const PpuBatch& batch,
-    const FramePlan& plan,unsigned brightness,unsigned subtract) {
+    const FramePlan& plan,unsigned brightness,unsigned subtract,unsigned receiver_guard,bool trim_transparent) {
     if(!source) throw std::invalid_argument("Missing immutable 3DS PPU snapshot");
     validate(*source,batch,plan,brightness,subtract);
-    const auto width=batch.expand_horizontal?top_width+guard*2:256U;
-    const int origin=int((width-256)/2);
+    const auto guard=batch.space==PicaSpace::scenery?std::max(pica_scenery_guard(plan),receiver_guard):pica_raster_base_guard;
+    if(guard>(pica_raster_max_width-top_width)/2)
+        throw std::invalid_argument("3DS source raster exceeds horizontal storage");
+    auto width=batch.expand_horizontal?top_width+guard*2:256U;
     bool decode=!indexed_ || batch!=batch_;
     if(!decode && source_!=source)
         for(const auto& pass:batch.passes) if(!same_source(*source_,*source,pass)) {decode=true;break;}
+    // Reuse already sufficient coverage during slider-only presentations.
+    // A genuinely changed source pass can retire excess decoded storage.
+    if(!decode) width=std::max(width,indexed_->width());
+    decode=decode || indexed_->width()!=width;
+    const int origin=int((width-256)/2);
     auto next=std::unique_ptr<render::Framebuffer>{};
     if(decode) {
         next=std::make_unique<render::Framebuffer>(width,native_height);
@@ -113,6 +118,8 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
     const auto& bitmap=decode?*next:*indexed_;
     const bool recolour=decode || palette_!=source->cgram || brightness_!=brightness || subtract_!=subtract;
     auto pixels=std::vector<std::uint8_t>{},layers=std::vector<std::uint8_t>{};bool visible=visible_;
+    auto occupied=occupied_;
+    if(decode) for(auto& bounds:occupied) bounds={pica_raster_strip_width,screen_height,0,0};
     if(decode) layers.assign(std::size_t(width)*screen_height,0);
     if(recolour) {
         pixels.assign(std::size_t(width)*screen_height*4,0);visible=false;
@@ -134,29 +141,45 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
             const auto& rgb=layer==2?background[ink]:normal[ink];
             const auto out=(std::size_t(y)*width+x)*4;
             std::copy(rgb.begin(),rgb.end(),pixels.begin()+out);pixels[out+3]=255;visible=true;
-            if(decode) layers[std::size_t(y)*width+x]=std::uint8_t(layer);
+            if(decode) {
+                layers[std::size_t(y)*width+x]=std::uint8_t(layer);
+                auto& bounds=occupied[x/pica_raster_strip_width];const auto local=x%pica_raster_strip_width;
+                bounds[0]=std::min(bounds[0],local);bounds[1]=std::min(bounds[1],y);
+                bounds[2]=std::max(bounds[2],local+1);bounds[3]=std::max(bounds[3],y+1);
+            }
         }
     }
     // All allocating work precedes publication. Shader/native upload errors
     // are the presenter's responsibility; no failed source decode is published.
     auto next_batch=batch;
-    if(decode) {indexed_=std::move(next);layers_=std::move(layers);++work_.decodes;}
+    if(decode) {indexed_=std::move(next);layers_=std::move(layers);occupied_=occupied;++work_.decodes;}
     if(recolour) {rgba_=std::move(pixels);++work_.colour_updates;}
     batch_=std::move(next_batch);source_=std::move(source);palette_=source_->cgram;
     brightness_=brightness;subtract_=subtract;visible_=visible;
     const float left=(float(top_width)-width)*.5F;
     constexpr std::array<std::array<float,2>,4> uv{{{0,0},{1,0},{1,1},{0,1}}};
-    unsigned vertex=0;
-    for(unsigned corner:{0U,1U,2U,0U,2U,3U})
-        vertices_[vertex++]={{left+uv[corner][0]*width,uv[corner][1]*screen_height,0},{1,1,1,1},uv[corner]};
-    draws_[0]={0,6,0,pica_identity,batch.space,false,false,true};
+    unsigned strips=0;
+    for(unsigned start=0;start<width;start+=pica_raster_strip_width) {
+        auto bounds=std::array<unsigned,4>{0,0,std::min(pica_raster_strip_width,width-start),screen_height};
+        if(trim_transparent && batch.space==PicaSpace::scenery) bounds=occupied_[start/pica_raster_strip_width];
+        if(bounds[0]>=bounds[2] || bounds[1]>=bounds[3]) continue;
+        const unsigned size=bounds[2]-bounds[0],height=bounds[3]-bounds[1];
+        unsigned vertex=strips*6;
+        for(unsigned corner:{0U,1U,2U,0U,2U,3U})
+            vertices_[vertex++]={{left+start+bounds[0]+uv[corner][0]*size,bounds[1]+uv[corner][1]*height,0},{1,1,1,1},uv[corner]};
+        draws_[strips]={strips*6,6,strips,pica_identity,batch.space,false,false,true};
+        const auto offset=std::size_t(bounds[1])*width+start+bounds[0];
+        images_[strips]={std::span<const std::uint8_t>(rgba_).subspan(offset*4),size,height,width*4,4,false,
+            std::span<const std::uint8_t>(layers_).subspan(offset),width};
+        ++strips;
+    }
     // An isolated BG2 group can retain one-hot source ownership when its
     // raster is projected onto a world receiver. Mixed groups still use A8.
     if(!batch.passes.empty() && std::all_of(batch.passes.begin(),batch.passes.end(),
-        [](const auto& pass){return pass.layer==PpuLayer::bg2;})) draws_[0].source_layer=2;
-    images_[0]={rgba_,width,screen_height,width*4,4,false,layers_,width};
-    return {plan,visible_?std::span<const PicaVertex>(vertices_):std::span<const PicaVertex>{},
-        visible_?std::span<const PicaDraw>(draws_):std::span<const PicaDraw>{},
-        visible_?std::span<const PicaImage>(images_):std::span<const PicaImage>{}};
+        [](const auto& pass){return pass.layer==PpuLayer::bg2;}))
+        for(unsigned i=0;i<strips;++i) draws_[i].source_layer=2;
+    return {plan,visible_?std::span<const PicaVertex>(vertices_).first(strips*6):std::span<const PicaVertex>{},
+        visible_?std::span<const PicaDraw>(draws_).first(strips):std::span<const PicaDraw>{},
+        visible_?std::span<const PicaImage>(images_).first(strips):std::span<const PicaImage>{}};
 }
 } // namespace starfox::platform::nintendo_3ds

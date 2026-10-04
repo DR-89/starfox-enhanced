@@ -11,6 +11,26 @@ on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 
 ## Distant background depth and source priorities
 
+Scenery coverage follows both eye projections instead of assuming a fixed
+32-pixel margin. Wide decoded artwork is shared through horizontal GPU texture
+strips of at most 1024 texels; no finished-world image is shifted or copied.
+Outdoor terrain and connected-grid receivers solve finite-depth eye coverage
+as well as the infinity offset. Every infinity strip is submitted before the
+finite receivers, so a later sky strip cannot overwrite nearer ground.
+Unchanged grid/camera artwork reuses sufficient coverage when the slider moves;
+new source camera keys retire excess allocations. Ordinary source-HUD and
+screen-space artwork retains its authored margins and original pixel coverage.
+Priority-isolated panoramas trim only unoccupied source rows/columns from the
+borrowed texture descriptors. Opaque black, source positions, painter order,
+palette fades and all visible artwork remain unchanged; no quality downscale.
+The existing aggregate 4 MiB padded-texture budget still includes the lower
+LCD. Extreme rolled receivers and full-flow peak residency require further
+acceptance; coverage/storage failures are explicit, not hidden optics clamps.
+The actual menu uses strength 1 and separation up to 64. The separate strength-2
+projector stress range passes isolated sky/terrain/grid fixtures, but its
+complete intro composition can still exceed the aggregate texture budget;
+it is not claimed as a supported full-flow configuration.
+
 Open-world/intro Mode 1/2 BG2 artwork now uses infinite scenery disparity,
 separate from screen-space BG3 and OBJ. The adapter splits only contiguous
 coordinate-space groups, keeping the exact low/high background and sprite
@@ -27,6 +47,16 @@ compare native mono pixels, painter priorities, black coverage, fades, eye
 matrices and unchanged source state. Actual cartridge and ARM validation are
 separate gates. Unique EX skyline/orbital spans, extreme optical settings,
 full-flow resource limits and physical original-console acceptance remain.
+
+Checkpoint `dda633a6308d37658787ee865478f5919f4fb6a6` passes 15 root/exact
+host suites and all three actual ARM links in
+[CI 37195278296](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37195278296).
+Root/exact Original/EX scene checks pass 117,342 / 124,516, including 217 intro
+panorama frames per cartridge. Full VM/SPC/PCM checks remain 13,111 each and
+direct audio passes. Combined fixture padded texture peak is 1,835,264 bytes
+including lower LCD, not a whole-flow/peak RAM bound. Downloaded core 3DSX is
+2,193,552 bytes; ARM headers and unchanged 488-byte shader are verified.
+Evidence: `D:/SFE-validation/3ds-panorama-oct4/manifest.json`.
 
 ## Native lower-screen HUD customization
 
@@ -88,6 +118,15 @@ to the native range without changing the restored VM or partial SPC timeline.
 Host cadence/source/PCM checks and the actual ARM link are separate from
 original-console pixel, timing, NDSP, SD and performance acceptance.
 
+Checkpoint `72068db49e11be40d1eefcdae835d8beb272bd2b` passes 15 host
+suites and all three ARM links in
+[CI 37194119246](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37194119246).
+Exact Original/EX checks pass 13,111 each (root 13,054), including five-second
+BOOT/stage source/PCM comparisons at 30/60 Hz. The full 80-row shared menu
+label coverage is checked without private assets. Core 3DSX is 2,182,208
+bytes, not peak memory. This is still a bring-up diagnostic, not a playable
+release or original-console frame-rate guarantee.
+
 ## Full game states and native quick menu
 
 Physical **Select + Y** opens a paused native quick menu: Resume, the actual
@@ -140,8 +179,13 @@ shows separate P2 reserve/bomb labels; P2 view selects those counts rather than
 relabeling P1 values. Inactive P2 and non-game/menu routing leave them hidden.
 Both count changes and view changes invalidate the owned dashboard cache;
 unchanged counters do not redraw. Capturing them does not mutate VM/open-bus
-state. Host cartridge/status/pixel checks cover the source values and archives;
-this addition still requires its own exact ARM checkpoint and console acceptance.
+state. Exact checkpoint `77715632220963c6c69369a136b8004b2e312dd3` passes
+15 host suites and all three ARM links in
+[CI 37192771762](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37192771762).
+Root/exact cartridge HUD checks pass 154,787/309,543; full session VM/SPC/PCM
+checks remain 6,358 each. The core 3DSX is 2,179,300 bytes, not peak RAM.
+Natural two-player flow, full upper-screen HUD partition and console acceptance
+are still required; this is lower-dashboard/source-counter acceptance only.
 
 ## Cartridge dust and connected ground grid
 
@@ -174,6 +218,17 @@ dots without VM/SPC mutation. Those fixtures do not naturally enable connected
 lines; connected-line pixel comparisons use synthetic public snapshots. Native
 ARM cross-link and original-console pixel/performance acceptance are separate
 gates; a host pass is not a playable-release or whole-goal completion claim.
+
+[Dust/grid CI 37189934817](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37189934817)
+at `eda20477fbbd8dd26a4fa6481c702e54e4775198` now passes all twelve host
+suites and all three actual ARM links. Downloaded ELF32 ARM/3DSX headers pass;
+core 3DSX is 2,005,008 bytes, and the shader remains the accepted 488 bytes.
+Static text/data/BSS are 1,943,516 / 9,872 / 33,604, not peak runtime memory.
+Exact Original/EX session parity remains 5,896 checks each. Both cartridge
+model/dust suites pass (57,663/65,058 across the pair), through 404 outdoor
+phases each. Root PC EXE/index and all source VM/SPC states remain unchanged.
+Whole-flow/console pixel/optics/memory/performance and the remaining port work
+below are still required. Evidence: `D:/SFE-validation/3ds-dots-oct4/manifest.json`.
 
 ## Actual pre-game menu integration (ARM-linked, October 4)
 
@@ -812,7 +867,9 @@ remote CI run, release publication or console installation was performed.
 2. Promote the linked `GameSession`/SD/NDSP diagnostic into the actual console
    game entry. Real pre-game menu, experience/preview/Start handoffs, settings,
    EX SRAM, mapped reset and controller remapping are now connected; finish
-   native HUD customization and appropriate FPS controls. Full VM/SPC state slots
+   native HUD partition and physical acceptance of the connected touch/button
+   layout editor. The 30/60 output controls and measured FPS counter
+   are connected. Full VM/SPC state slots
    and runtime menu access now have host coverage; verify their native input,
    SD/NDSP handoff/failure paths and allocation peaks on hardware.
    Preserve the full source menu/timing and clear unsupported states for

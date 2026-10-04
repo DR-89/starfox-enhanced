@@ -1,6 +1,7 @@
 #pragma once
 #include "starfox/platform/nintendo_3ds/game_presentation.hpp"
 #include "starfox/platform/nintendo_3ds/pica_frame.hpp"
+#include "starfox/platform/nintendo_3ds/raster_coverage.hpp"
 #include "starfox/render/palette.hpp"
 
 namespace starfox::platform::nintendo_3ds {
@@ -20,8 +21,9 @@ public:
 private:
     std::array<std::uint8_t,64> star_colours_{};
     std::vector<PicaVertex> vertices_;
-    std::array<PicaDraw,2> draws_{};
-    std::array<PicaImage,1> image_{};
+    std::array<PicaDraw,pica_raster_max_strips*2> draws_{};
+    std::array<PicaImage,pica_raster_max_strips> image_{};
+    unsigned ink_width_{};
     std::vector<std::uint8_t> ink_,rgba_;
     std::optional<std::array<std::int16_t,14>> ink_key_;
     std::optional<std::array<std::uint8_t,4>> ink_colour_;

@@ -4,7 +4,6 @@
 
 namespace starfox::platform::nintendo_3ds {
 namespace {
-constexpr unsigned ink_width=top_width+64;
 double word_difference(double value,double origin) {
     auto d=std::fmod(value-origin,65536.);
     if(d>32767.) d-=65536.;else if(d< -32768.) d+=65536.;
@@ -101,33 +100,48 @@ PicaFrame GameDots::prepare(const GamePresentation& source) {
         }
     }
     unsigned draw_count=next.empty()?0:1,texture_count=0;
-    std::array<PicaDraw,2> draws{};
+    std::array<PicaDraw,pica_raster_max_strips*2> draws{};
     if(draw_count) draws[0].count=unsigned(next.size());
     std::vector<std::uint8_t> next_ink,next_rgba;
     std::optional<std::array<std::int16_t,14>> next_key;
     std::optional<std::array<std::uint8_t,4>> next_colour;
+    unsigned ink_width=0;
     if(!excluded(scene.flow) && scene.dots_mode>0 && scene.grid_lines) {
-        for(unsigned eye=0;eye<source.plan.eye_count;++eye)
-            if(std::abs(background_offset(source.plan,eye))>32) throw std::invalid_argument("Native connected grid exceeds source guard coverage");
+        const auto lattice=render::source_grid_lattice(camera,matrix);
+        const auto& a=lattice.x_step;const auto& b=lattice.z_step;
+        const std::array<double,3> n{double(a[1])*b[2]-double(a[2])*b[1],double(a[2])*b[0]-double(a[0])*b[2],double(a[0])*b[1]-double(a[1])*b[0]};
+        const auto d=n[0]*lattice.origin[0]+n[1]*lattice.origin[1]+n[2]*lattice.origin[2];
+        const auto sign=d<0?-1.:1.;const auto distance=std::abs(d);
+        const std::array<double,3> denominator{sign*n[0]/source.plan.focal_x,sign*n[1]/source.plan.focal_y,
+            sign*(n[2]-n[0]*200/source.plan.focal_x-n[1]*120/source.plan.focal_y)};
+        const unsigned guard=distance?pica_receiver_guard(source.plan,
+            {denominator[0]/distance,denominator[1]/distance,denominator[2]/distance}):pica_scenery_guard(source.plan);
+        ink_width=top_width+guard*2;
         std::array<std::int16_t,14> key{};
         key[0]=simulation::wrap16(std::int64_t(std::trunc(camera.x)));
         key[1]=simulation::wrap16(std::int64_t(std::trunc(camera.y)));
         key[2]=simulation::wrap16(std::int64_t(std::trunc(camera.z)));
         std::copy(matrix.begin(),matrix.end(),key.begin()+3);
         std::copy(scene.grid_line_start.begin(),scene.grid_line_start.end(),key.begin()+12);
+        // Slider-only changes reuse a previously sufficient decoded field.
+        // A new source camera/key retires extra coverage instead of retaining
+        // the largest allocation for an entire stage.
+        if(ink_key_ && *ink_key_==key) ink_width=std::max(ink_width,ink_width_);
+        const unsigned raster_guard=(ink_width-top_width)/2;
+        const unsigned canonical_left=(ink_width-224)/2;
         const auto canonical=render::project_source_grid(camera,matrix,224,192);
         count.connections=unsigned(canonical.count);
-        const bool changed=!ink_key_ || *ink_key_!=key;
+        const bool changed=!ink_key_ || *ink_key_!=key || ink_width_!=ink_width;
         if(changed) {
             render::Framebuffer centre(224,192),expanded(ink_width,screen_height);
             render::DustRenderer::draw_grid_lines_frame({canonical,scene.grid_line_start},centre);
             const auto wide=render::project_source_grid(camera,matrix,ink_width,screen_height);
-            render::DustRenderer::draw_grid_lines_frame({wide,{std::int16_t(scene.grid_line_start[0]+120),
+            render::DustRenderer::draw_grid_lines_frame({wide,{simulation::add16(scene.grid_line_start[0],std::int16_t(canonical_left)),
                 std::int16_t(scene.grid_line_start[1]+24)}},expanded);
             // Preserve the exact authored central 224x192 sequence. Extra LCD
             // guard ink never changes the source's canonical carried endpoint.
             next_ink=expanded.pixels();
-            for(unsigned y=0;y<192;++y) std::copy_n(centre.pixels().begin()+y*224,224,next_ink.begin()+(y+24)*ink_width+120);
+            for(unsigned y=0;y<192;++y) std::copy_n(centre.pixels().begin()+y*224,224,next_ink.begin()+(y+24)*ink_width+canonical_left);
             next_key=key;
         }
         const auto colour=palette[126];
@@ -139,49 +153,53 @@ PicaFrame GameDots::prepare(const GamePresentation& source) {
             }
             next_colour=rgba_colour;++count.ink_updates;
         }
-        const auto lattice=render::source_grid_lattice(camera,matrix);
-        const auto& a=lattice.x_step;const auto& b=lattice.z_step;
-        const std::array<double,3> n{double(a[1])*b[2]-double(a[2])*b[1],double(a[2])*b[0]-double(a[0])*b[2],double(a[0])*b[1]-double(a[1])*b[0]};
-        const auto d=n[0]*lattice.origin[0]+n[1]*lattice.origin[1]+n[2]*lattice.origin[2];
-        const auto sign=d<0?-1.:1.;const auto distance=std::abs(d);
-        const std::array<double,3> denominator{sign*n[0]/source.plan.focal_x,sign*n[1]/source.plan.focal_y,
-            sign*(n[2]-n[0]*200/source.plan.focal_x-n[1]*120/source.plan.focal_y)};
-        const std::vector<Pixel> rectangle{{-32,0},{432,0},{432,240},{-32,240}};
-        const auto triangle=[&](const std::vector<Pixel>& polygon,bool finite) {
+        const auto triangle=[&](const std::vector<Pixel>& polygon,bool finite,double left,unsigned width) {
             for(unsigned i=1;i+1<polygon.size();++i) for(unsigned corner:{0U,i,i+1}) {
                 const auto p=polygon[corner];
                 const auto q=denominator[0]*p[0]+denominator[1]*p[1]+denominator[2];
                 const auto z=finite?distance/q:1.;
                 next.push_back({finite?Point3{float((p[0]-200)*z/source.plan.focal_x),float((120-p[1])*z/source.plan.focal_y),float(z)}
-                    :Point3{float(p[0]),float(p[1]),0},{1,1,1,1},{float((p[0]+32)/ink_width),float(p[1]/screen_height)}});
+                    :Point3{float(p[0]),float(p[1]),0},{1,1,1,1},{float((p[0]-left)/width),float(p[1]/screen_height)}});
             }
         };
         // The authored carry can include ink outside the finite ground frustum.
         // Keep that original far-field ink at infinity (not HUD depth), while
         // every physically visible receiver pixel gets real plane depth.
-        auto far=distance?clip(rectangle,denominator,distance/source.plan.far_plane,false):rectangle;
-        const unsigned far_first=unsigned(next.size());triangle(far,false);
-        if(next.size()>far_first) {
-            auto& draw=draws[draw_count++];draw.first=far_first;draw.count=unsigned(next.size())-far_first;
-            draw.texture=0;draw.space=PicaSpace::scenery;draw.depth_test=draw.depth_write=false;draw.alpha_blend=true;
+        for(unsigned finite=0;finite<2;++finite) for(unsigned start=0;start<ink_width;start+=pica_raster_strip_width) {
+            if(finite && !distance) continue;
+            const auto width=std::min(pica_raster_strip_width,ink_width-start);
+            const double left=double(start)-raster_guard,right=left+width;
+            const std::vector<Pixel> rectangle{{left,0},{right,0},{right,240},{left,240}};
+            const auto polygon=finite?clip(clip(rectangle,denominator,distance/source.plan.far_plane,true),denominator,distance/source.plan.near_plane,false)
+                :distance?clip(rectangle,denominator,distance/source.plan.far_plane,false):rectangle;
+            const unsigned first=unsigned(next.size());triangle(polygon,bool(finite),left,width);
+            if(next.size()>first) {
+                auto& draw=draws[draw_count++];draw.first=first;draw.count=unsigned(next.size())-first;
+                draw.texture=start/pica_raster_strip_width;draw.alpha_blend=true;
+                if(finite) draw.projected_uv=true;
+                else {draw.space=PicaSpace::scenery;draw.depth_test=draw.depth_write=false;}
+            }
         }
-        if(distance) {
-            const auto ground=clip(clip(rectangle,denominator,distance/source.plan.far_plane,true),denominator,distance/source.plan.near_plane,false);
-            const unsigned first=unsigned(next.size());triangle(ground,true);
-            if(next.size()>first) {auto& draw=draws[draw_count++];draw.first=first;draw.count=unsigned(next.size())-first;
-                draw.texture=0;draw.alpha_blend=true;draw.projected_uv=true;}
-        }
-        texture_count=1;
+        texture_count=(ink_width+pica_raster_strip_width-1)/pica_raster_strip_width;
     }
     if(next.size()>pica_vertex_limit) throw std::length_error("Native dust/grid exceeds geometry budget");
+    std::array<PicaImage,pica_raster_max_strips> images{};
+    if(texture_count) {
+        const auto pixels=std::span<const std::uint8_t>(next_colour?next_rgba:rgba_);
+        for(unsigned i=0;i<texture_count;++i) {
+            const unsigned start=i*pica_raster_strip_width,width=std::min(pica_raster_strip_width,ink_width-start);
+            images[i]={pixels.subspan(start*4),width,screen_height,ink_width*4,4};
+        }
+    }
+    validate_pica_group({source.plan,next,std::span(draws).first(draw_count),std::span(images).first(texture_count)},512*256*4);
     vertices_=std::move(next);draws_=draws;coverage_=count;
     if(next_key) {ink_=std::move(next_ink);ink_key_=next_key;}
     if(next_colour) {rgba_=std::move(next_rgba);ink_colour_=next_colour;}
-    if(texture_count) image_[0]={rgba_,ink_width,screen_height,ink_width*4,4};
+    if(texture_count) {image_=images;ink_width_=ink_width;}
     else {
         // Do not retain the connected-grid image throughout an entire space
         // stage. Empty frames also retire its borrowed upload and cache key.
-        image_[0]={};ink_key_.reset();ink_colour_.reset();
+        image_={};ink_width_=0;ink_key_.reset();ink_colour_.reset();
         std::vector<std::uint8_t>().swap(ink_);std::vector<std::uint8_t>().swap(rgba_);
     }
     return {source.plan,vertices_,std::span(draws_).first(draw_count),std::span(image_).first(texture_count),{0,0,0}};
