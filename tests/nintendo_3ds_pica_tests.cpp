@@ -11,7 +11,7 @@ template<class F> void rejects(F action,const char* message) {
     require(rejected,message);
 }
 void texture_upload() {
-    // Independent Morton lookup, including vertical inversion and ABGR order.
+    // Independent Morton lookup, including source row order and ABGR bytes.
     constexpr unsigned spread[]{0,1,4,5,16,17,20,21};
     for(unsigned channels:{3U,4U}) for(unsigned width:{1U,7U,8U,9U,31U,64U})
         for(unsigned height:{1U,7U,8U,17U,32U}) {
@@ -27,7 +27,7 @@ void texture_upload() {
             pack_pica_texture(image,std::span(packed).subspan(1,layout.bytes));
             require(packed.front()==0xDD && packed.back()==0xDD,"Upload must not cross storage boundary");
             for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
-                const unsigned texture_y=layout.height-1-y;
+                const unsigned texture_y=y;
                 const unsigned tile=(texture_y/8)*(layout.width/8)+x/8;
                 const unsigned offset=1+4*(tile*64+spread[x%8]+2*spread[texture_y%8]);
                 const unsigned from=std::min(y,height-1)*pitch+std::min(x,width-1)*channels;
@@ -38,7 +38,7 @@ void texture_upload() {
             if(std::has_single_bit(width) && std::has_single_bit(height)) {
                 pack_pica_texture(repeat,std::span(packed).subspan(1,layout.bytes));
                 for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
-                    const unsigned ty=layout.height-1-y;
+                    const unsigned ty=y;
                     const unsigned offset=1+4*(((ty/8)*(layout.width/8)+x/8)*64+spread[x%8]+2*spread[ty%8]);
                     require(packed[offset+3]==source[(y%height)*pitch+(x%width)*channels],"Repeat padding wraps source artwork");
                 }
@@ -243,15 +243,15 @@ void layer_upload() {
         require(pack_pica_layers(image,std::span(packed).subspan(1,packed.size()-2))==mask,"Source layer population mask incorrect");
         require(packed.front()==0xCC && packed.back()==0xCC,"Layer upload crossed allocated storage");
         for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
-            const auto ty=layout.height-1-y;
+            const auto ty=y;
             const auto offset=1+((ty/8)*(layout.width/8)+x/8)*64+spread[x%8]+2*spread[ty%8];
-            require(packed[offset]==layers[std::min(y,height-1)*layer_pitch+std::min(x,width-1)],"A8 Morton/vertical flip/row stride/edge padding differs from colour texture");
+            require(packed[offset]==layers[std::min(y,height-1)*layer_pitch+std::min(x,width-1)],"A8 Morton/source row order/row stride/edge padding differs from colour texture");
         }
         if(std::has_single_bit(width) && std::has_single_bit(height)) {
             auto repeated=image;repeated.repeat=true;
             pack_pica_layers(repeated,std::span(packed).subspan(1,packed.size()-2));
             for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
-                const auto ty=layout.height-1-y;
+                const auto ty=y;
                 const auto offset=1+((ty/8)*(layout.width/8)+x/8)*64+spread[x%8]+2*spread[ty%8];
                 require(packed[offset]==layers[(y%height)*layer_pitch+(x%width)],"Repeated A8 guards disagree with repeated RGBA artwork");
             }
@@ -291,9 +291,42 @@ void layer_upload() {
     frame.textures=images;
     rejects([&]{validate_pica_frame(frame,dashboard.view());},"Combined 3DS resident budget omitted A8 provenance bytes");
 }
+void sampled_texture_orientation() {
+    // Independent complete sampling path, not just a byte-packing assertion:
+    // logical top-left UV -> shader 1-V with padding -> PICA bottom-up sampler
+    // -> Morton storage. Asymmetric colour/layer rows catch a double flip.
+    constexpr unsigned spread[]{0,1,4,5,16,17,20,21};
+    for(unsigned width:{13U,320U,400U}) for(unsigned height:{9U,17U,240U}) {
+        std::vector<std::uint8_t> rgba(width*height*4),layers(width*height);
+        for(unsigned y=0;y<height;++y) for(unsigned x=0;x<width;++x) {
+            const auto index=std::size_t(y)*width+x;
+            rgba[index*4]=std::uint8_t(x);rgba[index*4+1]=std::uint8_t(y);
+            rgba[index*4+2]=std::uint8_t(x+3*y);rgba[index*4+3]=255;
+            layers[index]=std::uint8_t(1U<<((x+2*y)%6));
+        }
+        const PicaImage image{rgba,width,height,width*4,4,false,layers,width};
+        const auto layout=pica_texture_layout(image);
+        std::vector<std::uint8_t> packed(layout.bytes),packed_layers(layout.bytes/4);
+        pack_pica_texture(image,packed);pack_pica_layers(image,packed_layers);
+        for(unsigned y=0;y<height;++y) for(unsigned x=0;x<width;++x) {
+            const double u=(x+.5)/width,v=(y+.5)/height;
+            const double shader_u=u*width/layout.width,shader_v=1-v*height/layout.height;
+            const auto sample_s=unsigned(std::floor(shader_u*layout.width));
+            const auto sample_t=unsigned(std::floor(shader_v*layout.height));
+            const unsigned stored_y=layout.height-1-sample_t;
+            const auto texel=((stored_y/8)*(layout.width/8)+sample_s/8)*64
+                +spread[sample_s%8]+2*spread[stored_y%8];
+            const auto source=std::size_t(y)*width+x;
+            for(unsigned channel=0;channel<4;++channel)
+                require(packed[texel*4+3-channel]==rgba[source*4+channel],
+                    "Actual shader/PICA sampling flips or offsets logical artwork");
+            require(packed_layers[texel]==layers[source],"Sampled colour and ownership rows disagree");
+        }
+    }
+}
 }
 int main() try {
-    texture_upload();texture_residency();projection_and_draws();layer_upload();
+    texture_upload();texture_residency();projection_and_draws();layer_upload();sampled_texture_orientation();
     require(pica_uv_mode(false,false)==std::array<float,4>{1,0,0,0},"Ordinary texture projection changed");
     require(pica_uv_mode(true,false)==std::array<float,4>{0,1,0,0},"LCD parity texture lost its homogeneous Q");
     require(pica_uv_mode(false,true)==std::array<float,4>{0,0,1,0},"Source terrain mode zeroed ordinary UVs before projection");

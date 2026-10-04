@@ -56,8 +56,21 @@ the texture type on Citro3D's secondary units. R8 is not a working tester candid
 The next source follow-up binds the existing resident 2D dashboard while the
 secondary TEV stage is inactive, then selects the actual ownership texture when
 needed. No dummy allocation or sampled-colour substitution is added; stale mask
-pointers are replaced even after texture layout changes. Fresh ARM/runtime and
-physical device acceptance of that follow-up remain pending.
+pointers are replaced even after texture layout changes. The R9 ARM build passes
+CI and its isolated native run reaches the menu and title/intro without either
+earlier memory fault. An actual GPU-window capture then exposed vertically
+flipped uploaded artwork on both LCDs; R9 is not a finished tester handoff.
+
+## Uploaded artwork orientation
+
+The next source follow-up stores colour and A8 ownership rows in the same
+top-left order. The shader already converts logical V to `1-V`, and PICA's
+sampler addresses texture rows bottom-up; reversing upload rows too caused the
+observed double flip. Projection, physical eye separation and source coordinates
+are unchanged. Regression tests independently follow logical pixel centres
+through padded shader UVs, sampler inversion and Morton storage, checking RGBA
+and per-pixel ownership together, including 320/400 x 240 LCD artwork.
+Fresh ARM/runtime and physical device acceptance of this follow-up remain pending.
 
 ## Signed tunnel entrance/exit faces
 

@@ -117,7 +117,10 @@ inline void pack_pica_texture(PicaImage source,std::span<std::uint8_t> destinati
         const auto sx=source.repeat?x%source.width:std::min(x,source.width-1);
         const auto sy=source.repeat?y%source.height:std::min(y,source.height-1);
         const auto from=std::size_t(sy)*source.pitch+sx*source.channels;
-        const auto to=pica_texel_offset(x,layout.height-1-y,layout.width);
+        // The shader converts top-left V to 1-V, and PICA's texture sampler
+        // then addresses rows from bottom to top. Store source rows directly;
+        // reversing them here as well flips uploaded artwork on both LCDs.
+        const auto to=pica_texel_offset(x,y,layout.width);
         destination[to]=source.channels==4?source.pixels[from+3]:255; // ABGR bytes.
         destination[to+1]=source.pixels[from+2];destination[to+2]=source.pixels[from+1];destination[to+3]=source.pixels[from];
     }
@@ -152,7 +155,7 @@ inline unsigned pack_pica_layers(PicaImage source,std::span<std::uint8_t> destin
     for(unsigned y=0;y<layout.height;++y) for(unsigned x=0;x<layout.width;++x) {
         const unsigned sx=source.repeat?x%source.width:std::min(x,source.width-1);
         const unsigned sy=source.repeat?y%source.height:std::min(y,source.height-1);
-        destination[pica_texel_offset(x,layout.height-1-y,layout.width)/4]=source.source_layers[std::size_t(sy)*source.layer_pitch+sx];
+        destination[pica_texel_offset(x,y,layout.width)/4]=source.source_layers[std::size_t(sy)*source.layer_pitch+sx];
     }
     return classes;
 }
