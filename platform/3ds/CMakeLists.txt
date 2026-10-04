@@ -167,5 +167,8 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
         add_test(NAME starfox_3ds_game_state_tests COMMAND starfox_3ds_game_state_tests)
         add_executable(starfox_3ds_game_models_check ../../tools/check_3ds_game_models.cpp)
         target_link_libraries(starfox_3ds_game_models_check PRIVATE starfox_3ds_cartridge_core)
+        add_test(NAME starfox_3ds_game_models_cli
+            COMMAND "${CMAKE_COMMAND}" "-DCHECKER=$<TARGET_FILE:starfox_3ds_game_models_check>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/nintendo_3ds_game_models_cli.cmake")
     endif()
 endif()

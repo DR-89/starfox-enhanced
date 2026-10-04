@@ -7,6 +7,11 @@
 
 namespace starfox::platform::nintendo_3ds {
 enum class PpuLayer {bg1,bg2,bg3,objects};
+struct PpuUniqueSkyHalf {
+    bool right{};
+    unsigned rows{}; // Atlas rows above the receiver; ground still wraps.
+    bool operator==(const PpuUniqueSkyHalf&) const=default;
+};
 struct PpuPass {
     PpuLayer layer{PpuLayer::bg2};
     int priority{-1}; // -1 all; BG 0 low / 1 high; OBJ 0..3.
@@ -14,6 +19,7 @@ struct PpuPass {
     bool extend_horizontal{true},wrap_horizontal{true},transparent_black{},mosaic_inset{};
     unsigned guard_inset{},single_occurrence_top_rows{};
     render::SpriteSelection sprites{render::SpriteSelection::all};
+    std::optional<PpuUniqueSkyHalf> single_occurrence_sky_half{};
     bool operator==(const PpuPass&) const=default;
 };
 struct PpuBatch {

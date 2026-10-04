@@ -41,6 +41,78 @@ std::array<unsigned,4> pixel(const PicaImage& image,unsigned x,unsigned y) {
     const auto offset=std::size_t(y)*image.pitch+x*4;
     return {image.pixels[offset],image.pixels[offset+1],image.pixels[offset+2],image.pixels[offset+3]};
 }
+void unique_sky_halves() {
+    for(bool right:{false,true}) for(int scroll:{0,255,-1}) {
+        auto ppu=std::make_shared<simulation::SnesPpuState>();
+        ppu->background_mode=2;ppu->main_screen=2;ppu->bg2_screen_size=3;
+        ppu->bg2_screen_base=0x2000;ppu->bg2_character_base=0;
+        for(unsigned ink=1;ink<=4;++ink) tile(*ppu,0,ink,ink);
+        ppu->cgram[1]=0; // The unique artwork includes opaque black.
+        ppu->cgram[2]=31<<5;ppu->cgram[3]=31<<10;ppu->cgram[4]=31;
+        for(unsigned y=0;y<64;++y) for(unsigned x=0;x<64;++x) {
+            const auto entry=((x/32)+(y/32)*2)*1024+(y%32)*32+x%32;
+            const bool selected=(x>=32)==right;
+            ppu->vram[0x4000+entry*2]=std::uint8_t(y<44?(selected?1:2):(x<32?3:4));
+        }
+        ppu->bg2_scroll_x=std::int16_t(scroll);ppu->bg2_scroll_y=240;
+        const auto unchanged=*ppu;
+        auto settings=StereoSettings{};settings.separation=64;settings.convergence=16;
+        const auto plan=plan_frame(1,true,ScreenUse::world,settings);
+        PpuBatch batch;batch.space=PicaSpace::scenery;batch.expand_horizontal=true;
+        batch.passes.push_back({PpuLayer::bg2});
+        batch.passes[0].scroll=std::array<std::int16_t,2>{std::int16_t(scroll),240};
+        batch.passes[0].single_occurrence_sky_half=PpuUniqueSkyHalf{right,352};
+        PicaRaster renderer;const auto frame=renderer.prepare(ppu,batch,plan);
+        const auto guard=pica_scenery_guard(plan);
+        unsigned removed{},native_black{},ground{};
+        for(unsigned strip=0;strip<frame.textures.size();++strip) {
+            const auto& image=frame.textures[strip];
+            const int lcd_x=int(frame.vertices[strip*6].position[0]);
+            for(unsigned y=0;y<224;++y) for(unsigned x=0;x<image.width;++x) {
+                const int logical=lcd_x+int(x)-72;
+                int sx=(logical+scroll)%512;if(sx<0) sx+=512;
+                const unsigned sy=(240+y)%512;
+                const bool selected=(sx>=256)==right;
+                unsigned ink=sy<352?(selected?1:2):(sx<256?3:4);
+                // Independent source-coordinate oracle: retain the native
+                // window and one complete authored occurrence. Only wrapped
+                // copies of its unique sky half use the other, repeatable half.
+                if((logical<0 || logical>=256) && (logical+scroll<0 || logical+scroll>=512)
+                    && sy<352 && selected) {ink=2;++removed;}
+                if(logical>=0 && logical<256 && ink==1) ++native_black;
+                if(sy>=352) ++ground;
+                const auto word=ppu->cgram[ink];
+                const auto expand=[](unsigned five){return (five<<3)|(five>>2);};
+                require(pixel(image,x,y+8)==std::array<unsigned,4>{expand(word&31),expand((word>>5)&31),expand((word>>10)&31),255},
+                    "Wide native landscape duplicated unique sky artwork or changed canonical/ground pixels");
+                require(image.source_layers[std::size_t(y+8)*image.layer_pitch+x]==2,
+                    "Unique-sky replacement changed source painter ownership");
+            }
+        }
+        require(removed>0 && ground>0 && guard>=512,"Unique-half fixture missed the repeated sky or finite ground band");
+        if((scroll==0 && !right) || (scroll==255 && right)) require(native_black>0,"Opaque unique native ink was not exercised");
+        const auto work=renderer.work();
+        for(float slider:{0.F,.5F,1.F}) {
+            renderer.prepare(ppu,batch,plan_frame(slider,true,ScreenUse::world,settings));
+            require(renderer.work().decodes==work.decodes && renderer.work().colour_updates==work.colour_updates,
+                "Slider reran single-occurrence sky decoding");
+        }
+        auto bad=batch;bad.passes[0].single_occurrence_sky_half->rows=513;
+        rejected([&]{renderer.prepare(ppu,bad,plan);},"Out-of-atlas unique-half rows accepted");
+        bad=batch;bad.passes[0].layer=PpuLayer::bg1;
+        rejected([&]{renderer.prepare(ppu,bad,plan);},"Unique BG2 policy incorrectly applied to another layer");
+        auto faded=std::make_shared<simulation::SnesPpuState>(*ppu);faded->cgram[2]=31<<10;
+        const auto fade=renderer.prepare(faded,batch,plan,7,3);
+        require(renderer.work().decodes==work.decodes && renderer.work().colour_updates==work.colour_updates+1,
+            "Unique-sky palette fade redecoded source artwork");
+        require(pixel(fade.textures.front(),0,8)==std::array<unsigned,4>{0,0,107,255},
+            "Unique-sky replacement failed to follow native palette/subtract/brightness changes");
+        auto changed=batch;changed.passes[0].single_occurrence_sky_half->right=!right;
+        renderer.prepare(faded,changed,plan,7,3);
+        require(renderer.work().decodes==work.decodes+1,"Unique-half policy change reused stale cached source indices");
+        require(*ppu==unchanged,"Unique-half source presentation modified cartridge PPU state");
+    }
+}
 void raster() {
     const auto plan=plan_frame(1,true,ScreenUse::world);
     auto ppu=source();const auto original=*ppu;
@@ -383,5 +455,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();optical_coverage();transparent_priority_crop();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

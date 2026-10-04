@@ -60,6 +60,9 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
         if((pass.layer!=PpuLayer::bg1 && pass.layer!=PpuLayer::bg2 && pass.layer!=PpuLayer::bg3 && pass.layer!=PpuLayer::objects)
             || pass.priority< -1 || pass.priority>(pass.layer==PpuLayer::objects?3:1)
             || pass.guard_inset>128 || pass.single_occurrence_top_rows>512
+            || (pass.single_occurrence_sky_half && (pass.layer!=PpuLayer::bg2 || ppu.background_mode!=2
+                || !batch.expand_horizontal || !pass.extend_horizontal || !pass.single_occurrence_sky_half->rows
+                || pass.single_occurrence_sky_half->rows>512))
             || (batch.space==PicaSpace::scenery && pass.layer==PpuLayer::objects)
             || (pass.sprites!=render::SpriteSelection::all && pass.sprites!=render::SpriteSelection::world_only
                 && pass.sprites!=render::SpriteSelection::configurable_hud_only)
@@ -104,8 +107,17 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
                     pass.guard_inset,pass.transparent_black,pass.mosaic_inset);break;
             case PpuLayer::bg2: {
                 const auto scroll=pass.scroll.value_or(std::array{source->bg2_scroll_x,source->bg2_scroll_y});
+                render::BackgroundUniqueRegion region{};
+                std::span<const render::BackgroundUniqueRegion> unique;
+                if(pass.single_occurrence_sky_half) {
+                    const int half=int(((source->bg2_screen_size&1)?64U:32U)*(source->bg2_tile_size_16?16U:8U)/2);
+                    region={pass.single_occurrence_sky_half->right?half:0,0,
+                        pass.single_occurrence_sky_half->right?half*2:half,int(pass.single_occurrence_sky_half->rows),
+                        0,255,0,half};
+                    unique={&region,1};
+                }
                 backgrounds.draw_bg2(*source,scroll[0],scroll[1],*next,priority,origin,extend,
-                    pass.wrap_horizontal,pass.transparent_black,pass.single_occurrence_top_rows);break;
+                    pass.wrap_horizontal,pass.transparent_black,pass.single_occurrence_top_rows,unique);break;
             }
             case PpuLayer::bg3: backgrounds.draw_bg3(*source,*next,priority,origin,extend);break;
             case PpuLayer::objects:

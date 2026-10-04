@@ -64,7 +64,16 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     const auto pass=[&](PpuLayer layer,int priority,bool horizontal) {
         PpuPass value;value.layer=layer;value.priority=priority;value.extend_horizontal=horizontal;
         if(layer==PpuLayer::objects) value.sprites=frame.sprites;
-        if(layer==PpuLayer::bg2) {value.scroll=scene.background_scroll_override;value.single_occurrence_top_rows=scene.background_unique_top_rows;}
+        if(layer==PpuLayer::bg2) {
+            value.scroll=scene.background_scroll_override;value.single_occurrence_top_rows=scene.background_unique_top_rows;
+            if(native_landscape_scene(frame)
+                && (scene.background_landscape_unique_half || scene.background_landscape_unique_right_half)) {
+                if(scene.background_landscape_unique_half && scene.background_landscape_unique_right_half)
+                    throw std::invalid_argument("Ambiguous 3DS unique landscape half");
+                value.single_occurrence_sky_half=PpuUniqueSkyHalf{scene.background_landscape_unique_right_half,
+                    unsigned(scene.landscape_atlas_origin)+112};
+            }
+        }
         return value;
     };
     const auto bg2=[&](int priority,bool horizontal,bool wrap=true) {

@@ -215,6 +215,34 @@ void landscape_depth() {
     auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
     require(!native_landscape_scene(frame),"Tunnel artwork was misclassified as outdoor ground");
 }
+void unique_landscape_policy() {
+    using enum simulation::GameFlowState;
+    for(auto flow:{gameplay,training,intro,title,ex_pregame_menu,controls_type}) for(bool right:{false,true}) {
+        auto frame=source(flow,2);auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->background_landscape=true;scene->landscape_grid_height=-145;scene->landscape_atlas_origin=248;
+        scene->background_landscape_unique_half=!right;scene->background_landscape_unique_right_half=right;
+        frame.current=frame.previous=scene;
+        const auto policy=game_layer_plan(frame);
+        const bool world=flow==gameplay || flow==training;unsigned observed=0;
+        for(const auto* batch:{&policy.before_models,&policy.after_models}) for(const auto& pass:batch->passes) {
+            const bool expected=world && pass.layer==PpuLayer::bg2;
+            require(pass.single_occurrence_sky_half.has_value()==expected,
+                "Unique sky half ignored in native landscape or applied to menu/non-BG2 artwork");
+            if(expected) {
+                require(pass.single_occurrence_sky_half==PpuUniqueSkyHalf{right,360},
+                    "Native unique sky half lost verified atlas orientation or horizon rows");
+                ++observed;
+            }
+        }
+        require(!world || observed>0,"Unique-half policy fixture had no native world pass");
+    }
+    auto frame=source(gameplay,2);auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+    scene->background_landscape=true;scene->landscape_grid_height=-145;
+    scene->background_landscape_unique_half=scene->background_landscape_unique_right_half=true;
+    frame.current=frame.previous=scene;bool failed=false;
+    try {static_cast<void>(game_layer_plan(frame));} catch(const std::invalid_argument&) {failed=true;}
+    require(failed,"Ambiguous source sky half silently substituted another atlas policy");
+}
 void panorama_depth() {
     using enum simulation::GameFlowState;
     Canvas lower;
@@ -359,6 +387,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

@@ -31,6 +31,16 @@ projector stress range passes isolated sky/terrain/grid fixtures, but its
 complete intro composition can still exceed the aggregate texture budget;
 it is not claimed as a supported full-flow configuration.
 
+Verified unique-left/right landscape metadata now reaches the native BG2
+decoder. Beyond the single authored atlas occurrence, only that sky half is
+sampled from the opposite, repeatable half. The canonical 256-pixel source
+window and ground rows are untouched. This reuses the shared indexed decoder;
+there is no sky-image copy, colour averaging or finished-world reprojection.
+Palette/subtraction/brightness changes recolour the cached indices. The public
+pixel regression failed with duplicated artwork before this wiring and passes
+both half orientations, signed scroll, opaque black, ground and slider caches.
+Actual stage and native ARM acceptance of this new wiring are separate gates.
+
 Open-world/intro Mode 1/2 BG2 artwork now uses infinite scenery disparity,
 separate from screen-space BG3 and OBJ. The adapter splits only contiguous
 coordinate-space groups, keeping the exact low/high background and sprite
@@ -47,6 +57,21 @@ compare native mono pixels, painter priorities, black coverage, fades, eye
 matrices and unchanged source state. Actual cartridge and ARM validation are
 separate gates. Unique EX skyline/orbital spans, extreme optical settings,
 full-flow resource limits and physical original-console acceptance remain.
+
+The actual-cartridge host checker also accepts targeted stage symbols:
+
+```text
+starfox_3ds_game_models_check ROM SYMBOLS [MAP [SOURCE_FRAMES]]
+```
+
+The default BOOT/Corneria checks are unchanged. Optional source-frame counts
+must be whole numbers from 1 through 3600; omitted counts retain BOOT's 240
+or a stage's 1440 frames. For example, `LEVEL1_3 1440` samples Space Armada
+and `LEVEL2_2 1440` samples Sector X without requiring them to be outdoor
+landscapes. Source water/tunnel/unique/orbital observations are reported
+separately; their presence is not proof of visual/depth acceptance. The checks
+still assert shared eye source bytes, painter order, resource budgets and
+unchanged VM/SPC state. This host tool is not a native gameplay package.
 
 Checkpoint `dda633a6308d37658787ee865478f5919f4fb6a6` passes 15 root/exact
 host suites and all three actual ARM links in

@@ -6,6 +6,7 @@
 #include "starfox/platform/nintendo_3ds/game_dots.hpp"
 #include "starfox/platform/nintendo_3ds/pica_window.hpp"
 #include "starfox/platform/nintendo_3ds/pica_colour.hpp"
+#include <charconv>
 #include <iostream>
 #include <limits>
 
@@ -86,17 +87,19 @@ void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbo
     require(session.game().save_state()==before && session.audio().save_state()==before_audio,
         "Synthetic source observation or fade modified cartridge/audio state");
 }
-void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map) {
+void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map,unsigned requested_phases=0) {
     GameSession session(rom,symbols,[](auto){},map);GameModels models(session.rom(),session.symbols());
     PicaRaster background,objects,native_bitmap,priority_oracle;PicaComposite composite;PicaWindow window;
     PicaColourEffects colour;GameLayers cartridge_layers;GameDots dots(session.rom(),session.symbols());
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     unsigned dust_points{},grid_points{},connected_points{},combined_vertices{},combined_draws{},combined_textures{};
     unsigned panorama_frames{},combined_resident_bytes{},optical_frames{},optical_resident_bytes{};
+    unsigned water_frames{},tunnel_frames{},unique_frames{},orbital_frames{};
     std::array<bool,2> optical_checked{};
     std::array<bool,4> panorama_modes_checked{};
+    std::array<bool,2> unique_halves_checked{};
     session.advance(0,0);
-    const unsigned phases=map=="BOOT"?240:1440;unsigned outdoor_frames=0;
+    const unsigned phases=requested_phases?requested_phases:map=="BOOT"?240:1440;unsigned outdoor_frames=0;
     for(unsigned phase=1;phase<=phases;++phase) {
         context=map+" native phase "+std::to_string(phase);
         const auto time=(std::int64_t(phase)*1'000'000'000+59)/60;
@@ -104,6 +107,11 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             :map!="BOOT" && phase>24?input::ButtonMask(input::y|input::right):0;
         session.advance(time,held);
         auto source=session.presentation(1,true);const auto state=session.game().save_state(),apu=session.audio().save_state();
+        water_frames+=source.current->background_water_surround;
+        tunnel_frames+=source.raster->ppu->tunnel_scene;
+        unique_frames+=source.current->background_unique_top_rows!=0
+            || source.current->background_landscape_unique_half || source.current->background_landscape_unique_right_half;
+        orbital_frames+=source.current->background_orbital_planet;
         const auto frame=models.prepare(source);validate_pica_frame(frame,source.dashboard);
         const auto dot_frame=dots.prepare(source);validate_pica_frame(dot_frame,source.dashboard);
         // Resource/ordering bridge check, NOT the final all-flow compositor:
@@ -152,6 +160,22 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             require(ordered.before_models.draws.size()==2 && ordered.before_models.draws[1].projected_uv
                 && ordered.before_models.draws[1].depth_test && ordered.before_models.draws[1].source_layer==2,
                 "Actual cartridge terrain lost its finite source-owned receiver");
+            if(source.current->background_landscape_unique_half || source.current->background_landscape_unique_right_half) {
+                const bool right=source.current->background_landscape_unique_right_half;
+                auto policy=game_layer_plan(source);
+                require(std::any_of(policy.before_models.passes.begin(),policy.before_models.passes.end(),[&](const auto& pass) {
+                    return pass.single_occurrence_sky_half==PpuUniqueSkyHalf{right,unsigned(source.current->landscape_atlas_origin)+112};
+                }),"Actual unique landscape did not reach its native BG2 decoder policy");
+                if(!unique_halves_checked[right]) {
+                    for(auto& pass:policy.before_models.passes) pass.single_occurrence_sky_half.reset();
+                    const auto authored=priority_oracle.prepare(source.raster->ppu,policy.before_models,source.plan,
+                        source.raster->brightness,source.current->background_colour_subtract);
+                    for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+                        require(source_pixel(ordered.before_models,x,y)==source_pixel(authored,x,y),
+                            "Unique-half margin policy changed actual canonical cartridge pixels or opaque ownership");
+                    unique_halves_checked[right]=true;
+                }
+            }
         }
         const auto ordered_frame=composite.prepare(source.plan,
             std::array{ordered.before_models,dot_frame,frame,ordered.after_models,effects,mask},source.dashboard,ordered.clear);
@@ -247,20 +271,38 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         ++frames;
     }
     require(models_seen>0 && vertices>0,"Actual fixture never produced source geometry");
-    if(map!="BOOT") require(outdoor_frames>0,"Stage check stopped before the outdoor terrain actually appeared");
+    // Only Corneria's fixture promises outdoor terrain. Space, orbital and
+    // tunnel stages must not pass by being falsely classified as landscape.
+    if(map=="LEVEL1_1") require(outdoor_frames>0,"Corneria check stopped before the outdoor terrain actually appeared");
     require(dust_points+grid_points+connected_points>0,"Actual fixture did not exercise cartridge dust/grid");
     std::cout<<map<<": "<<frames<<" source frames, "<<models_seen<<" models, "<<shadows<<" shadows, "<<glyphs<<" glyphs, "
         <<particles<<" particles, "<<outdoor_frames<<" terrain frames; peak "<<vertices<<" vertices / "<<draws<<" draws / "<<textures<<" textures\n";
     std::cout<<map<<": dust/grid/connected points "<<dust_points<<" / "<<grid_points<<" / "<<connected_points
         <<"; combined peak "<<combined_vertices<<" vertices / "<<combined_draws<<" draws / "<<combined_textures<<" textures\n";
     std::cout<<map<<": "<<panorama_frames<<" panorama frames; padded texture residency peak "<<combined_resident_bytes<<" bytes including lower LCD\n";
+    std::cout<<map<<": source policy observations water/tunnel/unique/orbital "<<water_frames<<" / "<<tunnel_frames
+        <<" / "<<unique_frames<<" / "<<orbital_frames<<"; counts do not prove visual policy acceptance\n";
     std::cout<<map<<": "<<optical_frames<<" actual maximum-menu optical fixtures / "<<optical_resident_bytes
         <<" padded GPU bytes including lower LCD; not all rolled scenes or whole-flow peak RAM\n";
 }
 }
 int main(int argc,char** argv) try {
-    if(argc!=3) throw std::invalid_argument("Usage: check_3ds_game_models ROM SYMBOLS (private local assets)");
+    constexpr auto usage="Usage: check_3ds_game_models ROM SYMBOLS [MAP [SOURCE_FRAMES]]\n"
+        "Default: BOOT (240 frames) and LEVEL1_1 (1440 frames).\n"
+        "Optional MAP: an exact cartridge map symbol; SOURCE_FRAMES: 1..3600.\n"
+        "Uses private local assets; host policy/resource checks, not native gameplay or hardware acceptance.\n";
+    if(argc==2 && std::string_view(argv[1])=="--help") {std::cout<<usage;return 0;}
+    if(argc<3 || argc>5) throw std::invalid_argument(usage);
+    unsigned phases=0;
+    if(argc==5) {
+        const auto value=std::string_view(argv[4]);
+        const auto parsed=std::from_chars(value.data(),value.data()+value.size(),phases);
+        if(parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size() || phases<1 || phases>3600)
+            throw std::invalid_argument("SOURCE_FRAMES must be a whole number from 1 through 3600");
+    }
     const auto rom=assets::RomImage::load(argv[1]);const auto symbols=assets::SymbolMap::load(argv[2]);
-    auxiliary_checks(rom,symbols);fixture(rom,symbols,"BOOT");fixture(rom,symbols,"LEVEL1_1");
+    auxiliary_checks(rom,symbols);
+    if(argc>=4) fixture(rom,symbols,argv[3],phases);
+    else {fixture(rom,symbols,"BOOT");fixture(rom,symbols,"LEVEL1_1");}
     std::cout<<checks<<" native model-stream checks passed; NOT full compositor, ARM gameplay or hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<context<<": "<<error.what()<<'\n';return 1;}
