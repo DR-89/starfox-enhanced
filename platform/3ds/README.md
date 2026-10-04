@@ -1,0 +1,489 @@
+# Nintendo 3DS / 3DS XL frontend
+
+The primary target is **original Nintendo 3DS and 3DS XL**, not New 3DS.
+This directory contains a host-verified cartridge game session and native
+LCD/input/audio and PICA200 GPU diagnostics. The new cartridge-core bring-up
+target connects the actual simulation, SPC and dashboard to a console entry
+point; all three targets now compile and link with the actual ARM SDK.
+**There is no playable 3DS game package yet.**
+
+## Screen layout and controls
+
+- Upper LCD: 400×240 per eye. Gameplay world, reticle and warnings stay here.
+- Lower LCD: 320×240 cockpit-style dashboard, with radio text/portrait, lives,
+  bombs, shield, boost and teammate/boss status. This follows the split in the
+  [reference video](https://x.com/estebanpdn_/status/2103302681930662288).
+- Keep the actual pre-game settings menu, including Original/EX selection.
+  The diagnostic's setup page is **not** a substitute for that menu.
+- Keep full menu/map/results/credits artwork on top; do not remove sprites
+  from those screens using gameplay-HUD heuristics.
+- A/B/X/Y use Nintendo's printed positions, matching the SNES arrangement.
+  L/R map to the in-game shoulders, not keyboard letters. Circle Pad and
+  D-pad supply directions.
+- The physical slider controls parallel, off-axis left/right-eye projections
+  from one immutable game snapshot. Zero renders one eye; it does not slow
+  down or advance the simulation. Menu text stays mono; its world preview
+  can use stereo. A failed hardware query or a 2DS uses mono.
+- Infinite-distance scenery must use the per-eye background offset. Copying
+  the same flat sky to both eyes would incorrectly put it at screen depth.
+
+`game_routing.hpp` defines the flow policy. `SpriteSelection` in the shared
+`sprite_selection.hpp` contract partitions source HUD and world OBJ artwork **before**
+composition. It preserves OAM/VRAM, sprite priorities, reticles and warnings;
+it does not erase rectangular regions of the completed game image. Native EX
+BG1 overlays and the actual game renderer still need dedicated integration.
+
+`GameHud` now captures source health/boost/boss/teammate status, reserve lives,
+bombs, radio text, portrait frames, CGRAM and brightness with non-mutating VM
+accessors. It uses the cartridge's glyphs and original/EX portrait data (including
+alternate EX portraits), not a crop of the upper LCD. Pause/inactive dialogue
+retires old communication artwork. Gameplay alone selects `world_only` sprites;
+the pre-game menu and other frontend artwork remain intact. The bridge is
+connected to `GameSession` and the native-core diagnostic entry point, but
+**not yet to the complete console GPU renderer**. EX's
+second-player health is supported, but its reserve/bomb export remains pending;
+the bridge does not show player-one counters as player two.
+
+`CockpitDashboard` reuses the lower-screen canvas when status, radio text and
+visible portrait/radio pixels are unchanged. Moving the slider does not redraw it.
+The cache owns its source data and detects in-place portrait/text updates;
+changed source padding or pointer addresses alone do not trigger drawing.
+The asset-free diagnostic uses this cache. This reduces redundant CPU drawing,
+but is not a measured original-3DS frame-rate claim or completed game HUD.
+
+`pica_projection.hpp` supplies the GPU-facing projection contract: the LCD's
+clockwise quarter-turn, PICA's reversed `[-w, 0]` homogeneous depth range, and
+parallel off-axis cameras. It provides conservative culling against the union
+of active eyes, so shared scene preparation does not lose objects visible only
+at one eye's edge. The CPU diagnostic clips lines before perspective division;
+`NativeGpu` supplies native triangle projection/clipping through Citro3D.
+`PicaShapes` now converts shared cartridge primitives while retaining source
+visibility/BSP order. Complete background/overlay integration remains; this
+is not yet the full game renderer.
+When uploading rows to `C3D_Mtx`, assign its named
+`x/y/z/w` fields rather than copying raw bytes (Citro3D's vector layout differs).
+
+## Host checks
+
+No Nintendo SDK or ROM is needed for these checks:
+
+```sh
+cmake -S platform/3ds -B build/3ds-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/3ds-host
+ctest --test-dir build/3ds-host --output-on-failure
+```
+
+`starfox_3ds_frontend_tests --capture <directory>` writes a lower-screen HUD
+sample and two geometry-projection BMPs. All sample status values are synthetic;
+these captures are not gameplay or proof of physical-console performance.
+The same regression targets are included in the root project's host test suite.
+The standalone host build also compiles the diagnostic owner as an unlinked
+object, without a mock libctru implementation or a fake desktop game executable.
+
+The root build additionally provides `starfox_3ds_game_hud_check`. Its optional
+`ROM SYMBOLS [--capture DIRECTORY]` arguments exercise the real cartridge's
+font/portraits/palette and verify that observing the VM changes no saved state.
+On October 3, the frontend, HUD-routing, status, Original cartridge and EX
+cartridge tests all passed. The frontend passed 175,220 assertions; cartridge
+checks passed 154,779 (Original) and 309,534 (EX), including source HUD archive
+round-trips with the newly linked game-state owner. Their capture palette/status
+fixtures are synthetic even though artwork comes from the local cartridges;
+they are not gameplay screenshots or hardware performance acceptance.
+
+`starfox_3ds_game_session_check ROM SYMBOLS` exercises the new `GameSession`
+against independent, direct cartridge raster execution. It starts with the real
+`BOOT` pre-game state, retains quick physical input, and also checks direct
+`LEVEL1_1` startup/bank initialization. Original FX pacing uses decoded source
+face counts before the pace decision, independently of rendering/culling.
+SPC handshakes and mixed native stereo PCM remain at 20 Hz even when model
+updates are slower. The test polls at 240 Hz, compares complete game/SPC archives
+and PCM, and verifies that repeated slider/eye reads change no source state.
+The session's camera policy preserves the cartridge camera instead of applying
+the shared scene capture's headset-only follow adjustment.
+
+The session publishes separate immutable native raster state at 60 Hz for
+OAM/VRAM/CGRAM, HDMA, brightness, circle/window wipes and colour math. Those
+display changes are not delayed until the next FX model update. Both eyes share
+the same model/raster snapshots; unchanged PPU storage is reused. The dashboard
+view is borrowed until the next advance and must be uploaded/copied before then.
+Suspend/resume suppresses held input, resets pose interpolation and preserves
+partial audio-block cadence. Long stalls have bounded catch-up; audio failure
+rejects further ticks rather than continuing a partly advanced session.
+Experience changes stop at an explicit cartridge-handoff request: the native
+host still needs to replace the owner and transfer settings, not run one
+cartridge's requested experience with another cartridge's data.
+
+On October 3 the seven frontend/HUD/session tests passed. For each cartridge,
+the session checker covers 198 source rasters and 66 exact SPC blocks in both
+BOOT and direct-stage fixtures, including between-model-tick fades and partial
+audio-block suspension. This is host correctness evidence, **not a cross-build,
+console frame-rate/memory result, full-flow sweep or playable package**.
+Asset loading and the NDSP consumer are now connected in the core diagnostic
+described below. Experience/preview handoffs, persistent settings/SRAM/state
+files and the complete native graphics/menu entry still remain. The session
+does not advertise MSU-1 without a working decoder/streaming adapter.
+
+### Actual cartridge-core bring-up
+
+`STARFOX_3DS_BUILD_GAME_CORE=ON` builds a lean VM/SPC/HUD/model-adapter library
+without SDL, Vulkan, desktop codec packages or OpenXR. The standalone host
+build can link the same graph and its source-session/model checkers. The pinned
+CPU/SPC sources and SPC state extension are the same as the ordinary runtime;
+there is no substitute CPU, silent audio sink or fake native SDK implementation.
+
+The native `starfox_3ds_game_core_check.3dsx` entry point reads the standard
+companion at `sdmc:/3ds/starfox-enhanced/Starfox-Assets.BIN`. Only a four-byte
+manifest derived from public patches/symbols is compiled in, not ROMs or the
+public resources themselves. The shared decoder verifies manifest, complete
+file checksum, every payload checksum and lengths. Input allocation is bounded
+to 12 MiB before reading; unused cartridge and temporary decoding storage are
+released before the session is constructed. This bound is not measured peak RAM.
+
+Its guide uses A to load/run the actual selected cartridge's `BOOT`, Y to load
+`LEVEL1_1` directly for a source-scene check, X to select Original/EX before
+loading, and Select+Start to exit. Mixed source PCM goes to the sole NDSP owner.
+With the default PICA diagnostic enabled, source models, ordered cartridge
+artwork, colour operations/windows and the separate lower dashboard now feed
+the actual Citro3D presenter. A permanent diagnostic strip identifies the
+unfinished terrain/menu state. Without PICA, the upper LCD remains a guide.
+The combined native scene entry is being cross-verified after the accepted
+lean-core link above. **This is not a completed game or its pre-game menu.**
+Do not use it as a playable release: outdoor PPU artwork still needs separate
+terrain/panorama placement, EX spans/grid/dust and host menu/text integration.
+It does not flatten a finished model scene into two eyes or fabricate a menu.
+
+APT Home/sleep hooks pause queued PCM and rebase the source time/input contract;
+held input is suppressed until released after resume. Hooks and model references
+retire before their cartridge owner, and the session retires before DSP storage.
+SD/manifest/core/DSP failures stay visible on the LCD. Native cartridge switching,
+settings/SRAM persistence, full scene composition and physical behavior still
+require integration/acceptance; a host result or an ELF link alone cannot prove them.
+
+## Cartridge geometry and model adapter
+
+`SoftwareRenderer::prepare_primitives()` exposes the existing camera-space
+source geometry/material path without rasterizing a completed image. It retains
+Q15 transforms, source visibility/BSP order, animation, clipping, material/UV
+selection and explosion transforms. `PicaShapes` converts polygons, lines and
+simple/embedded sprites to owned triangle/texture streams. Two-ink faces use
+one shared 8x8 binary mask and native screen parity; they do not allocate a
+texture for every ink pair. Texture/draw/vertex budgets remain enforced.
+EX wire/wobble/wave/cel span conversions are explicitly unsupported, not
+silently replaced with ordinary triangles.
+
+`GameModels` connects actual immutable `GamePresentation` object lists to this
+converter. It shares source-pose interpolation with desktop VR without loading
+OpenXR, selects LOD from completed source depth, retains source material/light
+state, and handles source shadows, reticle policy, intro beams, scaled font
+glyphs and owner-filtered particles. Native 60 Hz CGRAM/brightness updates do
+not wait for a slower FX tick. Its decoded-model cache is limited to 128 entries
+and 4 MiB; that separate cache budget is **not** total runtime RAM. Failed
+conversion retains the previous complete stream and reports an error; the
+host must not present the old frame as if it succeeded. Source effect-window
+clipping now travels with each native draw and is applied after each eye's
+projection; sprites are not pre-cropped using a mono view.
+
+The root host tool `starfox_3ds_game_models_check ROM SYMBOLS` runs actual
+BOOT and direct LEVEL1_1 sessions for 240 native rasters each. On October 4,
+Original/EX pass 20,498 / 28,124 checks, including native PPU resource, source
+colour coverage and ordered model/OBJ composition checks. Slider 0/0.5/1 leaves geometry, artwork,
+draw order and game/SPC archives unchanged. Additional synthetic particle
+fixtures with real cartridge assets cover signed-word wrap, owner/depth rules,
+60 Hz fades and failed-frame retention. BOOT exercises source pre-game state;
+it does not prove the complete menu/background has been rendered on a console.
+Peak streams are 1,500 vertices / 96 draws / 36 textures for Original and
+1,497 / 135 / 55 for EX across these fixtures, not all-stage peaks.
+
+The standalone `starfox_3ds_source_models_check ROM SYMBOLS` checks the decoded
+catalogue independently across six poses and source camera boundaries. Original
+passes 2,697 models / 16,182 poses / 157,363 boundary checks; EX passes 3,511 /
+21,066 / 393,943. These are geometry/conversion checks, not full composed images,
+optical stereo acceptance or physical-device performance.
+
+## Native PPU layers and ordered composition
+
+`GameLayers` now chooses before-model/after-model cartridge groups from the
+actual flow, Mode 1/2/3 register state and native raster snapshot. It retains
+EX menu BG1 low/high text with the 16-pixel guard inset, Mode 3's eight-bit map
+buffer, title foreground priorities and opaque black, late Controls/Continue/
+boss-roll frames, EX pause/results bitmap rules and all gameplay world-OBJ
+priorities. HUD selection is applied by the source sprite decoder, not by
+erasing a finished image. Intro dialogue is not removed before lower-HUD
+routing begins. Controls/Continue margin clear comes from the dominant native
+right edge rather than the miscolored left demonstration edge.
+
+Two bounded raster caches retain indices/coverage across slider reads and
+recolour source palette/brightness fades without repeating tile traversal.
+This closes cartridge-artwork painter selection; it does **not** turn the
+screen-space BG2 artwork into correctly projected terrain/infinite scenery,
+nor render the host-owned pre-game UI or missing source text/grid/span passes.
+Host priority-pixel and actual Original/EX BOOT/LEVEL1_1 resource/state tests
+exercise the adapter; physical whole-scene acceptance still remains.
+
+`PicaRaster` decodes cartridge BG1/BG2/BG3/OBJ artwork into cached indexed
+layers, with separate write coverage and layer provenance. It retains source
+tile/sprite priorities, opaque black ink, mode-2 offsets/HDMA, mosaic and the
+gameplay-only HUD selection. Palette, source brightness and BG2 subtraction
+recolour cached pixels without decoding tiles again. Changes to irrelevant
+OAM or background scroll do not invalidate the other layer. Both eyes and
+slider changes borrow the same immutable source raster and decoded artwork.
+
+Screen-space layers retain transparent guards around the authored 256×224
+image; infinite-distance scenery uses a 464×240 plane with 32-pixel horizontal
+guards and the existing per-eye infinity offset. An unsupported eye extent
+fails explicitly instead of exposing missing scenery. `PicaComposite` joins
+ordered PPU/model/overlay groups without flattening model geometry or changing
+their depth/alpha/projection roles. It validates shared frame plans and the
+combined padded texture/draw/vertex budgets before publishing a stream.
+Raster owners must remain alive and unchanged through native submission.
+
+The six standalone Windows suites pass, including 5,945,439 PPU/cache/order/window/colour
+assertions; the PPU suite also passes on Linux. The native GPU diagnostic links
+and submits synthetic PPU scenery around actual geometry through Citro3D.
+The Original/EX model checker uses real cartridge snapshots to validate PPU
+resources and BG/model/OBJ ordering. These checks **do not establish the final
+game compositor**: terrain depth, panorama placement, complete source pass
+ordering, EX spans, whole-flow colour/death effect placement, grid/dust and the actual
+pre-game renderer still need integration. Do not classify every BG2 layer as
+infinite scenery or bake artwork across a model boundary.
+
+`PicaWindow` now generates the source's OR/AND/XOR/XNOR colour-window black
+mask as coalesced screen-space rectangles after the ordered upper-LCD scene.
+Authored-menu coverage retains the centred 192-line FX window; gameplay uses
+full-LCD coverage, including every added edge column/row. Horizontal scramble
+shutters keep fractional Y edges without interpolating binary X bounds into
+slits. Generation visits only the four window boundaries per row, not a full
+scene-sized bitmap. Unchanged masks are shared by both eyes and slider reads.
+The mask does not touch the separately submitted lower dashboard.
+
+Per-draw source effect clips use the actual Citro3D scissor, mapped from the
+400×240 LCD to the rotated 240×400 render target. Clip identity participates
+in draw merging and survives composite assembly. The native presenter resets
+scissor state before the lower LCD. Simple sprites retain full geometry/UVs
+for both eye projections instead of losing regions to a mono crop; the particle
+adapter no longer rejects supported source windows. Independent per-pixel
+window tests cover all logic modes, wrapped bounds, closed Training coverage,
+fractional horizontal shutters, failed-state retention and mask retirement.
+The GPU diagnostic exercises both a clipped alpha draw and an X-toggled source
+shutter. Black masks use protected source-layer ID zero; later colour math
+cannot brighten a closed wipe.
+
+`PicaColourEffects` adds native screen-space coverage for source circles and
+global damage/blackfade colour math, in that order. The integer disk is
+converted to coalesced scanline rectangles with optional source clipping;
+extreme signed centres and 16-bit radii use 64-bit arithmetic. Both eyes share
+the coverage, not a completed mono world image. Native fixed-colour brightness,
+selected-layer masks and add/subtract/half flags survive the adapter.
+
+The native depth/stencil target records the winning SNES source layer: BG1 for
+Super FX models, distinct BG1/BG2/BG3/OBJ bits for PPU artwork, backdrop for
+untouched pixels and zero for protected host UI/window black. Mixed PPU groups
+carry a single GPU_A8 provenance sidecar with independent texcoord1; opaque
+classes are selected by alpha-test subpasses without mixing RGB by layer ID.
+This adds one byte per padded pixel, not six copies of the RGBA group, and is
+included in the 4 MiB combined resident texture budget. Palette-only changes
+retain the decoded mask and resident A8 upload. Transparent pixels never
+claim a source layer. Effect passes test the stencil without replacing it;
+the lower-LCD submission resets colour/alpha/TEV/stencil/scissor state.
+
+The GPU diagnostic's Y toggle exercises an expanding circle and blackfade over
+native models/scenery, with a red source OBJ deliberately excluded from both.
+Portable checks independently test exact disk coverage, all source selectors,
+mask swizzling/guards/opacity, failed-state retention and effect retirement.
+This is **not physical pixel acceptance or completed whole-game effects**:
+PICA fixed-function colour blends in RGBA8 and its half constant has 8-bit
+rounding, not exact SNES five-bit re-quantization. Whole-flow pass placement and
+physical stencil/alpha/depth/colour checks still remain.
+
+## Native audio adapter
+
+`native_audio.cpp` now implements real libctru/NDSP output for the session's
+32 kHz, 16-bit interleaved stereo PCM. A source block is 1,600 stereo frames
+(3,200 halfwords / 6,400 bytes). It copies borrowed source samples into an
+eight-block, 51,200-byte linear-memory pool and flushes the complete byte range
+before queueing. Only FREE/DONE descriptors can be reused; a full queue reports
+an error instead of overwriting or silently dropping sound. There are no
+per-block allocations or unbounded producer waits. The pool capacity is a
+catch-up limit, not a target playback delay.
+
+`NativeAudio` is the sole process NDSP owner and must outlive `GameSession`'s
+PCM callback. The intended binding is a sink calling `audio.submit(samples)`;
+neither eye calls it. `pause(true)` retains queued PCM for focus suspension.
+`reset()` is for cartridge/state handoff: it shuts down the DSP worker before
+reusing storage. Destruction likewise finalizes NDSP before freeing descriptors
+or linear memory. Missing-DSP initialization includes the result code and a
+visible diagnostic error screen. No Nintendo DSP component is distributed;
+libctru loads it through the homebrew environment or the console owner's
+`/3ds/dspfirm.cdc`.
+
+The asset-free diagnostic now offers an X-triggered, low-volume, one-second
+test (left 220 Hz, then right 440 Hz), with at most 100 ms queued. This is
+separate from cartridge audio and is **not a playable game**. Its native target
+now cross-builds and links the adapter, but has not been run on hardware.
+
+On October 3 the portable PCM/ownership test passed 3,509 checks. All eight
+frontend/HUD/session/audio host tests passed; both cartridges still match the
+independent source-state/SPC oracle after using the adapter's PCM copy contract.
+The native adapter also passed host C++20 warnings-as-errors syntax checks
+against unmodified official libctru headers at commit
+`9b55eda44cf80b971503991e0c78f9bc8fe50425`, without a mocked NDSP implementation.
+That validates declarations/ordinary C++, **not ARM ABI, native linkage, DMA,
+audible output, suspend behavior or original-console performance**.
+
+## Native diagnostic build
+
+Use devkitPro's current 3DS toolchain with devkitARM, libctru, Citro3D, Picasso, 3ds-tools,
+3ds-cmake and the toolchain's dependencies (including 3ds-pkg-config).
+From a devkitPro shell, at the repository root:
+
+```sh
+bash tools/build_3ds_frontend.sh
+```
+
+The CPU diagnostic is `build/3ds-frontend/starfox_3ds_frontend_check.3dsx`.
+Put it on an already homebrew-enabled console's SD card under
+`/3ds/starfox_3ds_frontend_check/`. A enters the depth diagnostic, B returns to
+its setup page, X tests left/right audio, and Select+Start exits. Its cockpit is synthetic.
+This diagnostic uses CPU LCD drawing to check input, eye projection and the
+display interface; **it is not a PICA200 game renderer or a performance test.**
+
+`build/3ds-frontend/starfox_3ds_gpu_check.3dsx` is the separate native GPU check.
+A displays independently projected textured solids and a translucent layer;
+Circle Pad/D-pad moves the front solid, B returns to the mono guide, and
+X toggles the source shutter, Y toggles circle/blackfade, and Select+Start exits.
+It tests the Citro3D presenter rather than copying a finished
+image to both eyes. Its synthetic dashboard is not cartridge gameplay.
+
+## Native PICA presenter and current cross-build
+
+The October 4 actual-core build at `93889fafe1cf88d6f7c9828347eb12ed3afebaee`
+passes [native CI 37181717395](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37181717395).
+It links the real cartridge VM/SPC/HUD/model conversion graph and NDSP consumer
+into `starfox_3ds_game_core_check`, alongside both existing diagnostics, using
+the pinned official SDK/GCC 16.1.0 image below. The host graph passes all seven
+suites, including 28 companion/manifest checks. The current local standard
+companion loads both Original and EX into actual BOOT sessions, each producing
+60 native rasters, 20 logic ticks and 20 mixed PCM blocks of 3,200 samples over
+one host second, with valid source model streams and the lower HUD.
+
+All three downloaded executables have ARM ELF32 little-endian headers and
+3DSX package magic. The core `.3dsx` is 1,812,544 bytes; its ELF static segments
+are 1,757,188 text / 9,856 data / 29,220 BSS bytes. These are **not peak runtime
+RAM or original-device performance measurements**. The 440-byte PICA shader
+still matches the accepted independently assembled host shader. This verifies
+the lean native link and host cartridge path, not the physical APT/audio/LCD
+behavior or a playable upper renderer. The diagnostic does not replace the
+real pre-game menu; that menu and the full scene still need native integration.
+
+### Historical native colour checkpoint
+
+`NativeGpu` now records local-space triangles with per-eye off-axis uniforms,
+depth testing, ordered opaque/alpha passes, resident power-of-two textures and
+one lower-screen dashboard. Screen overlays remain mono; `PicaSpace::scenery`
+uses the infinite-distance per-eye offset rather than placing the sky at HUD
+depth. The converter must extend scenery coverage across that offset.
+
+RGB/RGBA uploads preserve source alpha and edge padding in PICA's vertically
+flipped 8×8 Morton-tiled ABGR storage. Reads respect row pitch. Input validation
+rejects incomplete textures, non-finite geometry, omitted/overlapping primitive
+ranges and budgets before starting a GPU frame. Native frame limits are 32,766
+vertices, 256 draws and 4 MiB of padded texture storage including the dashboard;
+over-budget scenes must be handled explicitly, not silently clipped away.
+
+GPU synchronization precedes VBO/texture reuse. Unchanged bytes retain resident
+uploads; changing a model/eye uniform does not force a new geometry upload.
+The presenter flushes modified storage explicitly and owns display submission.
+Do not call the CPU presenter's `gfxSwapBuffers` while it is alive. Teardown
+waits for Citro3D before releasing shader/VBO/texture storage. Native render
+errors retire the presenter before showing the CPU diagnostic error screen.
+
+On October 4, 2026, the isolated
+[native CI build](https://github.com/kandowontu2/starfox-enhanced/actions/runs/37179931495)
+passed using the official devkitPro image pinned at
+`sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5`
+and devkitARM GCC 16.1.0 at commit
+`68be3cfdb9326a61d80089ea639bc83e487c75fa`. It compiled and linked both real
+native diagnostic targets, including the PPU layer used by the GPU diagnostic,
+ran 107,474 PICA, 175 source-geometry and 5,945,439 PPU/cache/composition/window/colour assertions
+on Linux and produced `.3dsx` packages. `GameModels` and source interpolation
+also compile as ARM objects; this object-library check does not link the full
+GameSession/core or create a game executable.
+Their downloaded headers were checked as ARM ELF32 / 3DSX, and the native
+440-byte shader exactly matches the independently assembled host shader
+(`5a91d7299a63eb6aaf77b26b51c940d7440bdd4fbcaca5b81de427c22f1235dc`).
+The GPU `.3dsx` is 387,484 bytes; that is **not a runtime RAM measurement**.
+
+All six standalone host suites pass on Windows, including texture swizzling,
+ordered draw validation, depth/eye plans and distinct screen/infinite-scenery
+projection. The adapter also passes strict syntax against actual libctru and
+Citro3D headers, without mock GPU functions. CI artifacts are diagnostics only;
+the test branch does not upload ROMs or the full unrelated development tree.
+These results establish native compilation/linkage, **not console display,
+audio/DMA, suspend, original-hardware speed, complete cartridge composition or a playable
+game package**. The cartridge renderer/entry-point work below remains active.
+
+### Historical host-only checkpoint
+
+On October 1, 2026, both host regression targets passed on Windows with GCC
+13.2 and warnings treated as errors. The extended frontend suite passed
+175,201 assertions, including independent per-eye projection/depth expectations,
+one-eye-only edge bounds, near/far/side clipping and malformed-input rejection.
+These are host correctness checks, not console performance measurements.
+At that October 1 checkpoint the native target had **not** been
+cross-compiled or tested on hardware: this machine had no devkitPro 3DS SDK,
+and the official package endpoint still returned HTTP 403 on recheck. No WSL installation,
+remote CI run, release publication or console installation was performed.
+
+## Remaining port work, in order
+
+1. Run the now-cross-built CPU/audio and PICA diagnostics on
+   original 3DS/XL. Check eyes are not reversed, the slider is smooth, stereo
+   switches off cleanly, resume works and Circle Pad/face buttons match.
+2. Promote the linked `GameSession`/SD/NDSP diagnostic into the actual console
+   game entry: complete experience and preview handoffs and saves/settings.
+   Reuse the real pre-game menu and source timing
+   rather than replacing them with the diagnostic page. Show clear unsupported
+   states for desktop-only graphics features; do not silently enable them.
+3. Complete the **PICA200/Citro3D** compositor around the now-converted cartridge
+   primitives and cached PPU layers: terrain depth/panorama placement, complete
+   game pass order, EX overlays/spans, full-flow circle/colour-math/death effect
+   placement and physical pixel fidelity, grid/dust,
+   clipping and transparency. Connect the GameModels stream to the
+   native owner. Feed both eyes from one interpolated snapshot, with the same
+   off-axis projection contract as the diagnostic; no screen-space fake depth.
+4. Retain the now-linked `GameHud` bridge in the game presenter, complete EX
+   player-two reserve/bomb export and native overlay routing. Apply split-HUD
+   selection only when `game_routing(...).move_hud` is true.
+5. Profile **original** 3DS memory/CPU/GPU budgets. Reuse buffers; upload static
+   geometry/textures once; update the dashboard only when its contents change;
+   render no second eye at zero. Keep native resolution and original game timing
+   as the baseline. Set a presentation target only after hardware measurements.
+6. Run Original/EX title, pre-game setup, training, map, representative stages,
+   boss/death transitions, results, game-over and credits. Then package a playable
+   `.3dsx` and decide whether a separate CIA package is appropriate.
+
+The existing desktop Vulkan/D3D/Metal and OpenXR paths cannot be enabled on
+PICA200 unchanged. SDL's current 3DS renderer is software-only, so merely
+compiling the PC SDL runtime would not meet this port's stereo/performance goals.
+New 3DS speedup is deliberately disabled in the diagnostic to keep the baseline
+consistent with the requested original hardware.
+
+The suggested [OpenCTR SDK](https://openctr.github.io/) was evaluated on
+October 3. Its [published binaries](https://github.com/OpenCTR/OpenCTR/releases)
+are macOS-only packages from 2015; its source toolchain pins
+[Clang/LLVM 3.7.1](https://github.com/OpenCTR/OpenCTR/blob/master/toolchain/CMakeLists.txt).
+That does not provide a usable Windows/C++20 cross-build for this port, so it
+has not been installed or adopted. Its documentation remains a reference;
+devkitARM/libctru/Citro3D remains the intended native stack.
+
+## Primary SDK references
+
+- [SDL3 3DS port constraints](https://wiki.libsdl.org/SDL3/README-n3ds)
+- [libctru slider API](https://github.com/devkitPro/libctru/blob/master/libctru/include/3ds/os.h)
+- [libctru models and capability query](https://github.com/devkitPro/libctru/blob/master/libctru/include/3ds/services/cfgu.h)
+- [libctru LCD rotation, buffering and stereo presentation](https://github.com/devkitPro/libctru/blob/master/libctru/source/gfx.c)
+- [Official 3DS CMake toolchain/helpers](https://github.com/devkitPro/pacman-packages/tree/master/cmake/3ds)
+- [Official 3DS examples](https://github.com/devkitPro/3ds-examples)
+- [libctru NDSP channel/buffer API](https://github.com/devkitPro/libctru/blob/master/libctru/include/3ds/ndsp/channel.h)
+- [libctru DSP lifecycle and component loading](https://github.com/devkitPro/libctru/blob/master/libctru/source/ndsp/ndsp.c)
+- [Citro3D's rotated PICA projection and depth conventions](https://github.com/devkitPro/citro3d/blob/master/source/maths/mtx_persptilt.c)

@@ -1,4 +1,5 @@
 #include "starfox/platform/nintendo_3ds/game_models.hpp"
+#include "starfox/platform/nintendo_3ds/game_layers.hpp"
 #include "starfox/platform/nintendo_3ds/game_session.hpp"
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
@@ -72,7 +73,7 @@ void auxiliary_checks(const assets::RomImage& rom,const assets::SymbolMap& symbo
 void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::string& map) {
     GameSession session(rom,symbols,[](auto){},map);GameModels models(session.rom(),session.symbols());
     PicaRaster background,objects,native_bitmap;PicaComposite composite;PicaWindow window;
-    PicaColourEffects colour;
+    PicaColourEffects colour;GameLayers cartridge_layers;
     unsigned frames{},models_seen{},shadows{},glyphs{},particles{},vertices{},draws{},textures{};
     session.advance(0,0);
     for(unsigned phase=1;phase<=240;++phase) {
@@ -102,6 +103,13 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
         require(composed.vertices.size()==back.vertices.size()+frame.vertices.size()+front.vertices.size()+effects.vertices.size()+mask.vertices.size()
             && std::equal(frame.vertices.begin(),frame.vertices.end(),composed.vertices.begin()+back.vertices.size()),
             "Native layer composition lost/reprojected cartridge model geometry");
+        const auto ordered=cartridge_layers.prepare(source);
+        const auto ordered_frame=composite.prepare(source.plan,
+            std::array{ordered.before_models,frame,ordered.after_models,effects,mask},source.dashboard,ordered.clear);
+        require(ordered_frame.vertices.size()==ordered.before_models.vertices.size()+frame.vertices.size()
+            +ordered.after_models.vertices.size()+effects.vertices.size()+mask.vertices.size(),
+            "Actual cartridge priority adapter lost a model/PPU/effect painter group");
+        const auto ordered_work=cartridge_layers.work();
         const auto background_work=background.work(),object_work=objects.work();
         const auto effect_builds=colour.builds();
         const auto count=models.coverage();models_seen+=count.models;shadows+=count.shadows;
@@ -123,6 +131,11 @@ void fixture(const assets::RomImage& rom,const assets::SymbolMap& symbols,const 
             background.prepare(source.raster->ppu,bg,source.plan,source.raster->brightness,source.current->background_colour_subtract);
             objects.prepare(source.raster->ppu,obj,source.plan,source.raster->brightness);
             colour.prepare(source.raster->circle,source.raster->colour_math,source.raster->brightness,source.plan);
+            cartridge_layers.prepare(source);
+            const auto priority_work=cartridge_layers.work();
+            require(priority_work[0].decodes==ordered_work[0].decodes && priority_work[1].decodes==ordered_work[1].decodes
+                && priority_work[0].colour_updates==ordered_work[0].colour_updates && priority_work[1].colour_updates==ordered_work[1].colour_updates,
+                "Slider reran actual cartridge painter policy rasterization");
             require(colour.builds()==effect_builds,"Slider rebuilt native source colour coverage");
             require(background.work().decodes==background_work.decodes && background.work().colour_updates==background_work.colour_updates
                 && objects.work().decodes==object_work.decodes && objects.work().colour_updates==object_work.colour_updates,

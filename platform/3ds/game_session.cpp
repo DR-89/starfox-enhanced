@@ -67,6 +67,8 @@ void GameSession::publish_raster() {
     next->brightness=game_.map().display_brightness();
     next->circle=game_.circle_effect_state();next->wipe=game_.window_wipe_state();
     next->colour_math=game_.colour_math_effect_state();
+    next->boss_roll=game_.boss_roll_active();
+    next->stage_hud=game_.stage_results_state().visible;
     hud_frame_=hud_.capture(game_);hud_.update(hud_frame_);
     raster_=std::move(next);
 }
