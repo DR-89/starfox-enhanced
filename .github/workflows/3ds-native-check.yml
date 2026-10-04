@@ -11,6 +11,7 @@ on:
       - 'tests/nintendo_3ds_source_geometry_tests.cpp'
       - 'src/render/software_renderer.cpp'
       - 'include/starfox/render/software_renderer.hpp'
+      - 'include/starfox/render/sprite_selection.hpp'
       - 'include/starfox/vr/game_scene.hpp'
       - 'include/starfox/vr/source_pose_interpolation.hpp'
       - 'src/vr/source_pose_interpolation.cpp'

@@ -1,6 +1,6 @@
 #pragma once
 #include "starfox/platform/nintendo_3ds/frontend.hpp"
-#include "starfox/render/sprite_renderer.hpp"
+#include "starfox/render/sprite_selection.hpp"
 #include "starfox/vr/game_scene.hpp"
 
 namespace starfox::platform::nintendo_3ds {
