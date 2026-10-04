@@ -1,0 +1,31 @@
+#pragma once
+#include "starfox/platform/nintendo_3ds/pica_frame.hpp"
+#include "starfox/render/software_renderer.hpp"
+#include "starfox/render/palette.hpp"
+
+namespace starfox::platform::nintendo_3ds {
+// Owned conversion of the shared source primitives, not a crop of a rendered
+// mono framebuffer. Append in cartridge draw order. Both native eyes consume
+// the same camera geometry; only their projection uniforms differ.
+class PicaShapes {
+public:
+    void clear();
+    void append(const render::PreparedShapePrimitives&,std::span<const render::Rgba8>,
+        std::array<double,2> source_origin={128,112});
+    // Borrowed spans remain valid only until the next append/clear/frame call.
+    // The native presenter consumes/copies them synchronously.
+    [[nodiscard]] PicaFrame frame(const FramePlan&,Rgb clear={8,15,28});
+private:
+    struct Texture {
+        std::vector<std::uint8_t> rgba;
+        unsigned width{},height{};
+        bool repeat{};
+    };
+    unsigned texture(Texture);
+    void submit(std::span<const PicaVertex>,unsigned texture,const PicaMatrix&,bool dither);
+    std::vector<PicaVertex> vertices_;
+    std::vector<PicaDraw> draws_;
+    std::vector<Texture> textures_;
+    std::vector<PicaImage> views_;
+};
+} // namespace starfox::platform::nintendo_3ds

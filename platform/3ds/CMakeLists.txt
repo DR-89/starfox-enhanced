@@ -6,6 +6,11 @@ option(STARFOX_3DS_BUILD_HOST_TESTS "Build platform-independent projection/LCD t
 add_library(starfox_3ds_frontend STATIC frontend.cpp)
 target_include_directories(starfox_3ds_frontend PUBLIC ../../include)
 target_compile_features(starfox_3ds_frontend PUBLIC cxx_std_20)
+add_library(starfox_3ds_source_geometry STATIC pica_shapes.cpp
+    ../../src/render/software_renderer.cpp ../../src/render/face_material.cpp
+    ../../src/simulation/math.cpp ../../src/assets/rom.cpp)
+target_include_directories(starfox_3ds_source_geometry PUBLIC ../../include)
+target_compile_features(starfox_3ds_source_geometry PUBLIC cxx_std_20)
 if(STARFOX_3DS_BUILD_NATIVE)
     if(NOT CMAKE_CROSSCOMPILING OR NOT CMAKE_SYSTEM_NAME STREQUAL "Nintendo3DS")
         message(FATAL_ERROR "Use devkitPro's 3DS.cmake toolchain; a desktop compiler cannot build a 3DS app.")
@@ -49,7 +54,8 @@ if(STARFOX_3DS_BUILD_NATIVE)
         add_executable(starfox_3ds_gpu_check gpu_probe.cpp native_display.cpp "${pica_header}")
         target_include_directories(starfox_3ds_gpu_check PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
         target_include_directories(starfox_3ds_gpu_check SYSTEM PRIVATE "${STARFOX_CTRU_INCLUDE}")
-        target_link_libraries(starfox_3ds_gpu_check PRIVATE starfox_3ds_native_gpu "${STARFOX_CTRU_LIBRARY}" m)
+        target_link_libraries(starfox_3ds_gpu_check PRIVATE starfox_3ds_native_gpu
+            starfox_3ds_source_geometry "${STARFOX_CTRU_LIBRARY}" m)
         set_target_properties(starfox_3ds_gpu_check PROPERTIES SUFFIX ".elf")
         ctr_generate_smdh(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gpu-check.smdh"
             NAME "Star Fox Enhanced - GPU check"
@@ -73,6 +79,9 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
     add_executable(starfox_3ds_pica_tests ../../tests/nintendo_3ds_pica_tests.cpp)
     target_link_libraries(starfox_3ds_pica_tests PRIVATE starfox_3ds_frontend)
     add_test(NAME starfox_3ds_pica_tests COMMAND starfox_3ds_pica_tests)
+    add_executable(starfox_3ds_source_geometry_tests ../../tests/nintendo_3ds_source_geometry_tests.cpp)
+    target_link_libraries(starfox_3ds_source_geometry_tests PRIVATE starfox_3ds_source_geometry)
+    add_test(NAME starfox_3ds_source_geometry_tests COMMAND starfox_3ds_source_geometry_tests)
     add_executable(starfox_3ds_hud_routing_tests ../../tests/nintendo_3ds_hud_routing_tests.cpp
         ../../src/render/sprite_renderer.cpp)
     target_include_directories(starfox_3ds_hud_routing_tests PRIVATE ../../include)

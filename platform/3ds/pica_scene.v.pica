@@ -1,23 +1,37 @@
 ; One local-space geometry input, independently projected for each LCD eye.
 .fvec transform[4]
 .fvec uv_scale
+.fvec uv_mode
 .constf constants(0.0, 1.0, 0.0, 0.0)
+.constf screen_scale(25.0, 15.0, 0.0, 0.0)
 .out out_position position
 .out out_colour color
 .out out_uv texcoord0
+.out out_q texcoord0w
 .alias in_position v0
 .alias in_colour v1
 .alias in_uv v2
 .proc main
     mov r0.xyz, in_position
     mov r0.w, constants.y
-    dp4 out_position.x, transform[0], r0
-    dp4 out_position.y, transform[1], r0
-    dp4 out_position.z, transform[2], r0
-    dp4 out_position.w, transform[3], r0
+    dp4 r2.x, transform[0], r0
+    dp4 r2.y, transform[1], r0
+    dp4 r2.z, transform[2], r0
+    dp4 r2.w, transform[3], r0
+    mov out_position, r2
     mov out_colour, in_colour
     mul r1.xy, uv_scale, in_uv
-    mov out_uv.x, r1.x
-    add out_uv.y, constants.y, -r1.y
+    add r1.y, constants.y, -r1.y
+    mul r1.xy, uv_mode.x, r1
+    ; Rotated LCD: X = 200*(W-Y), bottom-up Y = 120*(W+X).
+    ; Divide by the 8x8 repeated source checker, and retain Q=W so texture
+    ; projection cancels perspective interpolation. Pixel parity is fixed.
+    add r3.x, r2.w, -r2.y
+    add r3.y, r2.w, r2.x
+    mul r3.xy, screen_scale, r3
+    mad out_uv.x, r3.x, uv_mode.y, r1.x
+    mad out_uv.y, r3.y, uv_mode.y, r1.y
+    mul r4.x, uv_mode.y, r2.w
+    add out_q.x, uv_mode.x, r4.x
     end
 .end

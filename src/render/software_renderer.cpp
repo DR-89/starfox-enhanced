@@ -864,6 +864,7 @@ void fill_source_polygon(
                     + (colour.dither && ((x ^ plot_y) & 1) != 0
                         ? colour.odd : colour.even));
                 target.set(x, plot_y, palette_index);
+                if(colour.dither) target.annotate_dither(x,plot_y,std::uint8_t(colour_index_base+colour.even),std::uint8_t(colour_index_base+colour.odd));
                 if (surfaces != nullptr) {
                     surfaces->set(x, plot_y, surface, palette_index);
                 }
@@ -1152,8 +1153,8 @@ void draw_line(
     const auto sx = x0 < x1 ? 1 : -1;
     const auto dy = std::abs(y1 - y0);
     const auto sy = y0 < y1 ? 1 : -1;
-    const auto dither_scale = static_cast<int>(std::clamp(render_scale, 1U, 4U));
-    const auto thickness = static_cast<int>(std::clamp(render_scale, 1U, 4U)
+    const auto dither_scale = static_cast<int>(std::clamp(render_scale, 1U, 10U));
+    const auto thickness = static_cast<int>(std::clamp(render_scale, 1U, 10U)
         * std::clamp<unsigned>(wireframe_thickness, 1U, 4U));
     const auto offset = (thickness - 1) / 2;
     const auto plot = [&] {
@@ -1176,6 +1177,7 @@ void draw_line(
                 target.set(x, y, static_cast<std::uint8_t>(colour_index_base
                     + (colour.dither && (((x / dither_scale) ^ (y / dither_scale)) & 1) != 0
                         ? colour.odd : colour.even)));
+                if(colour.dither) target.annotate_dither(x,y,std::uint8_t(colour_index_base+colour.even),std::uint8_t(colour_index_base+colour.odd));
             }
         }
     };
@@ -1496,14 +1498,27 @@ void SoftwareRenderer::collect_shadow_casters(const assets::Shape& shape,const R
     Framebuffer unused(1,1);
     draw_impl(shape,pose,unused,false,nullptr,&scene,nullptr,true);
 }
+PreparedShapePrimitives SoftwareRenderer::prepare_primitives(
+    const assets::Shape& shape,const RenderPose& pose) const {
+    PreparedShapePrimitives result;
+    result.pose=pose;result.colour_index_base=settings_.colour_index_base;
+    result.focal_length=settings_.focal_length;
+    // No pixel storage proportional to the source viewport, no framebuffer
+    // extraction, and no software draw followed by a second geometry pass.
+    Framebuffer unused(1,1);
+    draw_impl(shape,pose,unused,false,nullptr,nullptr,nullptr,false,&result);
+    return result;
+}
 void SoftwareRenderer::draw_impl(
     const assets::Shape& shape,
     const RenderPose& pose,
     Framebuffer& target,
     bool clear_target,
     SurfaceBuffer* surfaces, shadows::Scene* shadow_scene,
-    RenderDiagnostics* axis_diagnostics,bool shadow_only) const {
+    RenderDiagnostics* axis_diagnostics,bool shadow_only,
+    PreparedShapePrimitives* primitives) const {
     if (axis_diagnostics) *axis_diagnostics = {};
+    if(!primitives && !shadow_only && !target.command_buffer() && settings_.render_scale>1) target.enable_dither_pairs(true);
     // Everything this renderer emits is the Super FX layer, whatever draw
     // scale each path happens to use. Scan conversion drops the scale to 1 and
     // would derive that correctly on its own, but the sprite paths below
@@ -1538,6 +1553,21 @@ void SoftwareRenderer::draw_impl(
         const auto* texture = texture_for_colour(
             shape, pose.simple_sprite_colour, pose.colour_frame);
         if (texture != nullptr) {
+            if(primitives) {
+                if(pose.z>=128 && pose.simple_sprite_world_size>0) {
+                    const auto dimension=std::clamp(std::trunc(
+                        double(pose.simple_sprite_world_size)*settings_.focal_length/pose.z),0.,240.);
+                    if(dimension>0) {
+                        ShapePrimitive primitive;
+                        primitive.kind=ShapePrimitiveKind::sprite;
+                        primitive.material.texture=texture;primitive.simple_sprite=true;
+                        primitive.sprite_half_extent=dimension*.5*pose.z/settings_.focal_length;
+                        primitive.vertices.push_back({{pose.x,pose.y,pose.z},{}});
+                        primitives->primitives.push_back(std::move(primitive));
+                    }
+                }
+                return;
+            }
             // Whole-object sprites (asteroids, explosion billboards) are
             // authored texels point-sampled onto the source raster, not
             // rasterized geometry. They are cartridge art wearing a shape's
@@ -1710,6 +1740,16 @@ void SoftwareRenderer::draw_impl(
                     raster_word_exact, raster_pose.vanish_x,
                     raster_pose.vanish_y, raster_pose.subpixel_projection);
                 if (axis_diagnostics) axis_diagnostics->projected = {{{near_screen.x,near_screen.y},{far_screen.x,far_screen.y}}};
+                if(primitives) {
+                    ShapePrimitive primitive;primitive.kind=ShapePrimitiveKind::line;
+                    primitive.material=face_material(shape,shape.faces.front(),pose.colour_frame,
+                        depth_band,light,pose,next_colour_warp_word(),settings_.colour_index_base);
+                    primitive.material.texture=nullptr; // The source line pass uses ink, not UVs.
+                    primitive.vertices={{{near_axis.x,near_axis.y,near_axis.z},{}},
+                        {{far_axis.x,far_axis.y,far_axis.z},{}}};
+                    primitives->primitives.push_back(std::move(primitive));
+                    return;
+                }
                 if (clip_screen_line(near_screen, far_screen, target,
                         raster_word_exact)) {
                     if (axis_diagnostics) {
@@ -1828,6 +1868,19 @@ void SoftwareRenderer::draw_impl(
                 centre.x += face_offset.x;
                 centre.y += face_offset.y;
                 centre.z += face_offset.z;
+                if(primitives) {
+                    if(centre.z>=32) {
+                        const int width=int(material.texture->u_mask)+1;
+                        const auto z=std::uint16_t(rounded_word(centre.z));
+                        const int increment=std::clamp((int(z)*(width==64?128:256))>>8,1,32767);
+                        ShapePrimitive primitive;primitive.kind=ShapePrimitiveKind::sprite;
+                        primitive.material=material;
+                        primitive.sprite_half_extent=double(width*128/increment)*centre.z/settings_.focal_length;
+                        primitive.vertices.push_back({{centre.x,centre.y,centre.z},{}});
+                        primitives->primitives.push_back(std::move(primitive));
+                    }
+                    continue;
+                }
                 // Sprite faces are texel art too; see the simple_scaled_sprite
                 // branch. The polygon faces around them stay geometry.
                 const ScopedLayer sprite_layer{target, PixelLayer::two_d};
@@ -1912,6 +1965,14 @@ void SoftwareRenderer::draw_impl(
         }
 
         if (polygon.size() == 2) {
+            if(primitives) {
+                ShapePrimitive primitive;primitive.kind=ShapePrimitiveKind::line;
+                primitive.material=material;primitive.material.texture=nullptr;
+                for(const auto& point:camera_polygon)
+                    primitive.vertices.push_back({{point.x,point.y,point.z},{}});
+                primitives->primitives.push_back(std::move(primitive));
+                continue;
+            }
             if (!clip_screen_line(
                     polygon[0], polygon[1], target,
                     raster_word_exact)) {
@@ -1938,7 +1999,22 @@ void SoftwareRenderer::draw_impl(
             trace.signed_area=signed_area;
             axis_diagnostics->polygons.push_back(std::move(trace));
         }
+
         if (settings_.backface_culling && !face.sprite && signed_area >= 0.0) {
+            continue;
+        }
+        if(primitives) {
+            ShapePrimitive primitive;primitive.material=material;
+            for(std::size_t index=0;index<camera_polygon.size();++index) {
+                const auto& point=camera_polygon[index];
+                ShapePrimitiveVertex vertex;vertex.camera={point.x,point.y,point.z};
+                if(material.texture) {
+                    const auto uv=material.texture->coordinates[index%material.texture->coordinates.size()];
+                    vertex.uv={double(uv.u)+pose.texture_scroll_x,double(uv.v)+pose.texture_scroll_y};
+                }
+                primitive.vertices.push_back(vertex);
+            }
+            primitives->primitives.push_back(std::move(primitive));
             continue;
         }
         std::vector<RasterVertex> raster_polygon;

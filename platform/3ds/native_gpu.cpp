@@ -83,7 +83,7 @@ struct NativeGpu::Impl {
     std::vector<u32> shader_words;
     DVLB_s* library{};
     shaderProgram_s program{};
-    int transform_location{-1},uv_location{-1};
+    int transform_location{-1},uv_location{-1},uv_mode_location{-1};
     std::array<C3D_RenderTarget*,2> top{};
     C3D_RenderTarget* bottom{};
     std::array<ResidentTexture,pica_texture_limit> textures;
@@ -102,7 +102,9 @@ struct NativeGpu::Impl {
             if(R_FAILED(shaderProgramSetVsh(&program,&library->DVLE[0]))) throw std::runtime_error("3DS GPU vertex shader binding failed");
             transform_location=shaderInstanceGetUniformLocation(program.vertexShader,"transform");
             uv_location=shaderInstanceGetUniformLocation(program.vertexShader,"uv_scale");
-            if(transform_location<0 || uv_location<0) throw std::runtime_error("3DS GPU shader uniforms missing");
+            uv_mode_location=shaderInstanceGetUniformLocation(program.vertexShader,"uv_mode");
+            if(transform_location<0 || uv_location<0 || uv_mode_location<0)
+                throw std::runtime_error("3DS GPU shader uniforms missing");
             top[0]=make_target(top_width,GFX_TOP,GFX_LEFT,true);
             bottom=make_target(bottom_width,GFX_BOTTOM,GFX_LEFT,false);
             vbo=static_cast<PicaVertex*>(linearAlloc((pica_vertex_limit+6)*sizeof(PicaVertex)));
@@ -144,9 +146,11 @@ struct NativeGpu::Impl {
         C3D_EarlyDepthTest(false,GPU_EARLYDEPTH_GEQUAL,0);
         for(unsigned stage=0;stage<6;++stage) C3D_TexEnvInit(C3D_GetTexEnv(stage));
     }
-    void material(ResidentTexture* texture,bool alpha,bool depth,bool write) {
+    void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false) {
         auto* env=C3D_GetTexEnv(0);C3D_TexEnvInit(env);
         if(texture) {
+            texture->texture.param=(texture->texture.param&~GPU_TEXTURE_MODE(7))
+                |GPU_TEXTURE_MODE(screen_dither?GPU_TEX_PROJECTION:GPU_TEX_2D);
             C3D_TexBind(0,&texture->texture);
             C3D_TexEnvSrc(env,C3D_Both,GPU_PRIMARY_COLOR,GPU_TEXTURE0);
             C3D_TexEnvFunc(env,C3D_Both,GPU_MODULATE);
@@ -156,6 +160,7 @@ struct NativeGpu::Impl {
             C3D_TexBind(0,nullptr);C3D_TexEnvSrc(env,C3D_Both,GPU_PRIMARY_COLOR);
             C3D_TexEnvFunc(env,C3D_Both,GPU_REPLACE);C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_location,1,1,0,0);
         }
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_mode_location,screen_dither?0:1,screen_dither?1:0,0,0);
         C3D_DepthTest(depth,GPU_GEQUAL,write?GPU_WRITE_ALL:GPU_WRITE_COLOR);
         C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,alpha?GPU_SRC_ALPHA:GPU_ONE,
             alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO,GPU_ONE,alpha?GPU_ONE_MINUS_SRC_ALPHA:GPU_ZERO);
@@ -188,7 +193,7 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
         for(const auto& draw:frame.draws) {
             upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
             impl_->material(draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture],
-                draw.alpha_blend,draw.depth_test,draw.depth_write);
+                draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither);
             C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
         }
     }

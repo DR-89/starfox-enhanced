@@ -75,6 +75,27 @@ public:
     // detect black or same-colour foreground writes.
     void mark_written(std::size_t first,std::size_t count=1) noexcept {
         if(track_coverage_) std::fill_n(coverage_.begin()+first,count,std::uint8_t{1});
+        if(!dither_pairs_.empty()) std::fill_n(dither_pairs_.begin()+first,count,std::uint16_t{0});
+    }
+    // Optional source-material provenance for software upscale presentation.
+    // Ordinary writes erase it; a flat-face writer annotates after its write.
+    // Keeping allocation explicit avoids any extra storage at native 1x.
+    void enable_dither_pairs(bool enabled) {
+        if(enabled) {if(dither_pairs_.empty()) dither_pairs_.assign(pixels_.size(),0);}
+        else {std::vector<std::uint16_t>{}.swap(dither_pairs_);}
+    }
+    [[nodiscard]] std::span<const std::uint16_t> dither_pairs() const noexcept {return dither_pairs_;}
+    void clear_dither_pairs() noexcept {std::fill(dither_pairs_.begin(),dither_pairs_.end(),std::uint16_t{0});}
+    void set_dither_alternate(std::size_t index,std::uint8_t alternate) noexcept {
+        if(index<dither_pairs_.size()) dither_pairs_[index]=0x100U|alternate;
+    }
+    void annotate_dither(std::int32_t x,std::int32_t y,std::uint8_t even,std::uint8_t odd) noexcept {
+        if(dither_pairs_.empty() || layer_override_!=0 || even==odd || x<0 || y<0
+            || std::uint32_t(x)>=width() || std::uint32_t(y)>=height()) return;
+        for(unsigned row=0;row<draw_scale_;++row) for(unsigned column=0;column<draw_scale_;++column) {
+            const auto i=std::size_t(std::uint32_t(y)*draw_scale_+row)*stored_width_+std::uint32_t(x)*draw_scale_+column;
+            set_dither_alternate(i,pixels_[i]==even?odd:even);
+        }
     }
     // Repartitions the same storage between source-raster and stored extents.
     void set_draw_scale(std::uint32_t draw_scale) noexcept {
@@ -132,6 +153,7 @@ public:
         pixels_.assign(
             static_cast<std::size_t>(stored_width_) * stored_height_, 0U);
         if(track_coverage_) coverage_.assign(pixels_.size(),1);
+        if(!dither_pairs_.empty()) dither_pairs_.assign(pixels_.size(),0);
         if (layer_tags_enabled_) {
             tags_.assign(pixels_.size(),
                 static_cast<std::uint8_t>(PixelLayer::three_d));
@@ -255,6 +277,7 @@ public:
     // a restored frame filters exactly like the frame it was captured from.
     void copy_pixels_from(const Framebuffer& source) {
         pixels_ = source.pixels_;
+        dither_pairs_=source.dither_pairs_;
         if(track_coverage_) coverage_.assign(pixels_.size(),1);
         if (!layer_tags_enabled_) return;
         if (source.layer_tags_enabled_ && source.tags_.size() == pixels_.size()) {
@@ -282,6 +305,7 @@ private:
     std::uint32_t draw_scale_{1U};
     std::vector<std::uint8_t> pixels_;
     std::vector<std::uint8_t> tags_;
+    std::vector<std::uint16_t> dither_pairs_;
     bool layer_tags_enabled_{false};
     std::int8_t layer_override_{-1};
     RasterCommands* commands_{};
@@ -328,7 +352,7 @@ struct LayerCompositeSettings {
 };
 
 void composite_transparent_layer(const Framebuffer& source,
-    Framebuffer& destination, const LayerCompositeSettings& settings) noexcept;
+    Framebuffer& destination, const LayerCompositeSettings& settings);
 
 void write_bmp(const Framebuffer& framebuffer, const std::filesystem::path& path);
 void write_bmp(

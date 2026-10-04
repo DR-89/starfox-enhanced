@@ -8,6 +8,9 @@ on:
       - 'include/starfox/platform/nintendo_3ds/**'
       - '.github/workflows/3ds-native-check.yml'
       - 'tests/nintendo_3ds_pica_tests.cpp'
+      - 'tests/nintendo_3ds_source_geometry_tests.cpp'
+      - 'src/render/software_renderer.cpp'
+      - 'include/starfox/render/software_renderer.hpp'
 permissions:
   contents: read
 jobs:
@@ -26,6 +29,15 @@ jobs:
           g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I include \
             tests/nintendo_3ds_pica_tests.cpp -o "$RUNNER_TEMP/starfox-pica-contracts"
           "$RUNNER_TEMP/starfox-pica-contracts"
+      - name: Verify shared source geometry and native conversion
+        shell: bash
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I include \
+            tests/nintendo_3ds_source_geometry_tests.cpp platform/3ds/pica_shapes.cpp \
+            src/render/software_renderer.cpp src/render/face_material.cpp \
+            src/simulation/math.cpp src/assets/rom.cpp \
+            -o "$RUNNER_TEMP/starfox-3ds-source-contracts"
+          "$RUNNER_TEMP/starfox-3ds-source-contracts"
       - name: Cross-build actual native diagnostics
         shell: bash
         run: |

@@ -21,6 +21,10 @@ struct PicaDraw {
     PicaMatrix model{pica_identity};
     PicaSpace space{PicaSpace::world};
     bool depth_test{true},depth_write{true},alpha_blend{};
+    // Two source inks remain distinct at fixed LCD pixel parity. The shader
+    // emits homogeneous screen UV/Q, sampled as a projection texture; ordinary
+    // model UVs must not stretch the checkerboard along perspective geometry.
+    bool screen_dither{};
 };
 struct PicaImage {
     std::span<const std::uint8_t> pixels;
@@ -127,6 +131,10 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
             || (draw.space!=PicaSpace::world && (draw.depth_test || draw.depth_write))
             || (draw.depth_write && !draw.depth_test))
             throw std::invalid_argument("Invalid/omitted 3DS GPU draw range");
+        if(draw.screen_dither && (draw.texture==pica_no_texture
+            || frame.textures[draw.texture].width!=8 || frame.textures[draw.texture].height!=8
+            || !frame.textures[draw.texture].repeat))
+            throw std::invalid_argument("Invalid 3DS source dither texture");
         for(const auto& row:draw.model) for(float value:row) if(!std::isfinite(value))
             throw std::invalid_argument("Non-finite 3DS model matrix");
         for(unsigned eye=0;eye<frame.plan.eye_count;++eye)
