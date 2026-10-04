@@ -81,7 +81,7 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
         for(const auto& pass:batch.passes) if(!same_source(*source_,*source,pass)) {decode=true;break;}
     // Reuse already sufficient coverage during slider-only presentations.
     // A genuinely changed source pass can retire excess decoded storage.
-    if(!decode) width=std::max(width,indexed_->width());
+    if(!decode) width=std::max(width,unsigned(indexed_->width()));
     decode=decode || indexed_->width()!=width;
     const int origin=int((width-256)/2);
     auto next=std::unique_ptr<render::Framebuffer>{};
