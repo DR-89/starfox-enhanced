@@ -1,4 +1,5 @@
 #include "starfox/render/background_renderer.hpp"
+#include "tilemap_coordinates.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,8 @@
 
 namespace starfox::render {
 namespace {
+
+using detail::wrap_tilemap_coordinate;
 
 std::uint16_t vram_word(
     const simulation::SnesPpuState& ppu, std::uint32_t word_address) noexcept {
@@ -174,13 +177,10 @@ void BackgroundRenderer::draw_bg1(
     const auto width_tiles = (ppu.bg1_screen_size & 1U) != 0U ? 64U : 32U;
     const auto height_tiles = (ppu.bg1_screen_size & 2U) != 0U ? 64U : 32U;
     const auto pages_wide = width_tiles / 32U;
-    const auto tile_edge = ppu.bg1_tile_size_16 ? 16U : 8U;
+    const auto tile_shift = ppu.bg1_tile_size_16 ? 4U : 3U;
+    const auto tile_edge = 1U << tile_shift;
     const auto width_pixels = static_cast<std::int32_t>(width_tiles * tile_edge);
     const auto height_pixels = static_cast<std::int32_t>(height_tiles * tile_edge);
-    const auto wrap = [](std::int32_t value, std::int32_t modulus) {
-        value %= modulus;
-        return value < 0 ? value + modulus : value;
-    };
     const auto outline_sample=[&](int x,int y) {
         if(y<0 || y>=int(target.height()) || x+horizontal_origin<0
             || x+horizontal_origin>=int(target.width())) return false;
@@ -190,9 +190,9 @@ void BackgroundRenderer::draw_bg1(
             if(x<((inset+step-1)/step)*step
                 || x>=std::min(256,((256-inset+step-1)/step)*step)) return false;
         }
-        x=wrap(mosaic_coordinate(x,ppu.mosaic,1)+ppu.bg1_scroll_x,width_pixels);
-        y=wrap(mosaic_coordinate(y,ppu.mosaic,1)+ppu.bg1_scroll_y,height_pixels);
-        const unsigned tx=unsigned(x)/tile_edge,ty=unsigned(y)/tile_edge;
+        x=wrap_tilemap_coordinate(mosaic_coordinate(x,ppu.mosaic,1)+ppu.bg1_scroll_x,width_pixels);
+        y=wrap_tilemap_coordinate(mosaic_coordinate(y,ppu.mosaic,1)+ppu.bg1_scroll_y,height_pixels);
+        const unsigned tx=unsigned(x)>>tile_shift,ty=unsigned(y)>>tile_shift;
         const auto tile=vram_word(ppu,ppu.bg1_screen_base
             +((tx>>5)+(ty>>5)*pages_wide)*1024+(ty&31)*32+(tx&31));
         if(!selected_priority(tile,priority)) return false;
@@ -206,9 +206,9 @@ void BackgroundRenderer::draw_bg1(
     for (std::uint32_t screen_y = 0; screen_y < target.height(); ++screen_y) {
         const auto sample_y = mosaic_coordinate(
             static_cast<std::int32_t>(screen_y), ppu.mosaic, 0x01U);
-        const auto source_y = wrap(sample_y
+        const auto source_y = wrap_tilemap_coordinate(sample_y
             + ppu.bg1_scroll_y, height_pixels);
-        const auto tile_y = static_cast<std::uint32_t>(source_y) / tile_edge;
+        const auto tile_y = static_cast<std::uint32_t>(source_y) >> tile_shift;
         const auto inset = static_cast<std::int32_t>(
             std::min<std::uint32_t>(horizontal_inset, 128U));
         const int step=mosaic_staging_inset && (ppu.mosaic&1U)?(ppu.mosaic>>4U)+1:1;
@@ -227,9 +227,9 @@ void BackgroundRenderer::draw_bg1(
                 && (logical_x<0 || logical_x>=256)) continue;
             const auto sample_x = mosaic_coordinate(
                 logical_x, ppu.mosaic, 0x01U);
-            const auto source_x = wrap(sample_x
+            const auto source_x = wrap_tilemap_coordinate(sample_x
                 + ppu.bg1_scroll_x, width_pixels);
-            const auto tile_x = static_cast<std::uint32_t>(source_x) / tile_edge;
+            const auto tile_x = static_cast<std::uint32_t>(source_x) >> tile_shift;
             const auto page = (tile_x >> 5U) + (tile_y >> 5U) * pages_wide;
             const auto entry = page * 0x400U
                 + (tile_y & 31U) * 32U + (tile_x & 31U);
@@ -293,13 +293,10 @@ void BackgroundRenderer::draw_bg2(
     const auto width_tiles = (ppu.bg2_screen_size & 1U) != 0U ? 64U : 32U;
     const auto height_tiles = (ppu.bg2_screen_size & 2U) != 0U ? 64U : 32U;
     const auto pages_wide = width_tiles / 32U;
-    const auto tile_edge = ppu.bg2_tile_size_16 ? 16U : 8U;
+    const auto tile_shift = ppu.bg2_tile_size_16 ? 4U : 3U;
+    const auto tile_edge = 1U << tile_shift;
     const auto width_pixels = static_cast<std::int32_t>(width_tiles * tile_edge);
     const auto height_pixels = static_cast<std::int32_t>(height_tiles * tile_edge);
-    const auto wrap = [](std::int32_t value, std::int32_t modulus) {
-        value %= modulus;
-        return value < 0 ? value + modulus : value;
-    };
     auto black_colour = std::uint8_t{};
     auto darkest = std::numeric_limits<unsigned>::max();
     for (std::size_t index = 0U; index < ppu.cgram.size(); ++index) {
@@ -535,7 +532,7 @@ void BackgroundRenderer::draw_bg2(
                 static_cast<std::size_t>(sample_y)])
             : scroll_x;
         const auto unique_scroll_x = unique_regions.empty() ? 0
-            : wrap(row_scroll_x + width_pixels / 2, width_pixels) - width_pixels / 2;
+            : wrap_tilemap_coordinate(row_scroll_x + width_pixels / 2, width_pixels) - width_pixels / 2;
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
@@ -571,7 +568,7 @@ void BackgroundRenderer::draw_bg2(
             // scanline/HDMA writes. Invalid entries still use that register.
             const auto current_scroll_y = tile_scroll_y != no_column_scroll
                 ? tile_scroll_y : register_scroll_y;
-            auto source_y = wrap(
+            auto source_y = wrap_tilemap_coordinate(
                 sample_y + current_scroll_y,
                 height_pixels);
             if(expanded_mode2 && screen_y<144U && (logical_x<0 || logical_x>=256)
@@ -623,7 +620,7 @@ void BackgroundRenderer::draw_bg2(
                     source_y=int(patch?128U+patch*32U:0U)+((sample_y+current_scroll_y)&31);
                 }
             }
-            const auto tile_y = static_cast<std::uint32_t>(source_y) / tile_edge;
+            const auto tile_y = static_cast<std::uint32_t>(source_y) >> tile_shift;
             // Scanline scrolling also drives open water (Titania). It is not
             // evidence of a closed tunnel. Actual tunnel margins were handled
             // above via tunnel_scene; water continues its edge material below.
@@ -653,7 +650,7 @@ void BackgroundRenderer::draw_bg2(
                     static_cast<std::int32_t>(screen_y), black_colour);
                 continue;
             }
-            auto source_x = wrap(unwrapped_source_x, width_pixels);
+            auto source_x = wrap_tilemap_coordinate(unwrapped_source_x, width_pixels);
             if (ppu.background_mode == 1U
                 && ppu.bg2_scanline_scroll_enabled && !ppu.tunnel_scene
                 && extend_horizontal && (logical_x < 0 || logical_x >= 256)) {
@@ -662,10 +659,10 @@ void BackgroundRenderer::draw_bg2(
                 // one scrolled BG2 tilemap, then continue its edge material
                 // rather than wrapping a second bridge into ultrawide edges.
                 // Mode 2 open water (EX 6-2) is a repeating landscape instead.
-                const auto water_x = wrap(128 + row_scroll_x, width_pixels) + sample_x - 128;
+                const auto water_x = wrap_tilemap_coordinate(128 + row_scroll_x, width_pixels) + sample_x - 128;
                 source_x = std::clamp<std::int32_t>(water_x, 0, width_pixels - 1);
             }
-            const auto tile_x = static_cast<std::uint32_t>(source_x) / tile_edge;
+            const auto tile_x = static_cast<std::uint32_t>(source_x) >> tile_shift;
             const auto page = (tile_x >> 5U) + (tile_y >> 5U) * pages_wide;
             const auto entry = page * 0x400U
                 + (tile_y & 31U) * 32U + (tile_x & 31U);
@@ -717,8 +714,8 @@ void BackgroundRenderer::draw_bg2(
                         && indexed_colour <= region.last_colour) {
                         indexed_colour = region.replacement_colour;
                         if(replacement_offset) {
-                            const auto replacement_x=wrap(source_x+replacement_offset,width_pixels);
-                            const auto rx=std::uint32_t(replacement_x)/tile_edge;
+                            const auto replacement_x=wrap_tilemap_coordinate(source_x+replacement_offset,width_pixels);
+                            const auto rx=std::uint32_t(replacement_x)>>tile_shift;
                             const auto replacement_entry=((rx>>5U)+(tile_y>>5U)*pages_wide)*0x400U
                                 +(tile_y&31U)*32U+(rx&31U);
                             const auto replacement_tile=cached_tilemap_word(replacement_entry);
@@ -752,20 +749,17 @@ void BackgroundRenderer::draw_bg3(
     const auto width_tiles = (ppu.bg3_screen_size & 1U) != 0U ? 64U : 32U;
     const auto height_tiles = (ppu.bg3_screen_size & 2U) != 0U ? 64U : 32U;
     const auto pages_wide = width_tiles / 32U;
-    const auto tile_edge = ppu.bg3_tile_size_16 ? 16U : 8U;
+    const auto tile_shift = ppu.bg3_tile_size_16 ? 4U : 3U;
+    const auto tile_edge = 1U << tile_shift;
     const auto width_pixels = static_cast<std::int32_t>(width_tiles * tile_edge);
     const auto height_pixels = static_cast<std::int32_t>(height_tiles * tile_edge);
-    const auto wrap = [](std::int32_t value, std::int32_t modulus) {
-        value %= modulus;
-        return value < 0 ? value + modulus : value;
-    };
 
     for (std::uint32_t screen_y = 0; screen_y < target.height(); ++screen_y) {
         const auto sample_y = mosaic_coordinate(
             static_cast<std::int32_t>(screen_y), ppu.mosaic, 0x04U);
-        const auto source_y = wrap(sample_y
+        const auto source_y = wrap_tilemap_coordinate(sample_y
             + ppu.bg3_scroll_y, height_pixels);
-        const auto tile_y = static_cast<std::uint32_t>(source_y) / tile_edge;
+        const auto tile_y = static_cast<std::uint32_t>(source_y) >> tile_shift;
         const auto first_x = extend_horizontal ? 0U
             : static_cast<std::uint32_t>(std::max<std::int32_t>(horizontal_origin, 0));
         const auto final_x = extend_horizontal ? target.width()
@@ -776,9 +770,9 @@ void BackgroundRenderer::draw_bg3(
                 - horizontal_origin;
             const auto sample_x = mosaic_coordinate(
                 logical_x, ppu.mosaic, 0x04U);
-            const auto source_x = wrap(sample_x
+            const auto source_x = wrap_tilemap_coordinate(sample_x
                 + ppu.bg3_scroll_x, width_pixels);
-            const auto tile_x = static_cast<std::uint32_t>(source_x) / tile_edge;
+            const auto tile_x = static_cast<std::uint32_t>(source_x) >> tile_shift;
             const auto page = (tile_x >> 5U) + (tile_y >> 5U) * pages_wide;
             const auto entry = page * 0x400U
                 + (tile_y & 31U) * 32U + (tile_x & 31U);
