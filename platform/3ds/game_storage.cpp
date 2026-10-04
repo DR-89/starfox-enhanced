@@ -7,7 +7,7 @@
 
 namespace starfox::platform::nintendo_3ds {
 namespace {
-constexpr std::uint32_t schema=0x33445303U,bindings_schema=0x33445302U,legacy_schema=0x33445301U;
+constexpr std::uint32_t schema=0x33445304U,fps_schema=0x33445303U,bindings_schema=0x33445302U,legacy_schema=0x33445301U;
 struct Decoded {std::uint64_t generation;GameSaveData data;};
 struct Scan {
     std::array<std::optional<Decoded>,2> slots;
@@ -23,7 +23,7 @@ void validate(const GameSaveData& data) {
         || p.music>100 || p.sfx>100 || p.language>5 || p.laser>2
         || (p.level && (p.level<11 || p.level>99 || p.level%10==0))
         || p.separation<1 || p.separation>64 || p.convergence<16
-        || (p.render_fps!=30 && p.render_fps!=60)
+        || (p.render_fps!=30 && p.render_fps!=60) || !p.hud_layout.valid()
         || (!data.ex_sram.empty() && data.ex_sram.size()!=GameStorage::ex_sram_bytes)
         || (data.ex_sram.empty() && data.ex_rom_crc!=0) || !data.bindings.valid())
         throw std::runtime_error("Invalid 3DS settings or EX save bank");
@@ -40,6 +40,8 @@ std::vector<std::uint8_t> encode(std::uint64_t generation,const GameSaveData& da
     state::Writer writer;writer(generation);fields(writer,data);
     writer(data.bindings.sources,data.bindings.deadzone);
     writer(data.preferences.render_fps,data.preferences.show_fps);
+    for(const auto& placement:data.preferences.hud_layout.widgets)
+        writer(placement.x,placement.y,placement.quarters,placement.visible);
     auto bytes=state::pack(schema,manifest,writer.bytes());
     if(bytes.size()>GameStorage::maximum_file_bytes) throw std::runtime_error("3DS save exceeds SD size limit");
     return bytes;
@@ -48,13 +50,15 @@ Decoded decode(std::span<const std::uint8_t> bytes,std::uint32_t manifest) {
     if(bytes.size()<12) throw std::runtime_error("Truncated 3DS SD envelope");
     const auto stored=std::uint32_t(bytes[8])|(std::uint32_t(bytes[9])<<8)
         |(std::uint32_t(bytes[10])<<16)|(std::uint32_t(bytes[11])<<24);
-    if(stored!=schema && stored!=bindings_schema && stored!=legacy_schema) throw std::runtime_error("Unsupported 3DS SD schema");
+    if(stored!=schema && stored!=fps_schema && stored!=bindings_schema && stored!=legacy_schema) throw std::runtime_error("Unsupported 3DS SD schema");
     state::Reader reader(state::unpack(bytes,stored,manifest));Decoded result;
     reader(result.generation);fields(reader,result.data);
     // Old checksummed settings/SRAM remain valid and receive the original
     // Nintendo layout. A later changed save upgrades only the alternate slot.
     if(stored!=legacy_schema) reader(result.data.bindings.sources,result.data.bindings.deadzone);
-    if(stored==schema) reader(result.data.preferences.render_fps,result.data.preferences.show_fps);
+    if(stored==schema || stored==fps_schema) reader(result.data.preferences.render_fps,result.data.preferences.show_fps);
+    if(stored==schema) for(auto& placement:result.data.preferences.hud_layout.widgets)
+        reader(placement.x,placement.y,placement.quarters,placement.visible);
     reader.finish();validate(result.data);
     if(!result.generation) throw std::runtime_error("Invalid 3DS save generation");
     return result;

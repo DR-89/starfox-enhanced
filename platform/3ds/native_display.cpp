@@ -21,8 +21,9 @@ NativeInput NativeDisplay::poll() {
     if(!running) return {};
     hidScanInput();circlePosition circle{};hidCircleRead(&circle);
     const auto physical=hidKeysHeld();
+    touchPosition touch{};hidTouchRead(&touch);
     return {buttons(physical,circle.dx,circle.dy),osGet3DSliderState(),true,stereoscopic_hardware_,
-        buttons(physical),circle.dx,circle.dy};
+        buttons(physical),circle.dx,circle.dy,(physical&KEY_TOUCH)!=0,touch.px,touch.py};
 }
 void NativeDisplay::present(const FramePlan& frame,ImageView left,ImageView right,ImageView lower) {
     if(!valid_image(left,top_width,screen_height) || !valid_image(lower,bottom_width,screen_height)

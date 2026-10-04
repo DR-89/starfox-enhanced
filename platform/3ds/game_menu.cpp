@@ -24,7 +24,7 @@ bool supported(PregamePage page,unsigned id,bool runtime) {
     case PregamePage::main:
         return (id==0 && !runtime) || id==1 || id==2 || id==14 || id==15 || id==16
             || id==20 || id==21 || id==47;
-    case PregamePage::options: return id==0 || id==1 || id==5 || id==6 || id==7 || id==8 || id==9 || id==11 || id==12;
+    case PregamePage::options: return id==0 || id==1 || id==3 || id==5 || id==6 || id==7 || id==8 || id==9 || id==11 || id==12;
     case PregamePage::cheats: return true;
     case PregamePage::two_d: case PregamePage::three_d: case PregamePage::global: return id==23;
     case PregamePage::stereo: return id==1 || id==2 || id==4 || id==5;
@@ -55,7 +55,7 @@ GameMenuRow row(const simulation::GameSimulation& game,unsigned id) {
             "FULLSCREEN","GPU BACKEND","RENDERER"};
         result.label=names.at(id);
         switch(id) {
-        case 0:case 8:case 9:result.value="A  OPEN";break;
+        case 0:case 3:case 8:case 9:result.value="A  OPEN";break;
         case 1:result.value=toggle(game.show_fps());break;
         case 5:result.value=toggle(game.swap_face_buttons());break;
         case 6:result.value=std::to_string(game.music_volume())+"%";break;

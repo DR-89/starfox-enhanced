@@ -5,7 +5,7 @@
 namespace starfox::platform::nintendo_3ds {
 bool GameSession::state_available() const noexcept {
     return !failed_ && !game_.runtime_options_open() && !requested_experience_ && !requested_preview_
-        && !requested_settings_reset_ && !requested_controller_remap_ && !start_after_preview_;
+        && !requested_settings_reset_ && !requested_controller_remap_ && !requested_hud_customization_ && !start_after_preview_;
 }
 std::vector<std::uint8_t> GameSession::save_state() const {
     if(!state_available()) throw std::runtime_error("Close runtime options or finish cartridge handoff before saving a state");
@@ -38,7 +38,7 @@ std::unique_ptr<GameSession> GameSession::restored_state(std::span<const std::ui
     return next;
 }
 bool GameSession::toggle_runtime_options() {
-    if(failed_ || requested_experience_ || requested_preview_ || requested_settings_reset_ || requested_controller_remap_)
+    if(failed_ || requested_experience_ || requested_preview_ || requested_settings_reset_ || requested_controller_remap_ || requested_hud_customization_)
         throw std::runtime_error("Cannot open native options during a cartridge handoff");
     if(!game_.toggle_runtime_options()) return false;
     input_.reset();clock_.reset();previous_time_.reset();fraction_=0;suppress_held_=true;reset_hold_.cancel();

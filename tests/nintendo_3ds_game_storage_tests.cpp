@@ -40,12 +40,13 @@ void replace(const std::string& path,std::span<const std::uint8_t> data) {
     file.write(reinterpret_cast<const char*>(data.data()),static_cast<std::streamsize>(data.size()));file.close();
 }
 // Independent format oracle; do not use the production encoder/decoder.
-std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest,bool legacy=false,unsigned version=3) {
+std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest,bool legacy=false,unsigned version=4) {
     state::Writer writer;const auto& p=data.preferences;
     writer(generation,data.experience,data.preview,p.timing,p.music,p.sfx,p.language,p.laser,p.level,
         p.swap,p.god,p.bombs,p.boost,p.lives,p.planet_cheat,p.separation,p.convergence,data.ex_rom_crc,data.ex_sram);
     if(!legacy) writer(data.bindings.sources,data.bindings.deadzone);
     if(!legacy && version>=3) writer(p.render_fps,p.show_fps);
+    if(!legacy && version>=4) for(const auto& item:p.hud_layout.widgets) writer(item.x,item.y,item.quarters,item.visible);
     return state::pack(legacy?0x33445301U:0x33445300U+version,manifest,writer.bytes());
 }
 GameSaveData fixture() {
@@ -172,11 +173,11 @@ void binding_migration() {
     require(invalid_axis.load().data==old && invalid_axis.current().writable && !invalid_axis.current().warning.empty(),"Invalid decoded mapping did not recover the legacy backup");
     bad=next;bad.bindings.sources[1]=254;replace(store.slot_path(1),envelope(9,bad,manifest));
     GameStorage invalid_button(temp.path.generic_string(),manifest);require(invalid_button.load().data==old,"Unknown decoded physical source accepted");
-    auto extended=envelope(10,next,manifest);auto payload=state::unpack(extended,0x33445303U,manifest);
+    auto extended=envelope(10,next,manifest);auto payload=state::unpack(extended,0x33445304U,manifest);
     std::vector<std::uint8_t> trailing(payload.begin(),payload.end());trailing.push_back(0);
-    replace(store.slot_path(1),state::pack(0x33445303U,manifest,trailing));
+    replace(store.slot_path(1),state::pack(0x33445304U,manifest,trailing));
     GameStorage extra(temp.path.generic_string(),manifest);require(extra.load().data==old,"Extended mapping payload accepted");
-    replace(store.slot_path(1),state::pack(0x33445304U,manifest,payload));
+    replace(store.slot_path(1),state::pack(0x33445305U,manifest,payload));
     GameStorage future(temp.path.generic_string(),manifest);require(future.load().data==old,"Unknown future schema accepted as bindings");
 }
 void presentation_migration() {
@@ -201,7 +202,7 @@ void presentation_migration() {
             GameStorage invalid(temp.path.generic_string(),manifest);
             require(invalid.load().data==old && !invalid.current().warning.empty(),"Unsupported decoded native FPS did not retain the older valid bank");
         }
-        auto packed=envelope(9,next,manifest);
+        auto packed=envelope(9,next,manifest,false,3);
         const auto data=state::unpack(packed,0x33445303U,manifest);
         std::vector<std::uint8_t> bad_boolean(data.begin(),data.end());bad_boolean.back()=2;
         replace(store.slot_path(1),state::pack(0x33445303U,manifest,bad_boolean));
@@ -213,8 +214,48 @@ void presentation_migration() {
         require(truncated.load().data==old,"Partial FPS settings tail was accepted");
     }
 }
+void hud_layout_migration() {
+    for(unsigned version:{1U,2U,3U}) {
+        Temporary temp;constexpr std::uint32_t manifest=0x48334453;
+        auto old=fixture();
+        if(version>=2) {old.bindings.sources[0]=12;old.bindings.deadzone=68;}
+        if(version>=3) {old.preferences.render_fps=30;old.preferences.show_fps=true;}
+        const auto backup=envelope(11,old,manifest,version==1,version);
+        GameStorage store(temp.path.generic_string(),manifest);replace(store.slot_path(0),backup);
+        require(store.load().data==old && store.current().data.preferences.hud_layout==CockpitLayout{},
+            "Pre-HUD journal lost native FPS/bindings/SRAM instead of supplying default layout");
+        auto edited=old;
+        for(unsigned id=0;id<hud_widget_count;++id) {
+            auto& p=edited.preferences.hud_layout.widgets[id];
+            p.x=std::uint16_t(3*id);p.y=std::uint16_t(5*id);p.quarters=2;p.visible=(id%3)!=0;
+        }
+        require(edited.preferences.hud_layout.valid() && store.save(edited) && store.generation()==12,"HUD layout did not upgrade journal");
+        require(bytes(store.slot_path(0))==backup && bytes(store.slot_path(1))==envelope(12,edited,manifest),
+            "HUD upgrade overwrote old backup or omitted native placements");
+        GameStorage reopen(temp.path.generic_string(),manifest);
+        require(reopen.load().data==edited && reopen.current().data.ex_sram==old.ex_sram,"Custom HUD/FPS/bindings/SRAM lost at reopen");
+        const auto stable=bytes(store.slot_path(1));
+        for(unsigned id=0;id<hud_widget_count;++id) for(unsigned field=0;field<4;++field) {
+            auto bad=edited;auto& p=bad.preferences.hud_layout.widgets[id];
+            if(field==0) p.x=320;else if(field==1) p.y=240;else if(field==2) p.quarters=1;else p.quarters=9;
+            rejects([&]{reopen.save(bad);});require(bytes(store.slot_path(1))==stable,"Invalid HUD edit touched valid SD bank");
+            replace(store.slot_path(0),envelope(13,bad,manifest));GameStorage decoded(temp.path.generic_string(),manifest);
+            require(decoded.load().data==edited && !decoded.current().warning.empty(),"Invalid decoded HUD placement displaced valid backup");
+        }
+        const auto packed=envelope(13,edited,manifest);const auto payload=state::unpack(packed,0x33445304U,manifest);
+        std::vector<std::uint8_t> malformed(payload.begin(),payload.end());malformed.back()=2;
+        replace(store.slot_path(0),state::pack(0x33445304U,manifest,malformed));GameStorage bad_bool(temp.path.generic_string(),manifest);
+        require(bad_bool.load().data==edited,"Non-boolean HUD visibility accepted");
+        malformed.assign(payload.begin(),payload.end());malformed.pop_back();
+        replace(store.slot_path(0),state::pack(0x33445304U,manifest,malformed));GameStorage partial(temp.path.generic_string(),manifest);
+        require(partial.load().data==edited,"Partial HUD tail accepted");
+        const auto defaults=default_game_settings(edited);
+        require(defaults.preferences.hud_layout==CockpitLayout{} && defaults.ex_sram==edited.ex_sram,"Reset did not restore HUD or destroyed EX progress");
+        require(bytes(store.slot_path(1)).size()<=GameStorage::maximum_file_bytes,"HUD tail exceeded existing bounded journal envelope");
+    }
+}
 }
 int main() try {
-    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();binding_migration();presentation_migration();
+    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();binding_migration();presentation_migration();hud_layout_migration();
     std::cout<<"3DS SD settings/EX SRAM journal: "<<checks<<" checks passed; synthetic public saves, not physical SD power-loss acceptance\n";
 } catch(const std::exception& error) {std::cerr<<"3DS SD journal: "<<error.what()<<'\n';return 1;}

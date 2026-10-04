@@ -45,6 +45,8 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
     }
     if(options.preferences) {
         const auto& prefs=*options.preferences;
+        if(!prefs.hud_layout.valid()) throw std::invalid_argument("Invalid 3DS HUD preferences");
+        hud_layout_=prefs.hud_layout;hud_.set_layout(hud_layout_);
         if(prefs.render_fps!=30 && prefs.render_fps!=60)
             throw std::invalid_argument("3DS render FPS must be 30 or 60");
         game_.set_presentation_fps(prefs.render_fps);game_.set_show_fps(prefs.show_fps);
@@ -100,7 +102,7 @@ GamePreferences GameSession::preferences() const noexcept {
         game_.default_laser(),game_.selected_level(),game_.swap_face_buttons(),game_.god_mode(),
         game_.infinite_bombs(),game_.infinite_boost(),game_.infinite_lives(),game_.planet_select_cheat(),
         game_.stereo_separation(),game_.stereo_convergence(),
-        static_cast<std::uint8_t>(game_.presentation_fps()),game_.show_fps()};
+        static_cast<std::uint8_t>(game_.presentation_fps()),game_.show_fps(),hud_layout_};
 }
 void GameSession::prepare_pace_shapes() {
     if(game_.timing_mode()!=simulation::TimingMode::original_speed) return;
@@ -135,6 +137,17 @@ void GameSession::finish_controller_remap() {
     requested_controller_remap_=false;input_.reset();clock_.reset();previous_time_.reset();fraction_=0;
     suppress_held_=true;reset_hold_.cancel();history_.reset_interpolation();
 }
+void GameSession::finish_hud_customization(std::optional<CockpitLayout> applied) {
+    if(!requested_hud_customization_) throw std::logic_error("No native HUD editor to close");
+    if(applied && !applied->valid()) throw std::invalid_argument("Invalid native HUD edit");
+    if(applied) {
+        const auto old=hud_layout_;hud_layout_=*applied;hud_.set_layout(hud_layout_);
+        try {publish_raster();}
+        catch(...) {hud_layout_=old;hud_.set_layout(old);throw;}
+    }
+    requested_hud_customization_=false;input_.reset();clock_.reset();previous_time_.reset();fraction_=0;
+    suppress_held_=true;reset_hold_.cancel();history_.reset_interpolation();
+}
 GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool focused,
     std::optional<input::ButtonMask> mapped_gameplay) {
     if(failed_) throw std::runtime_error("Reconstruct 3DS game after a failed source/audio tick");
@@ -143,7 +156,8 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     result.requested_preview=requested_preview_;result.start_after_preview=start_after_preview_;
     result.requested_settings_reset=requested_settings_reset_;
     result.requested_controller_remap=requested_controller_remap_;
-    if(requested_experience_ || requested_preview_ || requested_settings_reset_ || requested_controller_remap_) return result;
+    result.requested_hud_customization=requested_hud_customization_;
+    if(requested_experience_ || requested_preview_ || requested_settings_reset_ || requested_controller_remap_ || requested_hud_customization_) return result;
     if(!focused) {
         reset_hold_.cancel();
         previous_time_.reset();clock_.reset();input_.reset();fraction_=0;
@@ -202,6 +216,12 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                     native_rate=game_.presentation_fps()==60?30:60;
                 }
                 if(game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::options
+                    && game_.pregame_selection()==3 && (controls.pressed&input::a)
+                    && !(controls.pressed&(input::up|input::down|input::start))) {
+                    requested_hud_customization_=result.requested_hud_customization=true;
+                    controls={};input_.reset();reset_hold_.cancel();
+                }
+                if(game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::options
                     && game_.pregame_selection()==8 && (controls.pressed&input::a)) {
                     requested_controller_remap_=result.requested_controller_remap=true;
                     // Consume this host action instead of sending it into the
@@ -256,7 +276,7 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                 sink_(mixed_);game_.synchronize_apu_output_ports(audio_.output_ports());
                 pending_audio_.clear();audio_phase_=0;++result.audio_blocks;
             }
-            if(requested_controller_remap_) {
+            if(requested_controller_remap_ || requested_hud_customization_) {
                 clock_.reset();fraction_=result.raster_fraction=0;
                 history_.reset_interpolation();break;
             }

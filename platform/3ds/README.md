@@ -28,6 +28,44 @@ matrices and unchanged source state. Actual cartridge and ARM validation are
 separate gates. Unique EX skyline/orbital spans, extreme optical settings,
 full-flow resource limits and physical original-console acceptance remain.
 
+## Native lower-screen HUD customization
+
+Options' **CUSTOMIZE SCREEN** opens a native lower-LCD layout editor from
+pre-game setup, the real preview, or paused runtime Game Options. It retains
+the shared source menu rather than replacing it. The upper LCD lists controls;
+the lower LCD shows a clearly labeled **illustrative** HUD, not a live game.
+
+Touch-drag a widget; L/R cycles radio, portrait, all three allies, shield,
+boost, boss, lives/bombs and the three player-two widgets. D-pad moves four
+pixels; hold Select for one-pixel adjustments. Hold A + Up/Down to resize in
+25% steps (50-200%, bounded to the 320x240 LCD). X hides/shows the selected
+widget, Y restores all defaults, Start applies, and B cancels. Hidden widgets
+remain selectable. Opening and Home/sleep resume require input/touch release.
+Changing selection or size during a drag retires the old touch anchor.
+
+The cartridge, SPC and world preparation remain paused in the editor. Apply
+and Cancel rebase time/input without discarding pending APU writes or partial
+audio cadence. Runtime Game Options stays paused after returning. The default
+cockpit's pixels remain unchanged. Custom panels are independently rendered
+HUD artwork with explicit coverage, never cropped from the finished world;
+black pixels are opaque, and unchanged contents retain the redraw cache.
+The thirteen reused RGB/coverage panels occupy 154,856 bytes when all have
+been allocated; this is not the complete editor/game peak-memory measurement.
+
+Settings schema **4** stores a separate native layout in the existing
+checksummed SD journal. Schemas 1/2/3 migrate with default placements while
+retaining supported FPS, bindings and EX SRAM. Reset restores native layout
+defaults without erasing the EX save. Full source-state loads keep the current
+native layout, just as they keep the current physical bindings; they do not
+rewind a control profile with the cartridge archive. Desktop/mobile layouts
+are untouched. Split HUD still applies only on `game_routing(...).move_hud`
+routes; title/map/setup source overlays remain on the upper screen.
+
+Host editor/pixel/journal and actual Original/EX cartridge handoff checks are
+separate from actual ARM linkage and original-console touch, LCD, NDSP, SD,
+allocation and performance acceptance. This feature does not make the rest
+of the incomplete compositor or the full rendering-effects goal finished.
+
 ## Native rendering FPS
 
 The real pre-game **RENDER FPS** row switches between **30** and **60**.
@@ -42,7 +80,7 @@ snapshot. Original FX pacing is a separate setting and remains the default.
 Preview OFF still prepares no world geometry. These are output targets, not
 a claim that original 3DS hardware maintains either rate.
 
-Settings schema 3 persists both options in the protected SD journal. Schemas
+Settings schema 4 persists both options in the protected SD journal. Schemas
 1/2 migrate to 60 Hz / SHOW FPS OFF, preserving bindings and EX SRAM. Valid
 30/60 values also survive full-state restore; desktop-only targets are bounded
 to the native range without changing the restored VM or partial SPC timeline.

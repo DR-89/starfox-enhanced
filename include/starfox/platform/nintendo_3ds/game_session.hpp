@@ -25,6 +25,7 @@ struct GameAdvance {
     // the host preserves battery SRAM. Never tick the old owner afterwards.
     bool requested_settings_reset{};
     bool requested_controller_remap{};
+    bool requested_hud_customization{};
 };
 struct GamePreferences {
     simulation::TimingMode timing{simulation::TimingMode::original_speed};
@@ -33,6 +34,7 @@ struct GamePreferences {
     std::uint16_t separation{16},convergence{1024};
     std::uint8_t render_fps{60};
     bool show_fps{};
+    CockpitLayout hud_layout{};
     bool operator==(const GamePreferences&) const=default;
 };
 struct GameSessionOptions {
@@ -65,6 +67,7 @@ public:
     // Explicitly acknowledge the host editor; source cursor/state and partial
     // SPC cadence survive. Suppress held input before returning to Options.
     void finish_controller_remap();
+    void finish_hud_customization(std::optional<CockpitLayout> applied={});
     // Full VM/SPC/partial-raster timeline. Preparing a replacement owns its own
     // ROM/symbol references; validation never mutates this running session.
     [[nodiscard]] std::vector<std::uint8_t> save_state() const;
@@ -74,6 +77,7 @@ public:
     // copy of source settings. Rebases input/time without losing partial audio.
     bool toggle_runtime_options();
     [[nodiscard]] bool controller_remap_pending() const noexcept {return requested_controller_remap_;}
+    [[nodiscard]] bool hud_customization_pending() const noexcept {return requested_hud_customization_;}
     [[nodiscard]] GamePresentation presentation(float slider,bool stereoscopic_hardware,
         const StereoSettings& settings={}) const;
     [[nodiscard]] const simulation::GameSimulation& game() const noexcept {return game_;}
@@ -125,5 +129,7 @@ private:
     SettingsResetHold reset_hold_;
     bool requested_settings_reset_{};
     bool requested_controller_remap_{};
+    bool requested_hud_customization_{};
+    CockpitLayout hud_layout_;
 };
 } // namespace starfox::platform::nintendo_3ds

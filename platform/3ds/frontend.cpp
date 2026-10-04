@@ -6,14 +6,15 @@
 
 namespace starfox::platform::nintendo_3ds {
 void Canvas::pixel(int x,int y,Rgb c) {
-    if(x<0 || y<0 || x>=int(width_) || y>=int(screen_height)) return;
+    if(x<0 || y<0 || x>=int(width_) || y>=int(height_)) return;
     const auto at=(std::size_t(y)*width_+unsigned(x))*3;
     pixels_[at]=c.r;pixels_[at+1]=c.g;pixels_[at+2]=c.b;
+    if(!coverage_.empty()) coverage_[std::size_t(y)*width_+unsigned(x)]=1;
 }
-void Canvas::clear(Rgb c) {rectangle(0,0,int(width_),screen_height,c);}
+void Canvas::clear(Rgb c) {rectangle(0,0,int(width_),height_,c);}
 void Canvas::rectangle(int x,int y,int w,int h,Rgb c) {
     if(w<=0 || h<=0) return;
-    const auto end_y=std::min<std::int64_t>(screen_height,std::int64_t(y)+h);
+    const auto end_y=std::min<std::int64_t>(height_,std::int64_t(y)+h);
     const auto end_x=std::min<std::int64_t>(width_,std::int64_t(x)+w);
     for(int row=std::max(0,y);row<end_y;++row)
         for(int col=std::max(0,x);col<end_x;++col) pixel(col,row,c);
@@ -35,10 +36,10 @@ void Canvas::line(int x0,int y0,int x1,int y1,Rgb c) {
 void Canvas::text(int x,int y,std::string_view value,Rgb c,unsigned scale,
     unsigned box_width,unsigned box_height) {
     if(!scale || scale>3) throw std::invalid_argument("Invalid 3DS font scale");
-    if(x<0 || x>=int(width_) || y<0 || y>=int(screen_height)) return;
+    if(x<0 || x>=int(width_) || y<0 || y>=int(height_)) return;
     const auto available=width_-unsigned(x);
     const int right=x+int(std::min(box_width?box_width:(available>8?available-8:available),available));
-    const int bottom=y+int(std::min(box_height?box_height:screen_height-unsigned(y),screen_height-unsigned(y)));
+    const int bottom=y+int(std::min(box_height?box_height:height_-unsigned(y),height_-unsigned(y)));
     const int initial=x;
     for(unsigned char code:value) {
         if(y+int(8*scale)>bottom) break;
@@ -57,21 +58,33 @@ void Canvas::text(int x,int y,std::string_view value,Rgb c,unsigned scale,
 void Canvas::image(int x,int y,ImageView source) {
     if(!source.width || source.width>width_ || !source.height || source.height>screen_height
         || !valid_image(source,source.width,source.height)) throw std::invalid_argument("Invalid 3DS canvas image");
-    if(x>=int(width_) || y>=int(screen_height) || std::int64_t(x)+source.width<=0
+    if(x>=int(width_) || y>=int(height_) || std::int64_t(x)+source.width<=0
         || std::int64_t(y)+source.height<=0) return;
     for(unsigned row=0;row<source.height;++row) for(unsigned col=0;col<source.width;++col) {
         const auto at=std::size_t(row)*source.pitch+col*3;
         pixel(x+int(col),y+int(row),{source.pixels[at],source.pixels[at+1],source.pixels[at+2]});
     }
 }
+void Canvas::scaled_artwork(int x,int y,ImageView source,std::span<const std::uint8_t> mask,unsigned quarters) {
+    if(!valid_image(source,source.width,source.height) || !source.pixels.data() || quarters<2 || quarters>8
+        || mask.size()!=std::size_t(source.width)*source.height)
+        throw std::invalid_argument("Invalid scaled 3DS HUD artwork");
+    const unsigned w=(source.width*quarters+3)/4,h=(source.height*quarters+3)/4;
+    for(unsigned row=0;row<h;++row) for(unsigned col=0;col<w;++col) {
+        const auto sx=std::min(source.width-1,col*4/quarters),sy=std::min(source.height-1,row*4/quarters);
+        if(!mask[std::size_t(sy)*source.width+sx]) continue;
+        const auto at=std::size_t(sy)*source.pitch+sx*3;
+        pixel(x+int(col),y+int(row),{source.pixels[at],source.pixels[at+1],source.pixels[at+2]});
+    }
+}
 void Canvas::write_bmp(std::string_view path) const {
     std::ofstream out(std::string(path),std::ios::binary);
     if(!out) throw std::runtime_error("Cannot create 3DS diagnostic BMP");
-    const unsigned pitch=(width_*3+3)&~3U,bytes=pitch*screen_height;
+    const unsigned pitch=(width_*3+3)&~3U,bytes=pitch*height_;
     const auto word=[&](unsigned v,unsigned count) {while(count--) {out.put(char(v&255));v>>=8;}};
-    out.write("BM",2);word(bytes+54,4);word(0,4);word(54,4);word(40,4);word(width_,4);word(screen_height,4);
+    out.write("BM",2);word(bytes+54,4);word(0,4);word(54,4);word(40,4);word(width_,4);word(height_,4);
     word(1,2);word(24,2);word(0,4);word(bytes,4);word(0,4);word(0,4);word(0,4);word(0,4);
-    for(int y=screen_height-1;y>=0;--y) {
+    for(int y=int(height_)-1;y>=0;--y) {
         for(unsigned x=0;x<width_;++x) {
             const auto at=(std::size_t(y)*width_+x)*3;
             out.put(char(pixels_[at+2]));out.put(char(pixels_[at+1]));out.put(char(pixels_[at]));
@@ -81,6 +94,8 @@ void Canvas::write_bmp(std::string_view path) const {
     if(!out) throw std::runtime_error("3DS diagnostic BMP write failed");
 }
 void draw_cockpit(Canvas& c,const HudState& s) {
+    if(!s.layout.valid()) throw std::invalid_argument("Invalid native cockpit layout");
+    if(s.layout!=CockpitLayout{}) {CockpitWidgets widgets;widgets.draw(c,s);return;}
     if(c.view().width!=bottom_width) throw std::invalid_argument("Cockpit belongs on the lower LCD");
     if(s.portrait.width && (s.portrait.width>64 || s.portrait.height>64
         || !valid_image(s.portrait,s.portrait.width,s.portrait.height)))
@@ -128,6 +143,7 @@ void draw_cockpit(Canvas& c,const HudState& s) {
     }
 }
 bool CockpitDashboard::update(const HudState& s) {
+    if(!s.layout.valid()) throw std::invalid_argument("Invalid native cockpit layout");
     if(s.portrait.width && (s.portrait.width>64 || s.portrait.height>64
         || !valid_image(s.portrait,s.portrait.width,s.portrait.height)))
         throw std::invalid_argument("Invalid 3DS radio portrait");
@@ -145,7 +161,7 @@ bool CockpitDashboard::update(const HudState& s) {
                 owned.begin()+std::size_t(row)*row_bytes)) return false;
         return true;
     };
-    if(previous_ && s.shield_percent==previous_->shield_percent
+    if(previous_ && s.layout==previous_->layout && s.shield_percent==previous_->shield_percent
         && s.boost_percent==previous_->boost_percent && s.lives==previous_->lives
         && s.bombs==previous_->bombs && s.boss_percent==previous_->boss_percent
         && s.ally_percent==previous_->ally_percent && s.radio_message==message_
@@ -166,7 +182,8 @@ bool CockpitDashboard::update(const HudState& s) {
     if(s.radio_artwork.width) for(unsigned row=0;row<s.radio_artwork.height;++row)
         std::copy_n(s.radio_artwork.pixels.begin()+std::size_t(row)*s.radio_artwork.pitch,
             std::size_t(s.radio_artwork.width)*3,radio.begin()+std::size_t(row)*s.radio_artwork.width*3);
-    draw_cockpit(canvas_,s);
+    if(s.layout==CockpitLayout{}) draw_cockpit(canvas_,s);
+    else widgets_.draw(canvas_,s);
     message_=std::move(message);portrait_=std::move(portrait);radio_=std::move(radio);previous_=s;
     previous_->radio_message=message_;
     previous_->portrait=s.portrait.width?ImageView{portrait_,s.portrait.width,s.portrait.height,s.portrait.width*3}:ImageView{};

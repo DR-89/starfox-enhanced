@@ -1,4 +1,6 @@
 #pragma once
+#include "starfox/platform/nintendo_3ds/cockpit_layout.hpp"
+#include <memory>
 
 #include "starfox/input/buttons.hpp"
 #include <array>
@@ -124,17 +126,24 @@ public:
         if(width!=bottom_width && width!=top_width) throw std::invalid_argument("Invalid 3DS canvas");
         pixels_.resize(std::size_t(width)*screen_height*3);
     }
-    ImageView view() const {return {pixels_,width_,screen_height,width_*3};}
+    Canvas(unsigned width,unsigned height):width_(width),height_(height) {
+        if(!width || width>top_width || !height || height>screen_height) throw std::invalid_argument("Invalid 3DS artwork canvas");
+        pixels_.resize(std::size_t(width)*height*3);
+    }
+    ImageView view() const {return {pixels_,width_,height_,width_*3};}
     void clear(Rgb colour);
     void rectangle(int x,int y,int width,int height,Rgb colour);
     void line(int x0,int y0,int x1,int y1,Rgb colour);
     void text(int x,int y,std::string_view text,Rgb colour,unsigned scale=1,
         unsigned box_width=0,unsigned box_height=0);
     void image(int x,int y,ImageView source);
+    void begin_artwork() {coverage_.assign(std::size_t(width_)*height_,0);}
+    [[nodiscard]] std::span<const std::uint8_t> coverage() const {return coverage_;}
+    void scaled_artwork(int x,int y,ImageView,std::span<const std::uint8_t> coverage,unsigned quarters);
     void write_bmp(std::string_view path) const; // Host diagnostic only, never per-frame.
 private:
     void pixel(int x,int y,Rgb colour);
-    unsigned width_;std::vector<std::uint8_t> pixels_;
+    unsigned width_,height_{screen_height};std::vector<std::uint8_t> pixels_,coverage_;
 };
 struct HudCounters {
     unsigned lives{},bombs{}; // Reserve lives, not total ships including active one.
@@ -152,6 +161,15 @@ struct HudState {
     std::optional<unsigned> second_shield_percent;
     bool second_player_view{};
     std::optional<HudCounters> second_counters;
+    CockpitLayout layout{};
+};
+// Lazy, bounded isolated HUD panels, never cropped from a composed world.
+class CockpitWidgets {
+public:
+    void draw(Canvas&,const HudState&);
+    [[nodiscard]] std::size_t bytes() const noexcept;
+private:
+    std::array<std::unique_ptr<Canvas>,hud_widget_count> panels_;
 };
 // Independent lower-screen drawing. No crop/erase of an already composed
 // world image; source sprites/messages must be routed before composition.
@@ -168,6 +186,7 @@ public:
     [[nodiscard]] ImageView view() const {return canvas_.view();}
 private:
     Canvas canvas_;
+    CockpitWidgets widgets_;
     std::optional<HudState> previous_;
     std::string message_;
     std::vector<std::uint8_t> portrait_,radio_;

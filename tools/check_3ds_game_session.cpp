@@ -4,6 +4,7 @@
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/platform/nintendo_3ds/game_remap.hpp"
+#include "starfox/platform/nintendo_3ds/game_hud_editor.hpp"
 #include "starfox/platform/nintendo_3ds/game_state_storage.hpp"
 #include "starfox/state/container.hpp"
 #include "starfox/state/archive.hpp"
@@ -282,7 +283,7 @@ struct MenuDriver {
     void tap(input::ButtonMask button) {
         time+=50'000'000;last=session.advance(time,button);
         time+=50'000'000;const auto release=session.advance(time,0);
-        if(release.requested_experience || release.requested_preview || release.requested_controller_remap || release.requested_settings_reset) last=release;
+        if(release.requested_experience || release.requested_preview || release.requested_controller_remap || release.requested_hud_customization || release.requested_settings_reset) last=release;
     }
     void select(unsigned id) {
         const auto order=simulation::pregame_menu_order(session.game().pregame_page());
@@ -292,7 +293,9 @@ struct MenuDriver {
     }
 };
 void actual_menu(const assets::RomImage& rom,const assets::SymbolMap& symbols,const std::filesystem::path& captures) {
-    GameSession session(rom,symbols,[](auto){});MenuDriver controls(session);
+    GameSessionOptions native;native.preferences=GamePreferences{};
+    native.preferences->hud_layout.widgets[unsigned(HudWidget::shield)].x=20;
+    GameSession session(rom,symbols,[](auto){},"BOOT",{},native);MenuDriver controls(session);
     GameMenu menu(rom,symbols);
     const auto observe=[&] {
         const auto before=session.game().save_state(),spc=session.audio().save_state();
@@ -481,6 +484,8 @@ void actual_disk_handoff(const assets::RomImage& rom,const assets::SymbolMap& sy
     } temp;
     constexpr std::uint32_t manifest=0x76543210;
     GamePreferences prefs{simulation::TimingMode::original_speed,35,55,2,2,35,true,true,true,true,true,true,32,4096,30,true};
+    prefs.hud_layout.widgets[unsigned(HudWidget::radio)]={44,12,3,true};
+    prefs.hud_layout.widgets[unsigned(HudWidget::portrait)]={108,120,5,false};
     GameSessionOptions options;options.preferences=prefs;
     GameSession source(rom,symbols,[](auto){},"BOOT",{},options);
     require(source.preferences()==prefs,"Real cartridge did not accept persisted supported settings");
@@ -747,7 +752,7 @@ void full_state_parity(const assets::RomImage& rom,const assets::SymbolMap& symb
     }
     std::cout<<"  Full states: BOOT/stage, audio phases 0/1/2, retired-owner continuation and runtime options; largest fixture "<<maximum_bytes<<" bytes\n";
 }
-void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+void editor_resume_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols,bool hud_editor=false) {
     std::vector<std::int16_t> pcm;
     GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());});
     SourceOracle source(rom,symbols,"BOOT");
@@ -771,14 +776,18 @@ void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMa
         for(std::size_t i=0;session.game().pregame_selection()!=id && i<order.size();++i) tap(input::down);
         require(session.game().pregame_selection()==id,"Independent resume fixture could not select source menu row");
     };
-    select(14);tap(input::a);select(8);
+    select(14);tap(input::a);select(hud_editor?3:8);
     const auto opening=step(input::a,true);
-    require(opening.requested_controller_remap,"Independent resume fixture did not open controller editor");
+    require(hud_editor?opening.requested_hud_customization:opening.requested_controller_remap,"Independent resume fixture did not open native editor");
     source.input.reset();
     const auto frozen_phase=source.phase;
     const auto wait=session.advance(time+60'000'000'000LL,input::start);
     require(!wait.video_phases && !wait.audio_blocks && source.phase==frozen_phase,"Editor wait advanced source audio/raster");
-    compare();session.finish_controller_remap();
+    compare();
+    if(hud_editor) {
+        auto layout=session.preferences().hud_layout;layout.widgets[unsigned(HudWidget::shield)].x=20;
+        session.finish_hud_customization(layout);
+    } else session.finish_controller_remap();
     time+=60'000'000'001LL;
     require(!session.advance(time,input::a).video_phases,"Editor close caught up wall-clock time");
     source.input.reset();session.advance(++time,0);compare();
@@ -790,8 +799,114 @@ void controller_resume_parity(const assets::RomImage& rom,const assets::SymbolMa
         require(result.video_phases==1,"Editor return duplicated/dropped source raster");
         source.raster();compare();
     }
-    std::cout<<"  Controller resume: independent VM/SPC/PCM parity through partial audio phase "<<frozen_phase%3
+    std::cout<<(hud_editor?"  HUD editor":"  Controller")<<" resume: independent VM/SPC/PCM parity through partial audio phase "<<frozen_phase%3
         <<" and 24 post-editor rasters checked\n";
+}
+void runtime_hud_resume_parity(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    for(unsigned partial=0;partial<3;++partial) {
+        std::vector<std::int16_t> pcm;
+        GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());},"LEVEL1_1");
+        SourceOracle source(rom,symbols,"LEVEL1_1");std::int64_t time{};session.advance(time,0);
+        const auto compare=[&] {
+            require(session.game().save_state()==source.game.save_state(),"Runtime HUD changed independent cartridge state");
+            require(session.audio().save_state()==source.spc.save_state() && pcm==source.pcm,"Runtime HUD lost partial SPC/PCM phase");
+        };
+        for(unsigned raster=1;raster<=partial;++raster) {time=timestamp(raster);session.advance(time,0);source.raster();compare();}
+        require(session.toggle_runtime_options() && source.game.toggle_runtime_options(),"Stage fixture could not open runtime options");
+        source.input.reset();session.advance(++time,0);compare();
+        const auto menu_step=[&](input::ButtonMask held,bool host_action=false) {
+            time+=50'000'000;source.input.sample(host_action?0:held);
+            const auto result=session.advance(time,held);
+            require(result.video_phases>0 && result.video_phases<=3 && !result.audio_blocks,"Runtime HUD menu clock resumed audio prematurely");
+            // Menu input still uses source raster/logic timing, but its paused
+            // cartridge and SPC have no clock or handshake service.
+            for(unsigned raster=0;raster<result.video_phases;++raster) {
+                source.game.present_frame();
+                if(source.game.logic_tick_ready()) static_cast<void>(source.game.tick(source.input.consume()));
+            }
+            compare();return result;
+        };
+        const auto tap=[&](input::ButtonMask button) {menu_step(button);menu_step(0);};
+        const auto select=[&](unsigned id) {
+            const auto order=simulation::pregame_menu_order(session.game().pregame_page());
+            for(std::size_t i=0;session.game().pregame_selection()!=id && i<order.size();++i) tap(input::down);
+            require(session.game().pregame_selection()==id,"Runtime HUD fixture could not select source option");
+        };
+        select(14);tap(input::a);select(3);
+        require(menu_step(input::a,true).requested_hud_customization,"Runtime Customize Screen did not open native editor");
+        source.input.reset();const auto map=session.game().map().save_state(),spc=session.audio().save_state();
+        const auto wait=session.advance(time+60'000'000'000LL,input::start);
+        require(!wait.video_phases && !wait.audio_blocks && map==session.game().map().save_state() && spc==session.audio().save_state(),
+            "Runtime HUD editor advanced paused cartridge/audio");compare();
+        auto layout=session.preferences().hud_layout;layout.widgets[unsigned(HudWidget::shield)].x=20;
+        session.finish_hud_customization(layout);compare();
+        require(session.game().runtime_options_open(),"Apply unexpectedly closed source runtime menu");
+        require(session.toggle_runtime_options() && source.game.toggle_runtime_options(),"Runtime HUD options could not close");
+        source.input.reset();time+=60'000'000'001LL;session.advance(time,0);compare();
+        for(unsigned raster=1;raster<=24;++raster) {
+            const auto resumed=session.advance(time+timestamp(raster),0);
+            require(resumed.video_phases==1,"Runtime HUD resume duplicated/dropped source raster");source.raster();compare();
+        }
+    }
+    std::cout<<"  Runtime HUD resume: independent VM/SPC/PCM continuation for all three partial audio phases checked\n";
+}
+void actual_hud_customization(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    GameSession session(rom,symbols,[](auto){});MenuDriver controls(session);
+    rejects([&]{session.finish_hud_customization();},"Unrequested HUD editor acknowledged");
+    controls.select(14);controls.tap(input::a);controls.select(3);
+    const auto menu=GameMenu::capture(session.game());
+    const auto row=std::find_if(menu.rows.begin(),menu.rows.end(),[](const auto& item){return item.id==3;});
+    require(row!=menu.rows.end() && row->enabled && row->value=="A  OPEN","Actual Customize Screen option remains unavailable");
+    const auto saved_before=session.save_state();const auto preferences=session.preferences();
+    controls.tap(input::a);require(controls.last.requested_hud_customization && session.hud_customization_pending(),"Real Customize Screen action did not freeze native owner");
+    const auto vm=session.game().save_state(),spc=session.audio().save_state();
+    for(auto held:std::array<input::ButtonMask,3>{input::a,input::start,input::ButtonMask(input::left_shoulder|input::right_shoulder)}) {
+        const auto wait=session.advance(controls.time+10'000'000'000LL,held);
+        require(wait.requested_hud_customization && !wait.video_phases && !wait.logic_ticks && !wait.audio_blocks
+            && vm==session.game().save_state() && spc==session.audio().save_state(),"HUD editor advanced cartridge/SPC or reset settings");
+    }
+    require(!session.state_available(),"Transient HUD screen exposed save-state action");
+    rejects([&]{static_cast<void>(session.save_state());},"Transient HUD state saved");
+    rejects([&]{static_cast<void>(session.restored_state(saved_before));},"Transient HUD state replaced owner");
+    rejects([&]{session.toggle_runtime_options();},"Transient HUD editor admitted another menu");
+    GameHudEditor editor;editor.open(preferences.hud_layout);editor.update({});
+    for(unsigned id=0;id<hud_widget_count;++id) {
+        if(id) {editor.update({input::right_shoulder});editor.update({});}
+        editor.update({input::left});editor.update({});
+    }
+    const auto layout=editor.layout();require(layout!=preferences.hud_layout && layout.valid(),"Actual editor did not prepare independent profile");
+    require(vm==session.game().save_state() && spc==session.audio().save_state(),"Moving native HUD mutated cartridge/audio");
+    auto malformed=layout;malformed.widgets[0].quarters=9;
+    rejects([&]{session.finish_hud_customization(malformed);},"Malformed applied HUD accepted");
+    require(session.hud_customization_pending() && session.preferences()==preferences,"Invalid HUD edit partly changed profile or acknowledged handoff");
+    editor.update({input::start});require(editor.applied(),"Actual HUD editor did not Apply");
+    session.finish_hud_customization(editor.layout());
+    auto edited=preferences;edited.hud_layout=layout;
+    require(!session.hud_customization_pending() && session.preferences()==edited && session.state_available(),"HUD profile did not commit/return to source Options");
+    require(vm==session.game().save_state() && spc==session.audio().save_state(),"Applying native layout changed source VM/SPC");
+    // Layout is a current native control profile, not rewound by the source
+    // GAME archive. Save/load still preserves the complete source/audio packet.
+    const auto restored=session.restored_state(saved_before);
+    require(restored->preferences().hud_layout==layout && restored->save_state()==saved_before,"State restore rewound HUD profile or changed source archive");
+    const auto resumed=controls.time+20'000'000'000LL;
+    require(!session.advance(resumed,input::start).video_phases,"HUD close caught up long editor time");
+    require(!session.advance(resumed+1,0).requested_hud_customization,"Held editor Start reopened editor");
+    for(unsigned raster=1;raster<=6;++raster) session.advance(resumed+1+timestamp(raster),0);
+    const auto no_hud=session.presentation(0,false).dashboard;
+    GameSessionOptions defaults;defaults.preferences=preferences;
+    GameSession pristine(rom,symbols,[](auto){},"BOOT",{},defaults);
+    require(std::ranges::equal(no_hud.pixels,pristine.presentation(0,false).dashboard.pixels),"Native layout changed setup-only lower-screen status");
+    controls.time=resumed+1+timestamp(6);controls.tap(input::a);
+    require(session.hud_customization_pending(),"Customize Screen could not reopen after Apply/release");
+    session.finish_hud_customization();require(session.preferences()==edited,"Cancel did not preserve applied native layout");
+    GameSessionOptions options;options.preferences=edited;
+    GameSession stage(rom,symbols,[](auto){},"LEVEL1_1",{},options);
+    require(stage.preferences()==edited && !stage.hud_customization_pending(),"Native profile lost at actual stage-owner handoff");
+    GameHud expected(rom,symbols);expected.set_layout(layout);expected.update(expected.capture(stage.game()));
+    require(std::ranges::equal(stage.presentation(1,true).dashboard.pixels,expected.view().pixels),"Native stage did not apply customized HUD to split-screen route");
+    options.preferences->hud_layout=malformed;
+    rejects([&]{GameSession bad(rom,symbols,[](auto){},"BOOT",{},options);},"Malformed persisted HUD accepted by game owner");
+    std::cout<<"  HUD customization: actual source option, paused editor, Apply/Cancel, source-state purity, persistent native layout and stage routing checked\n";
 }
 }
 int main(int argc,char** argv) {
@@ -810,7 +925,10 @@ int main(int argc,char** argv) {
         actual_disk_handoff(rom,symbols);
         actual_settings_reset(rom,symbols);
         actual_controller_remap(rom,symbols);
-        controller_resume_parity(rom,symbols);
+        editor_resume_parity(rom,symbols);
+        actual_hud_customization(rom,symbols);
+        editor_resume_parity(rom,symbols,true);
+        runtime_hud_resume_parity(rom,symbols);
         full_state_parity(rom,symbols);
         merged_menu_compatibility(rom,symbols);
         GameSession failed(rom,symbols,[](auto){throw std::runtime_error("PCM device failed");});

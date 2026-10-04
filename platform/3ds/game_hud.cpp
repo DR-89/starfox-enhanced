@@ -99,6 +99,7 @@ bool GameHud::update(const GameHudFrame& frame) {
         rgb(portrait_,palette,portrait_rgb_,false);rgb(radio_,palette,radio_rgb_,true);
     }
     auto hud=status(frame);
+    if(frame.routing.move_hud) hud.layout=layout_;
     if(active) {
         hud.portrait={portrait_rgb_,32,40,32*3};
         if(frame.dialogue.text_visible) hud.radio_artwork={radio_rgb_,284,56,284*3};

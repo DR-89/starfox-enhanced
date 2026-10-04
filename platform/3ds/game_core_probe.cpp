@@ -8,6 +8,7 @@
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/platform/nintendo_3ds/game_remap.hpp"
+#include "starfox/platform/nintendo_3ds/game_hud_editor.hpp"
 #include "starfox/platform/nintendo_3ds/game_quick_menu.hpp"
 #include "starfox/platform/nintendo_3ds/presentation_clock.hpp"
 #include "starfox/assets/bps.hpp"
@@ -98,6 +99,7 @@ int main() {
     ctr::GameSaveData saved;
     ctr::GameBindings bindings;
     std::unique_ptr<ctr::GameRemap> remap;
+    std::unique_ptr<ctr::GameHudEditor> hud_editor;
     std::unique_ptr<ctr::GameQuickMenu> quick;
     std::unique_ptr<ctr::GameStateStorage> states;
     unsigned state_slot{};
@@ -138,7 +140,7 @@ int main() {
     };
     const auto release_owners=[&] {
         render_clock.reset();rendered_rate.reset();
-        remap.reset();quick.reset();states.reset();
+        remap.reset();hud_editor.reset();quick.reset();states.reset();
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
         gpu.reset();layers.reset();dots.reset();
@@ -172,9 +174,10 @@ int main() {
         suspension=std::make_unique<Suspension>(*session,*audio,[&]{
             render_clock.reset();rendered_rate.reset();
             if(remap) remap->suspend();
+            if(hud_editor) hud_editor->suspend();
             if(quick) quick->suspend();
             checkpoint(true);
-        },[&]{return remap || quick || session->game().runtime_options_open();});
+        },[&]{return remap || hud_editor || quick || session->game().runtime_options_open();});
         states=std::make_unique<ctr::GameStateStorage>("sdmc:/3ds/starfox-enhanced",ctr::companion_manifest,cartridge_crc);
 #if defined(STARFOX_3DS_CORE_PICA)
         layers=std::make_unique<ctr::GameLayers>();
@@ -194,7 +197,7 @@ int main() {
     };
     while(true) {
         const auto controls=display.poll();if(!controls.running) break;
-        if((controls.held&(input::select|input::start))==(input::select|input::start)) break;
+        if(!hud_editor && (controls.held&(input::select|input::start))==(input::select|input::start)) break;
         const auto pressed=static_cast<input::ButtonMask>(controls.held&~previous);previous=controls.held;
         try {
             if(!running && (pressed&input::x)) experience=experience==simulation::Experience::original
@@ -209,6 +212,20 @@ int main() {
             if(running) {
                 if(!suspension->error().empty()) throw std::runtime_error(suspension->error());
                 const ctr::PadSample pad{controls.physical,controls.circle_x,controls.circle_y};
+                if(hud_editor) {
+                    hud_editor->update(pad,{controls.touching,controls.touch_x,controls.touch_y});
+                    if(!hud_editor->active()) {
+                        session->finish_hud_customization(hud_editor->applied()?std::optional(hud_editor->layout()):std::nullopt);
+                        hud_editor.reset();render_clock.reset();rendered_rate.reset();
+                        audio->pause(session->game().runtime_options_open());checkpoint(true);continue;
+                    }
+#if defined(STARFOX_3DS_CORE_PICA)
+                    gpu->present(hud_editor->frame(),hud_editor->lower_view());
+#else
+                    display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),hud_editor->upper_view(),{},hud_editor->lower_view());
+#endif
+                    continue; // No cartridge or SPC service until editor acknowledgment.
+                }
                 if(remap) {
                     remap->update(pad);bindings=remap->bindings();
                     if(!remap->active()) {
@@ -270,9 +287,10 @@ int main() {
                             next_hook=std::make_unique<Suspension>(*next,*audio,[&]{
                                 render_clock.reset();rendered_rate.reset();
                                 if(remap) remap->suspend();
+                                if(hud_editor) hud_editor->suspend();
                                 if(quick) quick->suspend();
                                 checkpoint(true);
-                            },[&]{return remap || quick || session->game().runtime_options_open();});
+                            },[&]{return remap || hud_editor || quick || session->game().runtime_options_open();});
 #if defined(STARFOX_3DS_CORE_PICA)
                             next_layers=std::make_unique<ctr::GameLayers>();
                             next_dots=std::make_unique<ctr::GameDots>(next->rom(),next->symbols());
@@ -311,6 +329,10 @@ int main() {
                     render_clock.reset();rendered_rate.reset();
                     checkpoint(true);audio->pause(true);
                     remap=std::make_unique<ctr::GameRemap>();remap->open(bindings);continue;
+                }
+                if(advanced.requested_hud_customization) {
+                    render_clock.reset();rendered_rate.reset();checkpoint(true);audio->pause(true);
+                    hud_editor=std::make_unique<ctr::GameHudEditor>();hud_editor->open(session->preferences().hud_layout);continue;
                 }
                 if(advanced.requested_settings_reset) {
                     checkpoint(true);

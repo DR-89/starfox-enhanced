@@ -28,6 +28,10 @@ public:
     [[nodiscard]] GameHudFrame capture(const simulation::GameSimulation&) const;
     // No retained reference to a mutable simulation or to the caller's frame.
     bool update(const GameHudFrame&);
+    void set_layout(const CockpitLayout& layout) {
+        if(!layout.valid()) throw std::invalid_argument("Invalid native HUD layout");
+        layout_=layout;
+    }
     [[nodiscard]] ImageView view() const {return dashboard_.view();}
     [[nodiscard]] static render::SpriteSelection top_selection(const GameHudFrame& frame) noexcept {
         return frame.routing.move_hud?render::SpriteSelection::world_only:render::SpriteSelection::all;
@@ -40,5 +44,6 @@ private:
     render::Framebuffer portrait_{32,40},radio_{284,56};
     std::vector<std::uint8_t> portrait_rgb_,radio_rgb_;
     std::optional<GameHudFrame> previous_;
+    CockpitLayout layout_;
 };
 } // namespace starfox::platform::nintendo_3ds
