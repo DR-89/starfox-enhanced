@@ -15,6 +15,21 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## Signed tunnel entrance/exit faces
+
+The native receiver now retains authored physical faces when the source camera
+is outside or exactly on a tunnel wall, floor or ceiling. Signed plane/frustum
+clipping avoids zero-distance division and interpolates continuous wall crossings
+on the same source clock as the models. The colony's left side remains open.
+The ordinary inside-camera path is unchanged; no camera, optical setting or
+cartridge PPU state is clamped or rewritten.
+
+Exterior frames keep their isolated source BG2 far field behind the physical
+faces. They do not use a flattened final image containing models or sprites.
+The source does not supply a separately identified outside-tube BG2 plate;
+disoccluded exterior-artwork treatment and physical LCD acceptance remain open.
+Signed receiver coverage is not a claim that every entrance/exit scene is done.
+
 ## Final-room raster policy and near-wall stereo
 
 The authored final/vortex backgrounds are distant scenery in both Mode 1 and

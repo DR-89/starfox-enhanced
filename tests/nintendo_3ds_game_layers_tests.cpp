@@ -560,23 +560,42 @@ void corridor_depth() {
             scene->flow=flow;require(!native_corridor_scene(frame),"Native menu/map was incorrectly put inside finite corridor geometry");
         }
         scene->flow=gameplay;scene->camera.x=half_width;
-        require(!native_corridor_scene(frame),"Outside-tube exit used a zero/negative-height receiver");
+        require(native_corridor_scene(frame),"Authored camera-on-wall corridor was rejected");
+        for(const auto q:source_corridor_planes(frame)) for(const double value:q)
+            require(std::isfinite(value),"Camera-on-wall corridor divided by zero");
+        scene->camera.x=half_width-20;previous->camera.x=half_width+20;previous->scene_epoch=scene->scene_epoch;
+        frame.previous=previous;frame.interpolation_alpha=.5;
+        require(source_corridor_planes(frame)[1]==std::array<double,3>{},
+            "Continuous wall crossing cut the source camera instead of handling the on-wall midpoint");
+        require(std::abs(source_corridor_planes(frame)[0][0]+32768./32767/(2*half_width*256.))<1.e-9,
+            "Exterior-to-interior camera interpolation disagrees with source model timing");
+        for(int x:{half_width,half_width+40,-half_width-40}) {
+            scene->camera.x=x;frame.previous=scene;frame.interpolation_alpha=1;
+            const auto outside=layers.prepare(frame);
+            const auto canonical=composite.prepare(frame.plan,std::array{outside.before_models,outside.after_models},lower.view());
+            for(unsigned y=0;y<224;++y) for(unsigned column=0;column<256;++column)
+                require(mono_receiver_pixel(canonical,column,y)==pixel(raw,column,y),
+                    "Exterior/on-wall receiver changed canonical source colour, opacity or priority");
+        }
         scene->camera.x=10;scene->background_corridor.reset();
         require(!native_corridor_scene(frame),"Generic source tunnel flag fabricated physical boss-room dimensions");
         require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,"Corridor presentation mutated cartridge artwork");
     }
 }
-void corridor_eye_coverage(bool open_left=false) {
+void corridor_eye_coverage(bool open_left=false,bool exterior=false,bool vertical=false) {
     // Independent slab intersections in world axes; never call the production
     // plane/guard helper for expected depth or source texture coordinates.
-    const std::array camera_positions=open_left?std::array{-4000,-170,-10,10,55}:std::array{-55,-10,0,10,55};
-    for(int half_width:{60,90,120}) for(int camera_x:camera_positions) for(float convergence:{16.F,1024.F})
+    const std::array camera_positions=vertical?std::array{-240,-120,0,120,1836}:exterior?std::array{-180,-120,60,120,180}:
+        open_left?std::array{-4000,-170,-10,10,55}:std::array{-55,-10,0,10,55};
+    for(int half_width:{60,90,120}) for(int camera_position:camera_positions) for(float convergence:{16.F,1024.F})
         for(float strength:{1.F,2.F}) for(int yaw:{-1,0,1}) {
         auto frame=source(simulation::GameFlowState::gameplay,open_left?1:2);
         auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
-        scene->camera.x=camera_x;scene->camera.y=-60;
+        const int camera_x=vertical?10:camera_position,camera_y=vertical?camera_position:-60;
+        scene->camera.x=camera_x;scene->camera.y=camera_y;
         const std::int16_t sine=std::int16_t(yaw*12539),cosine=yaw?30273:32767;
-        scene->view_matrix={cosine,0,sine,0,32767,0,std::int16_t(-sine),0,cosine};
+        scene->view_matrix=vertical?simulation::MatrixQ15{32767,0,0,0,cosine,sine,0,std::int16_t(-sine),cosine}:
+            simulation::MatrixQ15{cosine,0,sine,0,32767,0,std::int16_t(-sine),0,cosine};
         scene->background_corridor=vr::SourceCorridorBounds{std::int16_t(-half_width),std::int16_t(half_width),-120,0,
             std::uint8_t(open_left?14:15)};
         frame.current=frame.previous=scene;
@@ -614,35 +633,47 @@ void corridor_eye_coverage(bool open_left=false) {
                 for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;x+=3) {
                     const std::array<double,2> sample{x+.5,y+.5};
                     const double scale=32767./32768.,c=cosine/32768.,s=sine/32768.,norm=c*c+s*s;
-                    const double ex=camera_x+frame.plan.eyes[eye].x*c/norm;
-                    const double rx=(c*(sample[0]-200-frame.plan.eyes[eye].projection_offset)/256+s)/norm,ry=(sample[1]-120)/(256*scale);
+                    const double ex=camera_x+frame.plan.eyes[eye].x*(vertical?1/scale:c/norm);
+                    const double rx=vertical?(sample[0]-200-frame.plan.eyes[eye].projection_offset)/(256*scale):
+                        (c*(sample[0]-200-frame.plan.eyes[eye].projection_offset)/256+s)/norm;
+                    const double ry=vertical?(c*(sample[1]-120)/256+s)/norm:(sample[1]-120)/(256*scale);
                     // An eye outside the authored cross-section first sees an
                     // entry face, not an unbounded opposite floor/wall. Test
                     // all bounded faces, retaining only forward intersections.
                     double z=std::numeric_limits<double>::infinity();
                     if(rx!=0) for(double wall:{-double(half_width),double(half_width)}) {
                         if(open_left && wall<0) continue;
-                        const double t=(wall-ex)/rx,world_y=-60+ry*t;
-                        if(t>0 && world_y>=-120 && world_y<=0) z=std::min(z,t);
+                        const double t=(wall-ex)/rx,world_y=camera_y+ry*t;
+                        // A ray exactly through a corner belongs to both closed
+                        // faces; floating evaluation must not exclude it twice.
+                        if(t>=frame.plan.near_plane && t<=frame.plan.far_plane && world_y>=-120-1.e-9 && world_y<=1.e-9) z=std::min(z,t);
                     }
                     if(ry!=0) for(double wall:{-120.,0.}) {
-                        const double t=(wall+60)/ry,world_x=ex+rx*t;
-                        if(t>0 && (open_left || world_x>=-half_width) && world_x<=half_width) z=std::min(z,t);
+                        const double t=(wall-camera_y)/ry,world_x=ex+rx*t;
+                        if(t>=frame.plan.near_plane && t<=frame.plan.far_plane && (open_left || world_x>=-half_width-1.e-9) && world_x<=half_width+1.e-9) z=std::min(z,t);
                     }
-                    if(z<frame.plan.near_plane || z>frame.plan.far_plane) continue;
                     const double expected_x=std::clamp(sample[0]-frame.plan.eyes[eye].projection_offset
                         +256.*frame.plan.eyes[eye].x/z,-double(artwork.coverage_guard()),400.+artwork.coverage_guard());
                     bool covered=false;double nearest_q=0,nearest_x=0,nearest_y=0;
                     for(const auto& triangle:triangles) {
                         const std::array weights{cross(triangle.p[1],triangle.p[2],sample)/triangle.area,
                             cross(triangle.p[2],triangle.p[0],sample)/triangle.area,cross(triangle.p[0],triangle.p[1],sample)/triangle.area};
-                        if(std::any_of(weights.begin(),weights.end(),[](double w){return w< -1.e-6;})) continue;
+                        if(std::any_of(weights.begin(),weights.end(),[](double w){return w< -1.e-9;})) continue;
                         double q=0,sx=0,sy=0;
                         for(unsigned k=0;k<3;++k) {q+=weights[k]*triangle.q[k];sx+=weights[k]*triangle.uv[k][0];sy+=weights[k]*triangle.uv[k][1];}
                         if(q>nearest_q) {nearest_q=q;nearest_x=sx;nearest_y=sy;}
                         covered=true;
                     }
-                    require(covered,"Finite corridor left an uncovered active-eye edge/corner");
+                    if(covered!=std::isfinite(z)) scenario="corridor width="+std::to_string(half_width)+" camera="+
+                        std::to_string(camera_x)+","+std::to_string(camera_y)+" open="+std::to_string(open_left)+
+                        " vertical="+std::to_string(vertical)+" strength="+std::to_string(strength)+
+                        " convergence="+std::to_string(convergence)+" rotation="+std::to_string(yaw)+
+                        " slider="+std::to_string(slider)+" eye="+std::to_string(eye)+" pixel="+
+                        std::to_string(x)+","+std::to_string(y)+" z="+std::to_string(z)+" q="+std::to_string(nearest_q)+
+                        " eye-x="+std::to_string(frame.plan.eyes[eye].x)+" offset="+std::to_string(frame.plan.eyes[eye].projection_offset)+
+                        " hit="+std::to_string(ex+rx/nearest_q)+","+std::to_string(camera_y+ry/nearest_q)+": ";
+                    require(covered==std::isfinite(z),"Finite corridor missed a physical face or invented an unbounded wall");
+                    if(!covered) continue;
                     require(std::abs(nearest_q-1./z)<1.e-5 && std::abs(nearest_x-expected_x)<.05 && std::abs(nearest_y-sample[1])<.05,
                         "Nearest bounded corridor face has wrong physical depth or source UV registration");
                 }
@@ -685,8 +716,8 @@ void colony_depth() {
     }
     require(*frame.raster->ppu==unchanged,"Open colony presentation changed the raw source WATER flag or palette");
     scene->camera.x=-170;require(native_corridor_scene(frame),"Camera on absent left wall was rejected");
-    scene->camera.x=120;require(!native_corridor_scene(frame),"Camera on physical right wall fabricated a receiver");
-    scene->camera.x=-400;scene->camera.y=0;require(!native_corridor_scene(frame),"Camera on physical colony floor fabricated a receiver");
+    scene->camera.x=120;require(native_corridor_scene(frame),"Camera on physical right wall lost its bounded receiver policy");
+    scene->camera.x=-400;scene->camera.y=0;require(native_corridor_scene(frame),"Camera on colony floor lost its signed-face receiver policy");
 }
 void panorama_depth() {
     using enum simulation::GameFlowState;
@@ -915,6 +946,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_source_symbols();corridor_depth();corridor_eye_coverage();corridor_eye_coverage(true);colony_depth();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_source_symbols();corridor_depth();corridor_eye_coverage();corridor_eye_coverage(true);corridor_eye_coverage(false,true);corridor_eye_coverage(true,true);corridor_eye_coverage(false,true,true);corridor_eye_coverage(true,true,true);colony_depth();panorama_depth();offscreen_landscape_receiver();ex_menu_panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}
