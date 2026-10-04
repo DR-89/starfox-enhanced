@@ -47,15 +47,15 @@ int main(int argc,char** argv) try {
     generated_manifest(argv[1]);
     assets::RuntimeBundlePayload payload;
     payload.original_rom.assign(0x8000,0x31);payload.starfox_ex_rom.assign(0x10000,0x62);
-    payload.original_symbols="BOOT $018000\r\n";
-    payload.starfox_ex_symbols="BOOT $028000\nSPECWEPCNTONE $000123\n";
+    payload.original_symbols="VIEWPOSX $0000b4\r\n";
+    payload.starfox_ex_symbols="VIEWPOSX $0000c2\nSPECWEPCNTONE $000123\n";
     const auto encoded=assets::encode_runtime_bundle(payload,companion_manifest);
     for(const auto experience:{simulation::Experience::original,simulation::Experience::starfox_ex}) {
         auto input=stream(encoded);input.seekg(7); // Reader owns its whole-file position.
         const auto cartridge=read_game_cartridge(input,companion_manifest,experience);
         const bool ex=experience==simulation::Experience::starfox_ex;
         check(cartridge.rom.bytes()==(ex?payload.starfox_ex_rom:payload.original_rom),"Wrong selected cartridge");
-        check(cartridge.symbols.find("BOOT").front()==(ex?0x028000U:0x018000U),"Wrong selected symbols");
+        check(cartridge.symbols.find("VIEWPOSX").front()==(ex?0x00c2U:0x00b4U),"Wrong selected symbols");
     }
     auto input=stream(encoded);
     rejects([&]{read_game_cartridge(input,companion_manifest^1U,simulation::Experience::original);});
@@ -69,7 +69,7 @@ int main(int argc,char** argv) try {
     rejects([&]{read_game_cartridge(input,companion_manifest,simulation::Experience::starfox_ex);});
     bad=encoded;bad.push_back(0);input=stream(bad);
     rejects([&]{read_game_cartridge(input,companion_manifest,simulation::Experience::starfox_ex);});
-    auto malformed=payload;malformed.original_symbols="NOBOOT $018000\n";
+    auto malformed=payload;malformed.original_symbols="NO_CAMERA $0000b4\n";
     input=stream(assets::encode_runtime_bundle(malformed,companion_manifest));
     rejects([&]{read_game_cartridge(input,companion_manifest,simulation::Experience::original);});
     malformed=payload;malformed.original_symbols=payload.starfox_ex_symbols;

@@ -21,7 +21,8 @@ GameCartridge read_game_cartridge(std::istream& input,std::uint32_t manifest,
     auto payload=assets::decode_runtime_bundle(bytes,manifest);
     const bool ex=experience==simulation::Experience::starfox_ex;
     auto symbols=assets::SymbolMap::parse(ex?payload.starfox_ex_symbols:payload.original_symbols);
-    if(symbols.find("BOOT").empty()) throw std::runtime_error("Companion has no BOOT symbol table");
+    // BOOT is a host flow entry, not a label in either cartridge's symbols.
+    if(symbols.find("VIEWPOSX").empty()) throw std::runtime_error("Companion has no camera RAM symbols");
     const bool ex_symbols=!symbols.find("SPECWEPCNTONE").empty();
     if(ex_symbols!=ex) throw std::runtime_error("Companion cartridge/symbol experience mismatch");
     return {assets::RomImage(std::move(ex?payload.starfox_ex_rom:payload.original_rom)),std::move(symbols)};

@@ -17,7 +17,9 @@ cmake -S "${source_root}/platform/3ds" -B "${build_root}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DSTARFOX_3DS_BUILD_NATIVE=ON \
     -DSTARFOX_3DS_BUILD_HOST_TESTS=OFF
-cmake --build "${build_root}" --parallel 2
+# Report all independent native compilation failures in one pass. Ninja still
+# returns failure; this never turns a partial build into an accepted package.
+cmake --build "${build_root}" --parallel 2 -- -k 0
 printf 'Frontend diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_frontend_check.3dsx"
 printf 'PICA GPU diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_gpu_check.3dsx"
 printf 'Actual VM/SPC/HUD bring-up (renderer incomplete): %s\n' "${build_root}/starfox_3ds_game_core_check.3dsx"
