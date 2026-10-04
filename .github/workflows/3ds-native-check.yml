@@ -27,6 +27,8 @@ on:
       - 'src/simulation/math.cpp'
       - 'tools/generate_runtime_manifest.py'
       - 'tools/build_3ds_frontend.sh'
+      - 'tools/package_3ds_test.py'
+      - 'tests/test_3ds_package.py'
       - 'tests/nintendo_3ds_game_assets_tests.cpp'
       - 'src/simulation/**'
       - 'src/audio/spc700_audio.cpp'
@@ -35,7 +37,7 @@ permissions:
   contents: read
 jobs:
   native-diagnostics:
-    name: Original 3DS libctru / NDSP / PICA cross-link
+    name: Original 3DS native checks and experimental test package
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -73,14 +75,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DSTARFOX_3DS_BUILD_GAME_CORE=ON
           cmake --build "$RUNNER_TEMP/starfox-3ds-core-host" --parallel 2
           ctest --test-dir "$RUNNER_TEMP/starfox-3ds-core-host" --output-on-failure
-      - name: Cross-build actual native diagnostics
+      - name: Cross-build native diagnostics and experimental player
         shell: bash
         run: |
           docker pull "$CTR_IMAGE"
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e STARFOX_3DS_TEST_PLAYER=ON \
             -v "$GITHUB_WORKSPACE:/src" -w /src "$CTR_IMAGE" \
             bash tools/build_3ds_frontend.sh . build/3ds-native
-          for target in starfox_3ds_frontend_check starfox_3ds_gpu_check starfox_3ds_game_core_check; do
+          for target in starfox_3ds_frontend_check starfox_3ds_gpu_check starfox_3ds_game_core_check starfox_3ds_test_player; do
             test -s "build/3ds-native/$target.elf"
             test -s "build/3ds-native/$target.3dsx"
           done
@@ -89,18 +92,37 @@ jobs:
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$GITHUB_WORKSPACE:/src" -w /src "$CTR_IMAGE" bash -euc '
-              for target in starfox_3ds_frontend_check starfox_3ds_gpu_check starfox_3ds_game_core_check; do
+              for target in starfox_3ds_frontend_check starfox_3ds_gpu_check starfox_3ds_game_core_check starfox_3ds_test_player; do
                 "$DEVKITARM/bin/arm-none-eabi-readelf" -h "build/3ds-native/$target.elf"
                 "$DEVKITARM/bin/arm-none-eabi-size" "build/3ds-native/$target.elf"
               done
             '
-      - name: Upload diagnostics, not a playable game or release
+      - name: Validate and package the Original 3DS test candidate
+        shell: bash
+        run: |
+          python3 tools/package_3ds_test.py \
+            --elf build/3ds-native/starfox_3ds_test_player.elf \
+            --3dsx build/3ds-native/starfox_3ds_test_player.3dsx \
+            --smdh build/3ds-native/test-player.smdh \
+            --source-commit "$GITHUB_SHA" \
+            --output StarFoxEnhanced-original-3ds-test.zip
+          unzip -t StarFoxEnhanced-original-3ds-test.zip
+      - name: Upload experimental player for hardware testing, not a verified release
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarFoxEnhanced-original-3ds-test
+          path: StarFoxEnhanced-original-3ds-test.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload native executables and diagnostic tools
         uses: actions/upload-artifact@v4
         with:
           name: StarFoxEnhanced-original-3ds-native-diagnostics
           path: |
             build/3ds-native/*.elf
-            build/3ds-native/*.3dsx
+            build/3ds-native/starfox_3ds_frontend_check.3dsx
+            build/3ds-native/starfox_3ds_gpu_check.3dsx
+            build/3ds-native/starfox_3ds_game_core_check.3dsx
             build/3ds-native/*.smdh
             build/3ds-native/pica_scene.shbin
           if-no-files-found: error

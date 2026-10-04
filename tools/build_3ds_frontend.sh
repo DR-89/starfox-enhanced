@@ -6,6 +6,11 @@ set -euo pipefail
 : "${DEVKITPRO:?Set DEVKITPRO to the devkitPro installation}"
 source_root="${1:-$(pwd)}"
 build_root="${2:-${source_root}/build/3ds-frontend}"
+test_player="${STARFOX_3DS_TEST_PLAYER:-OFF}"
+if [[ "$test_player" != ON && "$test_player" != OFF ]]; then
+    printf '%s\n' 'STARFOX_3DS_TEST_PLAYER must be ON or OFF.' >&2
+    exit 1
+fi
 toolchain="${DEVKITPRO}/cmake/3DS.cmake"
 
 if [[ ! -f "${toolchain}" || ! -f "${DEVKITPRO}/libctru/include/3ds.h" ]]; then
@@ -16,6 +21,7 @@ cmake -S "${source_root}/platform/3ds" -B "${build_root}" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="${toolchain}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DSTARFOX_3DS_BUILD_NATIVE=ON \
+    -DSTARFOX_3DS_BUILD_TEST_PLAYER="$test_player" \
     -DSTARFOX_3DS_BUILD_HOST_TESTS=OFF
 # Report all independent native compilation failures in one pass. Ninja still
 # returns failure; this never turns a partial build into an accepted package.
@@ -23,3 +29,6 @@ cmake --build "${build_root}" --parallel 2 -- -k 0
 printf 'Frontend diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_frontend_check.3dsx"
 printf 'PICA GPU diagnostic (NOT the game): %s\n' "${build_root}/starfox_3ds_gpu_check.3dsx"
 printf 'Actual VM/SPC/HUD bring-up (renderer incomplete): %s\n' "${build_root}/starfox_3ds_game_core_check.3dsx"
+if [[ "$test_player" == ON ]]; then
+    printf 'Experimental Original 3DS test player (NOT hardware-accepted): %s\n' "${build_root}/starfox_3ds_test_player.3dsx"
+fi

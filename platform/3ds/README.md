@@ -7,7 +7,13 @@ target connects the actual simulation, SPC and dashboard to a console entry
 point. All three diagnostics, including the actual menu integration below,
 compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
-**There is no playable 3DS game package yet.**
+**There is no hardware-verified 3DS release yet.** An opt-in
+`STARFOX_3DS_BUILD_TEST_PLAYER` target builds the real menu/game owner without
+the diagnostic banner covering its upper LCD. CI packages it separately as
+`StarFoxEnhanced-original-3ds-test.zip`, explicitly experimental, with native
+ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
+or included. [Installation and hardware checks](TESTING.md) describe the SD
+layout and controls. This is a test candidate, not full-port acceptance.
 
 ## Native finite corridor checkpoint
 
@@ -40,7 +46,9 @@ Peak padded texture residency including the lower LCD is 3,150,080 /
 and feedback steering toward the centre; they are host correctness tests,
 not native device, no-cheat gameplay or frame-time measurements. Initial
 straight-edge runs did not reach a corridor and are not acceptance evidence.
-This corridor source change still needs exact-export and ARM CI acceptance.
+The exact native-only export passes all seventeen host suites; corridor source
+checkpoint `4a2cb0818f2b36aa221b88e69ee11b697203e4b3` passes ARM CI
+37205227789, all three native links and downloaded ELF/3DSX header checks.
 EX-specific wider corridors, exterior transitions, full-flow HUD/effects,
 physical Original 3DS/XL validation and playable packaging remain unfinished.
 

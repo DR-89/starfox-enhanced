@@ -75,6 +75,7 @@ int main() {
     std::unique_ptr<ctr::GameLayers> layers;
     std::unique_ptr<ctr::GameDots> dots;
     ctr::PicaComposite composite;ctr::PicaColourEffects colour;ctr::PicaWindow window;
+#if !defined(STARFOX_3DS_TEST_PLAYER)
     // Explicitly label this experimental source-scene test. This small host
     // strip is not a replacement pre-game menu or part of source colour math.
     ctr::Canvas label_canvas(ctr::top_width);
@@ -85,6 +86,7 @@ int main() {
     for(unsigned corner:{0U,1U,2U,0U,2U,3U}) label_vertices[label_index++]={label_corners[corner],{1,1,1,1},label_uv[corner]};
     ctr::PicaDraw label_draw{0,6,0,ctr::pica_identity,ctr::PicaSpace::screen,false,false,false};label_draw.source_layer=0;
     const ctr::PicaImage label_image{label_canvas.view().pixels.first(400*16*3),400,16,400*3,3};
+#endif
 #endif
     std::string error;
     auto experience=simulation::Experience::original;
@@ -422,7 +424,11 @@ int main() {
                     world?ctr::WindowCoverage::full_scene:ctr::WindowCoverage::authored);
                 // Scene/raster/model clocks are shared by the eyes. Only PICA
                 // eye matrices differ. The lower cockpit never joins a wipe.
+#if defined(STARFOX_3DS_TEST_PLAYER)
+                const ctr::PicaFrame label{source.plan,{},{},{}};
+#else
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
+#endif
                 const auto frame=composite.prepare(source.plan,
                     std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
                 gpu->present(frame,dashboard);
@@ -447,7 +453,11 @@ int main() {
         // menu, nor a mono image pretending to be native stereoscopic gameplay.
         top.clear({8,15,28});
         top.text(12,12,"STAR FOX ENHANCED / ACTUAL SOURCE CORE",{183,224,240});
+#if defined(STARFOX_3DS_TEST_PLAYER)
+        top.text(12,38,"EXPERIMENTAL / ORIGINAL 3DS TEST BUILD",{240,181,86});
+#else
         top.text(12,38,"BRING-UP ONLY / FULL FLOW PENDING",{240,181,86});
+#endif
         top.text(12,64,experience==simulation::Experience::original?"CARTRIDGE: ORIGINAL":"CARTRIDGE: EX",{227,235,242},2);
         if(running) {
             const auto coverage=models->coverage();
@@ -455,7 +465,11 @@ int main() {
                 +"\nLOGIC TICKS: "+std::to_string(logic)+"\nPCM BLOCKS: "+std::to_string(blocks)
                 +"\nNATIVE MODELS: "+std::to_string(coverage.models),{227,235,242});
         } else {
+#if defined(STARFOX_3DS_TEST_PLAYER)
+            lower.clear({8,15,28});lower.text(12,12,"TEST BUILD / CHECK ASSET FILE AND SD CARD",{183,224,240});
+#else
             lower.clear({8,15,28});lower.text(12,12,"SOURCE CORE CHECK / NOT THE GAME",{183,224,240});
+#endif
             top.text(12,100,"A: LOAD STANDARD COMPANION AND RUN BOOT\nY: DIRECT LEVEL1_1 SOURCE SCENE CHECK\nX: SELECT ORIGINAL / EX\nSELECT + START: EXIT\n\nSD CARD: /3ds/starfox-enhanced/\nStarfox-Assets.BIN",{227,235,242});
             if(!error.empty() || !save_warning.empty()) lower.text(12,40,"LOAD / CORE / SD ERROR\n"+error+"\n"+save_warning,{239,90,99},1,296,186);
         }
