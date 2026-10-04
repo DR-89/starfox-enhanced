@@ -15,7 +15,7 @@ struct PicaVertex {
     bool operator==(const PicaVertex&) const=default;
 };
 static_assert(sizeof(PicaVertex)==9*sizeof(float));
-enum class PicaSpace {world,screen};
+enum class PicaSpace {world,screen,scenery}; // Scenery is at infinity, not HUD depth.
 struct PicaDraw {
     unsigned first{},count{},texture{pica_no_texture};
     PicaMatrix model{pica_identity};
@@ -83,6 +83,14 @@ inline PicaMatrix pica_multiply(const PicaMatrix& a,const PicaMatrix& b) {
     }
     return result;
 }
+inline PicaMatrix pica_draw_matrix(const FramePlan& plan,unsigned eye,const PicaDraw& draw) {
+    if(eye>=plan.eye_count) throw std::invalid_argument("Inactive 3DS GPU draw eye");
+    if(draw.space==PicaSpace::world) return pica_multiply(PicaProjection(plan,eye).rows(),draw.model);
+    auto model=draw.model;
+    if(draw.space==PicaSpace::scenery) model[0][3]+=background_offset(plan,eye);
+    else if(draw.space!=PicaSpace::screen) throw std::invalid_argument("Unknown 3DS GPU coordinate space");
+    return pica_multiply(pica_screen_matrix(top_width),model);
+}
 struct PicaFrame {
     FramePlan plan;
     std::span<const PicaVertex> vertices; // One immutable geometry source for both eyes.
@@ -114,15 +122,15 @@ inline void validate_pica_frame(const PicaFrame& frame,ImageView dashboard) {
     for(const auto& draw:frame.draws) {
         if(draw.first!=cursor || !draw.count || draw.count%3
             || draw.count>frame.vertices.size()-cursor || (draw.texture!=pica_no_texture && draw.texture>=frame.textures.size())
-            || (draw.space!=PicaSpace::world && draw.space!=PicaSpace::screen)
+            || (draw.space!=PicaSpace::world && draw.space!=PicaSpace::screen && draw.space!=PicaSpace::scenery)
             || draw.model[3]!=std::array<float,4>{0,0,0,1}
-            || (draw.space==PicaSpace::screen && (draw.depth_test || draw.depth_write))
+            || (draw.space!=PicaSpace::world && (draw.depth_test || draw.depth_write))
             || (draw.depth_write && !draw.depth_test))
             throw std::invalid_argument("Invalid/omitted 3DS GPU draw range");
         for(const auto& row:draw.model) for(float value:row) if(!std::isfinite(value))
             throw std::invalid_argument("Non-finite 3DS model matrix");
         for(unsigned eye=0;eye<frame.plan.eye_count;++eye)
-            static_cast<void>(pica_multiply(draw.space==PicaSpace::world?projections[eye]:pica_screen_matrix(top_width),draw.model));
+            static_cast<void>(pica_draw_matrix(frame.plan,eye,draw));
         for(unsigned i=cursor;i<cursor+draw.count;++i) {
             const auto& vertex=frame.vertices[i];
             for(float value:vertex.position) if(!std::isfinite(value)) throw std::invalid_argument("Non-finite 3DS vertex");

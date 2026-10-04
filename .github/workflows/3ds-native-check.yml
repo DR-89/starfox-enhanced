@@ -7,6 +7,7 @@ on:
       - 'platform/3ds/**'
       - 'include/starfox/platform/nintendo_3ds/**'
       - '.github/workflows/3ds-native-check.yml'
+      - 'tests/nintendo_3ds_pica_tests.cpp'
 permissions:
   contents: read
 jobs:
@@ -19,6 +20,12 @@ jobs:
       CTR_IMAGE: devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5
     steps:
       - uses: actions/checkout@v4
+      - name: Verify texture packing and independent stereo projections
+        shell: bash
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I include \
+            tests/nintendo_3ds_pica_tests.cpp -o "$RUNNER_TEMP/starfox-pica-contracts"
+          "$RUNNER_TEMP/starfox-pica-contracts"
       - name: Cross-build actual native diagnostics
         shell: bash
         run: |

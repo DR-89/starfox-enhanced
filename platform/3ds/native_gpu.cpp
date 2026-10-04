@@ -185,10 +185,8 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
     for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
         auto* target=impl_->top[eye];C3D_RenderTargetClear(target,C3D_CLEAR_ALL,clear_colour(frame.clear),0);
         if(!C3D_FrameDrawOn(target)) throw std::runtime_error("3DS GPU eye target unavailable");
-        const auto projection=PicaProjection(frame.plan,eye).rows();
         for(const auto& draw:frame.draws) {
-            upload_matrix(impl_->transform_location,pica_multiply(draw.space==PicaSpace::world
-                ?projection:pica_screen_matrix(top_width),draw.model));
+            upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
             impl_->material(draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture],
                 draw.alpha_blend,draw.depth_test,draw.depth_write);
             C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
