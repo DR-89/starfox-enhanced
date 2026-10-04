@@ -1,5 +1,7 @@
 #pragma once
+#if !defined(__3DS__)
 #include "starfox/vr/presentation.hpp"
+#endif
 #include "starfox/render/object_snapshot.hpp"
 #include "starfox/render/software_renderer.hpp"
 #include "starfox/render/grid_line_history.hpp"
@@ -20,6 +22,8 @@ struct GameSceneObject {
 // one shared snapshot for both eyes and for asynchronous GPU fence retries.
 struct GameSceneSnapshot {
     uint64_t revision{};
+    // Stable scene epoch is distinct from individual completed source ticks.
+    uint64_t scene_epoch{};
     timing::TransformSnapshot camera;
     simulation::MatrixQ15 view_matrix{};
     int16_t view_float_y{};
@@ -83,6 +87,8 @@ struct GameSceneSnapshot {
     std::optional<uint16_t> colour_table_override;
 };
 
+#if !defined(__3DS__)
+// Tracked-headset helpers do not belong to the console source data contract.
 inline bool pilot_view_active(const GameSceneSnapshot& scene,const PresentationPreferences& preferences) noexcept {
     return preferences.cockpit && scene.pilot_tracking && scene.pilot_reference
         && (scene.flow==simulation::GameFlowState::gameplay || scene.flow==simulation::GameFlowState::training);
@@ -108,6 +114,8 @@ inline EyeCamera source_panel_camera(const GameSceneSnapshot& scene) noexcept {
         0,0,-.05F,0};
     return result;
 }
+
+#endif
 
 inline bool replace_native_dialogue(const GameSceneSnapshot& scene) {
     return scene.dialogue.active && !scene.paused
