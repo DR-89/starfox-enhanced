@@ -192,7 +192,7 @@ void routing_and_input_tests() {
             game_over,continue_choice,credits,finished})
         require(game_routing(state).screen==ScreenUse::front_end && !game_routing(state).move_hud,"Front-end art moved as HUD");
     using namespace starfox::input;
-    const std::array<ButtonMask,12> expected{a,b,select,start,right,left,up,down,right_shoulder,left_shoulder,x,y};
+    const std::array<ButtonMask,12> expected{a,b,starfox::input::select,start,right,left,up,down,right_shoulder,left_shoulder,x,y};
     for(unsigned i=0;i<expected.size();++i) require(buttons(1U<<i)==expected[i],"Nintendo printed button mapping changed");
     require(buttons((1U<<8)|(1U<<9))==(left_shoulder|right_shoulder),"L+R mapping broken");
     require(buttons(1U<<31)==0,"Unrelated libctru flags mapped to SNES");
