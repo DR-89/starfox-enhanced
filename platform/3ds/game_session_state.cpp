@@ -27,6 +27,10 @@ std::unique_ptr<GameSession> GameSession::restored_state(std::span<const std::ui
         throw std::runtime_error("Native state belongs to a different cartridge or transient menu");
     next->audio_.load_state(data.audio);
     next->game_.swap_state(*game);
+    // A valid cross-platform GAME archive can contain a desktop-only target.
+    // Keep the native output bounded without changing VM/SPC cadence.
+    const auto rate=next->game_.presentation_fps();
+    if(rate!=30 && rate!=60) next->game_.set_presentation_fps(rate<=30?30:60);
     next->pending_audio_=std::move(data.pending_audio);next->audio_phase_=data.audio_phase;
     next->history_.capture();
     next->history_.restore_grid_history(data.grid,data.scene_revision,data.grid_start);

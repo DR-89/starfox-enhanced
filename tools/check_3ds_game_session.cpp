@@ -11,6 +11,7 @@
 #include "starfox/platform/nintendo_3ds/game_models.hpp"
 #include "starfox/platform/nintendo_3ds/game_layers.hpp"
 #include "starfox/platform/nintendo_3ds/pica_composite.hpp"
+#include "starfox/platform/nintendo_3ds/presentation_clock.hpp"
 #include <bit>
 #include <chrono>
 #include <filesystem>
@@ -204,6 +205,77 @@ void handoff(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
     require(next.requested_experience && !next.video_phases && !next.audio_blocks,"Wrong cartridge kept running after experience selection");
     require(game==session.game().save_state() && apu==session.audio().save_state(),"Pending cartridge handoff changed source/audio");
 }
+void presentation_cadence(const assets::RomImage& rom,const assets::SymbolMap& symbols) {
+    for(const auto map:{"BOOT","LEVEL1_1"}) for(const unsigned rate:{30U,60U}) {
+        std::vector<std::int16_t> pcm;unsigned phases{},blocks{},ticks{},renders{};
+        GameSessionOptions options;options.preferences=GamePreferences{};
+        options.preferences->render_fps=static_cast<std::uint8_t>(rate);options.preferences->show_fps=true;
+        GameSession session(rom,symbols,[&](auto samples){pcm.insert(pcm.end(),samples.begin(),samples.end());++blocks;},map,{},options);
+        SourceOracle source(rom,symbols,map);
+        // Loading SD defaults also applies source-side god/laser/language
+        // setters (including cartridge RAM writes and pending laser state).
+        // Give the independent oracle those same user choices, not just FPS.
+        source.game.set_god_mode(false);source.game.set_default_laser(0);source.game.set_language(0);
+        source.game.set_selected_level(0);source.game.set_stereo_separation(16);source.game.set_stereo_convergence(1024);
+        source.game.set_presentation_fps(static_cast<std::uint16_t>(rate));source.game.set_show_fps(true);
+        require(session.game().save_state()==source.game.save_state(),"Output cadence fixture initialized different source preferences");
+        PresentationClock gate;PresentationRate measured;session.advance(0,0);
+        const auto present=[&](std::int64_t now) {
+            const auto first=session.presentation(.5F,true);
+            const auto second=session.presentation(1,true);
+            require(first.current==second.current && first.raster==second.raster,
+                "Native render-rate gate split the source timeline between eye reads");
+            require(valid_image(first.dashboard,bottom_width,screen_height),"FPS overlay source dashboard invalid");
+            measured.completed(now);++renders;
+        };
+        require(gate.due(0,rate),"New native output gate did not render its first frame");present(0);
+        for(unsigned poll=1;poll<=1200;++poll) {
+            const input::ButtonMask held=std::string_view(map)=="BOOT" && poll==32?input::start
+                :std::string_view(map)!="BOOT" && poll>=120 && poll<400?input::ButtonMask(input::y|input::up|input::right):0;
+            const auto now=timestamp(poll,240);source.input.sample(held);
+            const auto result=session.advance(now,held);
+            phases+=result.video_phases;ticks+=result.logic_ticks;
+            require(!result.time_clamped && !result.requested_experience && !result.requested_preview,
+                "Ordinary native cadence fixture clamped or changed source owner");
+            if(poll%4==0) source.raster();
+            if(gate.due(now,rate)) present(now);
+            if(poll%240==0) {
+                require(phases==poll/4 && ticks==source.ticks && blocks==source.blocks,
+                    "30/60 presentation target altered source raster, logic or SPC cadence");
+                require(session.game().save_state()==source.game.save_state(),"Output-rate gate changed independent source VM state");
+                require(session.audio().save_state()==source.spc.save_state() && pcm==source.pcm,
+                    "Output-rate gate changed independent SPC state, handshakes or PCM");
+                require(renders==1+rate*(poll/240) && measured.fps()==rate,
+                    "Native counter counted requested FPS, source rasters or stereo eyes instead of completed frames");
+            }
+        }
+        require(phases==300 && blocks==100,"Five-second output fixture lost the fixed source/audio clock");
+        const auto saved=session.save_state();auto restored=session.restored_state(saved);
+        require(restored->save_state()==saved && restored->preferences().render_fps==rate && restored->preferences().show_fps,
+            "Native full state lost supported output FPS/show-FPS preferences");
+        std::cout<<"  "<<map<<" output "<<rate<<" Hz: "<<renders<<" whole presentations, 300 source rasters, 100 unchanged SPC blocks\n";
+    }
+    // A real decoded GAME archive, not a guessed byte offset, supplies the
+    // cross-platform rates. The native candidate must bound only that setting.
+    GameSession session(rom,symbols,[](auto){},"LEVEL1_1");session.advance(0,0);session.advance(timestamp(1),0);
+    const auto saved=session.save_state();const auto crc=assets::crc32(rom.bytes());
+    const auto packet=decode_game_state(saved,crc);
+    for(const std::uint16_t rate:{0,20,30,60,90,480,65535}) {
+        auto candidate=packet;auto desktop=session.game().restored_state(packet.game);
+        desktop->set_presentation_fps(rate);desktop->set_show_fps(true);candidate.game=desktop->save_state();
+        auto native=session.restored_state(encode_game_state(candidate,crc));
+        const unsigned expected=rate<=30?30:60;
+        require(native->game().presentation_fps()==expected && native->preferences().render_fps==expected
+            && native->preferences().show_fps,"Valid desktop state leaked unsupported native output rate");
+        const auto after=decode_game_state(native->save_state(),crc);
+        require(native->game().map().save_state()==desktop->map().save_state() && after.audio==packet.audio
+            && after.audio_phase==packet.audio_phase && after.pending_audio==packet.pending_audio,
+            "Bounding desktop FPS changed the restored cartridge/SPC timeline");
+        require(session.save_state()==saved,"Candidate output-rate normalization mutated the running owner");
+    }
+    GameSessionOptions invalid;invalid.preferences=GamePreferences{};invalid.preferences->render_fps=90;
+    rejects([&]{GameSession rejected(rom,symbols,[](auto){},"BOOT",{},invalid);},"Invalid native SD FPS accepted by session");
+}
 struct MenuDriver {
     GameSession& session;std::int64_t time{};GameAdvance last;
     explicit MenuDriver(GameSession& source):session(source) {session.advance(0,0);}
@@ -241,9 +313,21 @@ void actual_menu(const assets::RomImage& rom,const assets::SymbolMap& symbols,co
     }
     controls.select(2);
     const auto fps=session.game().presentation_fps();controls.tap(input::a);
-    require(session.game().presentation_fps()==fps,"Unavailable 3DS FPS target was changed anyway");
+    require(fps==60 && session.game().presentation_fps()==30 && session.preferences().render_fps==30,
+        "Native 30 Hz target did not reach source preferences/menu");
+    auto render_row=GameMenu::capture(session.game());
+    const auto shown_rate=std::find_if(render_row.rows.begin(),render_row.rows.end(),[](const auto& row){return row.id==2;});
+    require(shown_rate!=render_row.rows.end() && shown_rate->enabled && shown_rate->value=="30 FPS","Native FPS row advertised the wrong target");
+    controls.tap(input::b);require(session.game().presentation_fps()==60,"B did not toggle the native target safely");
+    controls.tap(input::select);require(session.game().presentation_fps()==30,"Select leaked a desktop-only native target");
+    controls.tap(input::left);require(session.game().presentation_fps()==60,"Left did not toggle native 30/60 target");
+    controls.tap(input::up);controls.tap(input::down|input::a);
+    require(session.game().pregame_selection()==2 && session.game().presentation_fps()==60,
+        "Simultaneous menu navigation/action leaked a desktop rate into the native render gate");
     controls.select(14);controls.tap(input::a);
     require(session.game().pregame_page()==simulation::PregamePage::options,"Source Options action not used");observe();
+    controls.select(1);controls.tap(input::a);
+    require(session.game().show_fps() && session.preferences().show_fps,"Source show-FPS control was not persisted natively");observe();
     controls.select(6);const auto volume=session.game().music_volume();controls.tap(input::left);
     require(session.game().music_volume()<volume,"Source music volume did not change");observe();
     controls.select(12);controls.tap(input::right);
@@ -396,7 +480,7 @@ void actual_disk_handoff(const assets::RomImage& rom,const assets::SymbolMap& sy
         }
     } temp;
     constexpr std::uint32_t manifest=0x76543210;
-    GamePreferences prefs{simulation::TimingMode::original_speed,35,55,2,2,35,true,true,true,true,true,true,32,4096};
+    GamePreferences prefs{simulation::TimingMode::original_speed,35,55,2,2,35,true,true,true,true,true,true,32,4096,30,true};
     GameSessionOptions options;options.preferences=prefs;
     GameSession source(rom,symbols,[](auto){},"BOOT",{},options);
     require(source.preferences()==prefs,"Real cartridge did not accept persisted supported settings");
@@ -721,6 +805,7 @@ int main(int argc,char** argv) {
             std::cout<<"3DS actual full states: "<<checks<<" checks passed; host source parity, not console acceptance\n";return 0;
         }
         parity(rom,symbols,"BOOT");parity(rom,symbols,"LEVEL1_1");handoff(rom,symbols);
+        presentation_cadence(rom,symbols);
         actual_menu(rom,symbols,argc==5?std::filesystem::path(argv[4]):std::filesystem::path{});
         actual_disk_handoff(rom,symbols);
         actual_settings_reset(rom,symbols);

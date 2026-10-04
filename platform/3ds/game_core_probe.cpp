@@ -9,6 +9,7 @@
 #include "starfox/platform/nintendo_3ds/game_storage.hpp"
 #include "starfox/platform/nintendo_3ds/game_remap.hpp"
 #include "starfox/platform/nintendo_3ds/game_quick_menu.hpp"
+#include "starfox/platform/nintendo_3ds/presentation_clock.hpp"
 #include "starfox/assets/bps.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
@@ -88,6 +89,8 @@ int main() {
     auto experience=simulation::Experience::original;
     bool running=false;input::ButtonMask previous{};
     unsigned rasters{},logic{},blocks{};
+    ctr::PresentationClock render_clock;
+    ctr::PresentationRate rendered_rate;
     bool first_load=true;
     std::array<std::vector<std::uint8_t>,2> cartridge_ram;
     std::array<std::uint32_t,2> bank_crc{};
@@ -134,6 +137,7 @@ int main() {
         }
     };
     const auto release_owners=[&] {
+        render_clock.reset();rendered_rate.reset();
         remap.reset();quick.reset();states.reset();
         if(audio) audio->pause(true);
 #if defined(STARFOX_3DS_CORE_PICA)
@@ -148,6 +152,7 @@ int main() {
         top.text(24,100,"RENDERING",{240,181,86},2);
         lower.text(12,16,options.preview?"PREPARING REAL CARTRIDGE PREVIEW":"LOADING CARTRIDGE AND SETTINGS",{183,224,240});
         display.present(ctr::plan_frame(0,false,ctr::ScreenUse::setup),top.view(),{},lower.view());
+        if(running) rendered_rate.completed(monotonic_time());
         std::ifstream file(companion_path,std::ios::binary);
         auto cartridge=ctr::read_game_cartridge(file,ctr::companion_manifest,experience);
         cartridge_crc=assets::crc32(cartridge.rom.bytes());
@@ -165,6 +170,7 @@ int main() {
         models=std::make_unique<ctr::GameModels>(session->rom(),session->symbols());
         menu=std::make_unique<ctr::GameMenu>(session->rom(),session->symbols());
         suspension=std::make_unique<Suspension>(*session,*audio,[&]{
+            render_clock.reset();rendered_rate.reset();
             if(remap) remap->suspend();
             if(quick) quick->suspend();
             checkpoint(true);
@@ -218,6 +224,7 @@ int main() {
                 }
                 constexpr auto quick_chord=input::ButtonMask(input::select|input::y);
                 if(!quick && (controls.physical&quick_chord)==quick_chord && (pressed&quick_chord)) {
+                    render_clock.reset();rendered_rate.reset();
                     session->advance(monotonic_time(),0,false);audio->pause(true);
                     quick=std::make_unique<ctr::GameQuickMenu>();
                     quick->open(state_slot,session->state_available(),
@@ -261,6 +268,7 @@ int main() {
                             next_menu=std::make_unique<ctr::GameMenu>(next->rom(),next->symbols());
                             next_menu->update(ctr::GameMenu::capture(next->game()));
                             next_hook=std::make_unique<Suspension>(*next,*audio,[&]{
+                                render_clock.reset();rendered_rate.reset();
                                 if(remap) remap->suspend();
                                 if(quick) quick->suspend();
                                 checkpoint(true);
@@ -285,6 +293,7 @@ int main() {
                             layers.swap(next_layers);dots.swap(next_dots);
 #endif
                             session.swap(next);rasters=logic=blocks=0;quick.reset();
+                            render_clock.reset();rendered_rate.reset();
                             checkpoint(true);audio->pause(false);continue;
                         }
                     }
@@ -299,6 +308,7 @@ int main() {
                 if(runtime_before!=session->game().runtime_options_open()) audio->pause(session->game().runtime_options_open());
                 rasters+=advanced.video_phases;logic+=advanced.logic_ticks;blocks+=advanced.audio_blocks;
                 if(advanced.requested_controller_remap) {
+                    render_clock.reset();rendered_rate.reset();
                     checkpoint(true);audio->pause(true);
                     remap=std::make_unique<ctr::GameRemap>();remap->open(bindings);continue;
                 }
@@ -338,6 +348,13 @@ int main() {
                     continue;
                 }
                 checkpoint(false);
+                if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())
+                    menu->update(ctr::GameMenu::capture(session->game()));
+                // Keep input, source raster and NDSP service at 60 Hz. Only
+                // skip scene preparation/submission; never spin on a 30 Hz gap.
+                if(!render_clock.due(monotonic_time(),session->game().presentation_fps())) {
+                    gspWaitForVBlank();continue;
+                }
                 const auto source=session->presentation(controls.slider,controls.stereoscopic_hardware,session->stereo_settings());
                 auto dashboard=source.dashboard;
                 if(!save_warning.empty() && session->game().in_setup_menu()) {
@@ -354,14 +371,23 @@ int main() {
                     lower.text(8,210,"HOLD L+R: RESET SETTINGS "+std::to_string(seconds)+"/5\nRELEASE TO CANCEL / GAME SAVE KEPT",{240,181,86},1,304,28);
                     dashboard=lower.view();
                 }
-                if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())
-                    menu->update(ctr::GameMenu::capture(session->game()));
+                if(session->game().show_fps()) {
+                    if(dashboard.pixels.data()!=lower.view().pixels.data()) {
+                        lower.clear({0,0,0});lower.image(0,0,dashboard);
+                    }
+                    // The eight-pixel header lies above the radio border and
+                    // does not overwrite the requested split-HUD artwork.
+                    lower.rectangle(244,0,76,8,{15,29,42});
+                    lower.text(250,0,"FPS "+(rendered_rate.fps()?std::to_string(rendered_rate.fps()):"--"),{213,237,244},1,70,8);
+                    dashboard=lower.view();
+                }
                 const bool plain=menu->state().visible && !menu->state().preview;
 #if defined(STARFOX_3DS_CORE_PICA)
                 if(plain) {
                     // Preview OFF does not prepare models, decode BG layers,
                     // allocate scene textures, or submit either world eye.
-                    gpu->present(menu->frame(source.plan),dashboard);continue;
+                    gpu->present(menu->frame(source.plan),dashboard);
+                    rendered_rate.completed(monotonic_time());continue;
                 }
                 const auto model_frame=models->prepare(source);
                 const auto artwork=layers->prepare(source);
@@ -378,10 +404,12 @@ int main() {
                 const auto frame=composite.prepare(source.plan,
                     std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
                 gpu->present(frame,dashboard);
+                rendered_rate.completed(monotonic_time());
                 continue; // Sole GPU owner: never also swap through NativeDisplay.
 #else
                 if(plain) {
-                    display.present(source.plan,menu->plain_view(),{},dashboard);continue;
+                    display.present(source.plan,menu->plain_view(),{},dashboard);
+                    rendered_rate.completed(monotonic_time());continue;
                 }
                 static_cast<void>(models->prepare(source));
 #endif

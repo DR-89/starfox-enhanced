@@ -1,5 +1,6 @@
 #include "starfox/platform/nintendo_3ds/game_routing.hpp"
 #include "starfox/platform/nintendo_3ds/pica_projection.hpp"
+#include "starfox/platform/nintendo_3ds/presentation_clock.hpp"
 #include <algorithm>
 #include <climits>
 #include <filesystem>
@@ -340,6 +341,38 @@ void radio_artwork_cache_tests() {
     require(dashboard.update(state) && !dashboard.update(state),"Disabling P2 counters left cached labels");
     require(original!=retained,"Radio mutation did not change visible pixels");
 }
+void presentation_clock_tests() {
+    for(unsigned rate:{30U,60U}) {
+        PresentationClock clock;PresentationRate measured;
+        require(clock.due(0,rate),"Native clock skipped its first presentation");measured.completed(0);
+        unsigned rendered{};
+        for(unsigned phase=1;phase<=6000;++phase) {
+            const auto time=(std::int64_t(phase)*1'000'000'000+59)/60;
+            const bool due=clock.due(time,rate);
+            require(due==(rate==60 || phase%2==0),"Native frame gate drifted away from integer 60 Hz source phases");
+            require(!clock.due(time,rate),"Duplicate host time submitted a second eye/frame");
+            if(due) {++rendered;measured.completed(time);}
+            if(phase%60==0) require(measured.fps()==rate,"Measured native rate counted source ticks instead of presentations");
+        }
+        require(rendered==rate*100,"Native presentation count drifted over 100 seconds");
+        require(clock.due(200'000'000'000LL,rate) && !clock.due(200'000'000'000LL,rate),"Long stall produced catch-up presentations");
+        require(clock.due(1,rate) && !clock.due(1,rate),"Rewound clock retained old credit");
+        require(clock.due(1,rate==30?60:30),"Changing native target did not rebase presentation");
+        clock.reset();require(clock.due(1,rate),"Home/editor reset did not restart native presentation");
+        const auto end=std::numeric_limits<std::int64_t>::max();
+        clock.reset();require(clock.due(end-1'000'000'000LL,rate) && clock.due(end,rate),"Long uptime overflowed native clock");
+    }
+    PresentationClock clock;
+    for(unsigned invalid:{0U,20U,29U,31U,90U,120U,480U}) rejects([&]{static_cast<void>(clock.due(0,invalid));},"Unsupported native output target accepted");
+    rejects([&]{static_cast<void>(clock.due(-1,60));},"Negative native time accepted");
+    PresentationRate measured;
+    measured.completed(0);measured.completed(3'000'000'000LL);
+    require(measured.fps()==0,"Long loading stall was advertised as a valid measured rate");
+    measured.reset();for(unsigned phase=0;phase<=60;++phase) measured.completed(std::int64_t(phase)*1'000'000'000/60);
+    require(measured.fps()==60,"Actual presentation count was not reported");
+    measured.reset();require(measured.fps()==0,"APT/editor reset retained a stale FPS display");
+    measured.completed(-1);require(measured.fps()==0,"Invalid measurement time retained rate");
+}
 void captures(const std::filesystem::path& directory) {
     std::filesystem::create_directories(directory);
     Canvas lower;HudState hud;hud.shield_percent=76;hud.boost_percent=92;
@@ -369,7 +402,7 @@ void captures(const std::filesystem::path& directory) {
 int main(int argc,char** argv) {
     try {
         stereo_tests();pica_projection_tests();stereo_culling_and_clipping_tests();
-        routing_and_input_tests();lcd_tests();hud_tests();dashboard_cache_tests();radio_artwork_cache_tests();
+        routing_and_input_tests();lcd_tests();hud_tests();dashboard_cache_tests();radio_artwork_cache_tests();presentation_clock_tests();
         if(argc==3 && std::string_view(argv[1])=="--capture") captures(argv[2]);
         else if(argc!=1) throw std::invalid_argument("Usage: frontend_tests [--capture directory]");
         std::cout<<"3DS frontend: "<<checks<<" checks passed\n";

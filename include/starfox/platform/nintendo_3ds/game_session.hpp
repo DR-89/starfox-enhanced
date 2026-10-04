@@ -31,6 +31,8 @@ struct GamePreferences {
     std::uint8_t music{100},sfx{100},language{},laser{},level{};
     bool swap{},god{},bombs{},boost{},lives{},planet_cheat{};
     std::uint16_t separation{16},convergence{1024};
+    std::uint8_t render_fps{60};
+    bool show_fps{};
     bool operator==(const GamePreferences&) const=default;
 };
 struct GameSessionOptions {

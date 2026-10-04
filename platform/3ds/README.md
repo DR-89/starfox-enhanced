@@ -9,6 +9,28 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Native rendering FPS
+
+The real pre-game **RENDER FPS** row switches between **30** and **60**.
+Game Options' **SHOW FPS** counts completed whole presentations on the lower
+LCD, not source ticks, requested rates or separate stereo eyes. The counter
+resets across loading, Home/sleep, quick-menu, remapping and state replacement.
+
+The cartridge raster/input clock remains 60 Hz and SPC blocks remain 20 Hz.
+At 30 Hz only the expensive scene preparation and whole LCD presentation are
+skipped; the source/audio/input loop continues, and both eyes share one game
+snapshot. Original FX pacing is a separate setting and remains the default.
+Preview OFF still prepares no world geometry. These are output targets, not
+a claim that original 3DS hardware maintains either rate.
+
+Settings schema 3 persists both options in the protected SD journal. Schemas
+1/2 migrate to 60 Hz / SHOW FPS OFF, preserving bindings and EX SRAM. Valid
+30/60 values also survive full-state restore; desktop-only targets are bounded
+to the native range without changing the restored VM or partial SPC timeline.
+
+Host cadence/source/PCM checks and the actual ARM link are separate from
+original-console pixel, timing, NDSP, SD and performance acceptance.
+
 ## Full game states and native quick menu
 
 Physical **Select + Y** opens a paused native quick menu: Resume, the actual

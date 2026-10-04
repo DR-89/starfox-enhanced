@@ -40,12 +40,13 @@ void replace(const std::string& path,std::span<const std::uint8_t> data) {
     file.write(reinterpret_cast<const char*>(data.data()),static_cast<std::streamsize>(data.size()));file.close();
 }
 // Independent format oracle; do not use the production encoder/decoder.
-std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest,bool legacy=false) {
+std::vector<std::uint8_t> envelope(std::uint64_t generation,const GameSaveData& data,std::uint32_t manifest,bool legacy=false,unsigned version=3) {
     state::Writer writer;const auto& p=data.preferences;
     writer(generation,data.experience,data.preview,p.timing,p.music,p.sfx,p.language,p.laser,p.level,
         p.swap,p.god,p.bombs,p.boost,p.lives,p.planet_cheat,p.separation,p.convergence,data.ex_rom_crc,data.ex_sram);
     if(!legacy) writer(data.bindings.sources,data.bindings.deadzone);
-    return state::pack(legacy?0x33445301U:0x33445302U,manifest,writer.bytes());
+    if(!legacy && version>=3) writer(p.render_fps,p.show_fps);
+    return state::pack(legacy?0x33445301U:0x33445300U+version,manifest,writer.bytes());
 }
 GameSaveData fixture() {
     GameSaveData data;data.experience=simulation::Experience::starfox_ex;data.preview=true;
@@ -171,15 +172,49 @@ void binding_migration() {
     require(invalid_axis.load().data==old && invalid_axis.current().writable && !invalid_axis.current().warning.empty(),"Invalid decoded mapping did not recover the legacy backup");
     bad=next;bad.bindings.sources[1]=254;replace(store.slot_path(1),envelope(9,bad,manifest));
     GameStorage invalid_button(temp.path.generic_string(),manifest);require(invalid_button.load().data==old,"Unknown decoded physical source accepted");
-    auto extended=envelope(10,next,manifest);auto payload=state::unpack(extended,0x33445302U,manifest);
+    auto extended=envelope(10,next,manifest);auto payload=state::unpack(extended,0x33445303U,manifest);
     std::vector<std::uint8_t> trailing(payload.begin(),payload.end());trailing.push_back(0);
-    replace(store.slot_path(1),state::pack(0x33445302U,manifest,trailing));
+    replace(store.slot_path(1),state::pack(0x33445303U,manifest,trailing));
     GameStorage extra(temp.path.generic_string(),manifest);require(extra.load().data==old,"Extended mapping payload accepted");
-    replace(store.slot_path(1),state::pack(0x33445303U,manifest,payload));
+    replace(store.slot_path(1),state::pack(0x33445304U,manifest,payload));
     GameStorage future(temp.path.generic_string(),manifest);require(future.load().data==old,"Unknown future schema accepted as bindings");
+}
+void presentation_migration() {
+    for(unsigned version:{1U,2U}) {
+        Temporary temp;constexpr std::uint32_t manifest=0x45463137;
+        GameStorage store(temp.path.generic_string(),manifest);
+        auto old=fixture();
+        if(version==2) {old.bindings.sources[0]=12;old.bindings.deadzone=68;}
+        const auto backup=envelope(7,old,manifest,version==1,version);
+        replace(store.slot_path(0),backup);
+        require(store.load().data==old && store.current().data.preferences.render_fps==60
+            && !store.current().data.preferences.show_fps,"Old journal did not migrate presentation defaults/bindings/SRAM");
+        auto next=old;next.preferences.render_fps=30;next.preferences.show_fps=true;
+        require(store.save(next) && store.generation()==8,"Native FPS settings did not upgrade the journal");
+        require(bytes(store.slot_path(0))==backup && bytes(store.slot_path(1))==envelope(8,next,manifest),"FPS upgrade erased the legacy backup or changed its format");
+        GameStorage reopen(temp.path.generic_string(),manifest);
+        require(reopen.load().data==next,"FPS/show counter/bindings/SRAM did not survive reopen");
+        for(unsigned rate:{0U,1U,20U,29U,31U,90U,120U,255U}) {
+            auto bad=next;bad.preferences.render_fps=static_cast<std::uint8_t>(rate);
+            rejects([&]{reopen.save(bad);});
+            replace(store.slot_path(1),envelope(9,bad,manifest));
+            GameStorage invalid(temp.path.generic_string(),manifest);
+            require(invalid.load().data==old && !invalid.current().warning.empty(),"Unsupported decoded native FPS did not retain the older valid bank");
+        }
+        auto packed=envelope(9,next,manifest);
+        const auto data=state::unpack(packed,0x33445303U,manifest);
+        std::vector<std::uint8_t> bad_boolean(data.begin(),data.end());bad_boolean.back()=2;
+        replace(store.slot_path(1),state::pack(0x33445303U,manifest,bad_boolean));
+        GameStorage invalid_bool(temp.path.generic_string(),manifest);
+        require(invalid_bool.load().data==old,"Invalid show-FPS boolean was accepted");
+        bad_boolean.assign(data.begin(),data.end());bad_boolean.pop_back();
+        replace(store.slot_path(1),state::pack(0x33445303U,manifest,bad_boolean));
+        GameStorage truncated(temp.path.generic_string(),manifest);
+        require(truncated.load().data==old,"Partial FPS settings tail was accepted");
+    }
 }
 }
 int main() try {
-    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();binding_migration();
+    normal_and_recovery();invalid_and_io();settings_reset_keeps_game_save();binding_migration();presentation_migration();
     std::cout<<"3DS SD settings/EX SRAM journal: "<<checks<<" checks passed; synthetic public saves, not physical SD power-loss acceptance\n";
 } catch(const std::exception& error) {std::cerr<<"3DS SD journal: "<<error.what()<<'\n';return 1;}

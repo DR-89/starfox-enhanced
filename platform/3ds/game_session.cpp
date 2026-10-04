@@ -45,6 +45,9 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
     }
     if(options.preferences) {
         const auto& prefs=*options.preferences;
+        if(prefs.render_fps!=30 && prefs.render_fps!=60)
+            throw std::invalid_argument("3DS render FPS must be 30 or 60");
+        game_.set_presentation_fps(prefs.render_fps);game_.set_show_fps(prefs.show_fps);
         game_.set_timing_mode(prefs.timing);game_.set_music_volume(prefs.music);game_.set_sfx_volume(prefs.sfx);
         game_.set_language(prefs.language);game_.set_swap_face_buttons(prefs.swap);
         game_.set_god_mode(prefs.god);game_.set_infinite_bombs(prefs.bombs);game_.set_infinite_boost(prefs.boost);
@@ -96,7 +99,8 @@ GamePreferences GameSession::preferences() const noexcept {
     return {game_.timing_mode(),game_.music_volume(),game_.sfx_volume(),game_.language(),
         game_.default_laser(),game_.selected_level(),game_.swap_face_buttons(),game_.god_mode(),
         game_.infinite_bombs(),game_.infinite_boost(),game_.infinite_lives(),game_.planet_select_cheat(),
-        game_.stereo_separation(),game_.stereo_convergence()};
+        game_.stereo_separation(),game_.stereo_convergence(),
+        static_cast<std::uint8_t>(game_.presentation_fps()),game_.show_fps()};
 }
 void GameSession::prepare_pace_shapes() {
     if(game_.timing_mode()!=simulation::TimingMode::original_speed) return;
@@ -188,6 +192,15 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
             if(game_.logic_tick_ready()) {
                 const bool runtime=game_.runtime_options_open(),paused=game_.paused();
                 auto controls=GameMenu::filter(game_,input_.consume());
+                std::optional<std::uint16_t> native_rate;
+                if(game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::main
+                    && game_.pregame_selection()==2
+                    && !(controls.pressed&(input::up|input::down|input::start))
+                    && (controls.pressed&(input::a|input::b|input::select|input::left|input::right))) {
+                    // Native LCD supports 30/60 presentation, not the desktop
+                    // rate list. Still execute the ordinary source raster/tick.
+                    native_rate=game_.presentation_fps()==60?30:60;
+                }
                 if(game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::options
                     && game_.pregame_selection()==8 && (controls.pressed&input::a)) {
                     requested_controller_remap_=result.requested_controller_remap=true;
@@ -202,6 +215,15 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                     controls.held|=input::start;controls.pressed|=input::start;start_after_preview_=false;
                 }
                 const auto tick=game_.tick(controls);++result.logic_ticks;
+                // Keep the source menu action and its click/audio writes. The
+                // host only replaces its desktop-only output-rate result.
+                if(native_rate && game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::main
+                    && game_.pregame_selection()==2) game_.set_presentation_fps(*native_rate);
+                // Simultaneous navigation/action can enter the FPS row inside
+                // the shared tick, without matching the pre-tick selection.
+                // Never publish its desktop-only rate to the native LCD gate.
+                const auto output_rate=game_.presentation_fps();
+                if(output_rate!=30 && output_rate!=60) game_.set_presentation_fps(output_rate<=30?30:60);
                 // The native eye projector has a bounded 64-world-unit range,
                 // unlike desktop stereo displays' larger separation overrides.
                 if(game_.stereo_separation()>64) game_.set_stereo_separation(64);

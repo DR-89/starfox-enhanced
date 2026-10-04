@@ -3,7 +3,7 @@
 namespace starfox::platform::nintendo_3ds {
 namespace {
 using simulation::PregamePage;
-constexpr std::array<std::string_view,80> labels{
+constexpr std::array<std::string_view,79> labels{
     "EXPERIENCE","PACE/SPEED","RENDER FPS","DISPLAY","RENDERER","MSU-1 MUSIC","RUMBLE",
     "AA QUALITY","2D FILTER","RENDER UPSCALE","ENHANCED LIGHTING","VSYNC","3D COLOR / STYLE",
     "2D COLOR / STYLE","OPTIONS","START GAME","PREVIEW","3D BLOOM","2D BLOOM","3D SMOOTHING",
@@ -17,14 +17,14 @@ constexpr std::array<std::string_view,80> labels{
     "EXPLOSION SHOCKWAVES","WEAPON LIGHTING","EXHAUST TRAILS","STAGE WEATHER","AMBIENT OCCLUSION",
     "DEPTH OF FIELD","IMPACT SPARKS / DEBRIS","EXHAUST HEAT DISTORTION","CRT PHOSPHOR PERSISTENCE",
     "ADAPTIVE EXPOSURE","WATER CAUSTICS","SHADOW SOFTNESS","IMPACT SHAKE","WEAPON RECOIL",
-    "CAMERA BANKING","VOLUMETRIC FOG","MOTION BLUR","DLSS 4.5","3D ASTEROIDS"};
+    "CAMERA BANKING","VOLUMETRIC FOG","MOTION BLUR","DLSS 4.5"};
 std::string toggle(bool value) {return value?"ON":"OFF";}
 bool supported(PregamePage page,unsigned id,bool runtime) {
     switch(page) {
     case PregamePage::main:
-        return (id==0 && !runtime) || id==1 || id==14 || id==15 || id==16
+        return (id==0 && !runtime) || id==1 || id==2 || id==14 || id==15 || id==16
             || id==20 || id==21 || id==47;
-    case PregamePage::options: return id==0 || id==5 || id==6 || id==7 || id==8 || id==9 || id==11 || id==12;
+    case PregamePage::options: return id==0 || id==1 || id==5 || id==6 || id==7 || id==8 || id==9 || id==11 || id==12;
     case PregamePage::cheats: return true;
     case PregamePage::two_d: case PregamePage::three_d: case PregamePage::global: return id==23;
     case PregamePage::stereo: return id==1 || id==2 || id==4 || id==5;
@@ -56,6 +56,7 @@ GameMenuRow row(const simulation::GameSimulation& game,unsigned id) {
         result.label=names.at(id);
         switch(id) {
         case 0:case 8:case 9:result.value="A  OPEN";break;
+        case 1:result.value=toggle(game.show_fps());break;
         case 5:result.value=toggle(game.swap_face_buttons());break;
         case 6:result.value=std::to_string(game.music_volume())+"%";break;
         case 7:result.value=std::to_string(game.sfx_volume())+"%";break;
@@ -78,7 +79,7 @@ GameMenuRow row(const simulation::GameSimulation& game,unsigned id) {
         switch(id) {
         case 0:result.value=game.runtime_options_open()?"LOCKED":game.experience()==simulation::Experience::original?"ORIGINAL":"STARFOX EX";break;
         case 1:result.value=game.timing_mode()==simulation::TimingMode::original_speed?"ORIGINAL":"UNLOCKED 20 HZ";break;
-        case 2:result.value="60 FPS";break;
+        case 2:result.value=std::to_string(game.presentation_fps())+" FPS";break;
         case 3:result.value="3DS LCD";break;
         case 4:result.value="3DS GPU";break;
         case 5:result.value="UNAVAILABLE";break;
@@ -134,7 +135,7 @@ input::TickInput GameMenu::filter(const simulation::GameSimulation& game,input::
 bool GameMenu::update(const GameMenuState& state) {
     if(initialized_ && state_==state) return false;
     if(state.visible) {
-        if(state.rows.empty() || state.rows.size()>labels.size() || state.language>5
+        if(state.rows.empty() || state.rows.size()>79 || state.language>5
             || std::none_of(state.rows.begin(),state.rows.end(),[&](const auto& row){return row.id==state.selection;}))
             throw std::invalid_argument("Invalid actual pre-game snapshot");
         for(std::size_t i=0;i<state.rows.size();++i) for(std::size_t j=0;j<i;++j)
