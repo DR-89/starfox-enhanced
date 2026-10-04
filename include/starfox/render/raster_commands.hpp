@@ -69,9 +69,9 @@ public:
         const auto tiles=(width_+63)/64;
         rows.assign(std::size_t(height_)*tiles+1,0);
         const auto visit=[&](const RasterCommand& c,const auto& action) {
-            const auto first=unsigned(std::max(0,c.left))/64;
-            const auto last=(unsigned(std::min(int(width_),c.right))+63)/64;
-            for(int y=std::max(0,c.top);y<std::min(int(height_),c.bottom);++y)
+            const auto first=unsigned(std::max<std::int32_t>(0,c.left))/64;
+            const auto last=(unsigned(std::min<std::int32_t>(width_,c.right))+63)/64;
+            for(int y=std::max<std::int32_t>(0,c.top);y<std::min<std::int32_t>(height_,c.bottom);++y)
                 for(unsigned tile=first;tile<last;++tile) action(unsigned(y)*tiles+tile);
         };
         for(const auto& c:commands) visit(c,[&](unsigned row){++rows[row+1];});

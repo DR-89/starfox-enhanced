@@ -3,7 +3,12 @@
 #include <bit>
 
 namespace starfox::platform::nintendo_3ds {
-inline constexpr unsigned pica_vertex_limit=32'766,pica_draw_limit=256,pica_texture_limit=32;
+inline constexpr unsigned pica_vertex_limit=32'766,pica_draw_limit=256;
+// There can be one distinct source texture per submitted draw (EX's texture
+// test models exceed 32). This is a metadata bound, not a PICA sampler limit:
+// only the current draw's texture is bound. The 4 MiB resident-byte limit still
+// includes all padded textures and the lower LCD, independently of this count.
+inline constexpr unsigned pica_texture_limit=pica_draw_limit;
 inline constexpr unsigned pica_texture_budget=4*1024*1024;
 inline constexpr unsigned pica_no_texture=~0U;
 using PicaMatrix=PicaProjection::Rows;
@@ -25,6 +30,7 @@ struct PicaDraw {
     // emits homogeneous screen UV/Q, sampled as a projection texture; ordinary
     // model UVs must not stretch the checkerboard along perspective geometry.
     bool screen_dither{};
+    std::array<std::uint8_t,4> dither_odd{}; // TEV constant; one shared parity mask.
 };
 struct PicaImage {
     std::span<const std::uint8_t> pixels;

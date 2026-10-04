@@ -45,9 +45,9 @@ class Framebuffer {
 public:
     Framebuffer(std::uint32_t width, std::uint32_t height,
         std::uint32_t draw_scale = 1U)
-        : stored_width_(width * std::max(1U, draw_scale)),
-          stored_height_(height * std::max(1U, draw_scale)),
-          draw_scale_(std::max(1U, draw_scale)),
+        : stored_width_(width * std::max<std::uint32_t>(1, draw_scale)),
+          stored_height_(height * std::max<std::uint32_t>(1, draw_scale)),
+          draw_scale_(std::max<std::uint32_t>(1, draw_scale)),
           pixels_(static_cast<std::size_t>(stored_width_) * stored_height_) {}
 
     [[nodiscard]] std::uint32_t width() const noexcept {

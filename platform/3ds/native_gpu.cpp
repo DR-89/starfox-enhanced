@@ -146,14 +146,21 @@ struct NativeGpu::Impl {
         C3D_EarlyDepthTest(false,GPU_EARLYDEPTH_GEQUAL,0);
         for(unsigned stage=0;stage<6;++stage) C3D_TexEnvInit(C3D_GetTexEnv(stage));
     }
-    void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false) {
+    void material(ResidentTexture* texture,bool alpha,bool depth,bool write,bool screen_dither=false,
+        std::array<std::uint8_t,4> odd={}) {
         auto* env=C3D_GetTexEnv(0);C3D_TexEnvInit(env);
         if(texture) {
             texture->texture.param=(texture->texture.param&~GPU_TEXTURE_MODE(7))
                 |GPU_TEXTURE_MODE(screen_dither?GPU_TEX_PROJECTION:GPU_TEX_2D);
             C3D_TexBind(0,&texture->texture);
-            C3D_TexEnvSrc(env,C3D_Both,GPU_PRIMARY_COLOR,GPU_TEXTURE0);
-            C3D_TexEnvFunc(env,C3D_Both,GPU_MODULATE);
+            if(screen_dither) {
+                C3D_TexEnvSrc(env,C3D_Both,GPU_CONSTANT,GPU_PRIMARY_COLOR,GPU_TEXTURE0);
+                C3D_TexEnvFunc(env,C3D_Both,GPU_INTERPOLATE);
+                C3D_TexEnvColor(env,u32(odd[0])|(u32(odd[1])<<8)|(u32(odd[2])<<16)|(u32(odd[3])<<24));
+            } else {
+                C3D_TexEnvSrc(env,C3D_Both,GPU_PRIMARY_COLOR,GPU_TEXTURE0);
+                C3D_TexEnvFunc(env,C3D_Both,GPU_MODULATE);
+            }
             C3D_FVUnifSet(GPU_VERTEX_SHADER,uv_location,float(texture->width)/texture->texture.width,
                 float(texture->height)/texture->texture.height,0,0);
         } else {
@@ -193,7 +200,7 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
         for(const auto& draw:frame.draws) {
             upload_matrix(impl_->transform_location,pica_draw_matrix(frame.plan,eye,draw));
             impl_->material(draw.texture==pica_no_texture?nullptr:&impl_->textures[draw.texture],
-                draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither);
+                draw.alpha_blend,draw.depth_test,draw.depth_write,draw.screen_dither,draw.dither_odd);
             C3D_DrawArrays(GPU_TRIANGLES,draw.first,draw.count);
         }
     }

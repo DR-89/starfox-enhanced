@@ -82,6 +82,9 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
     add_executable(starfox_3ds_source_geometry_tests ../../tests/nintendo_3ds_source_geometry_tests.cpp)
     target_link_libraries(starfox_3ds_source_geometry_tests PRIVATE starfox_3ds_source_geometry)
     add_test(NAME starfox_3ds_source_geometry_tests COMMAND starfox_3ds_source_geometry_tests)
+    add_executable(starfox_3ds_source_models_check ../../tools/check_3ds_source_models.cpp
+        ../../src/assets/shape_decoder.cpp)
+    target_link_libraries(starfox_3ds_source_models_check PRIVATE starfox_3ds_source_geometry)
     add_executable(starfox_3ds_hud_routing_tests ../../tests/nintendo_3ds_hud_routing_tests.cpp
         ../../src/render/sprite_renderer.cpp)
     target_include_directories(starfox_3ds_hud_routing_tests PRIVATE ../../include)

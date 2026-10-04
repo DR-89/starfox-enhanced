@@ -52,19 +52,20 @@ unsigned PicaShapes::texture(Texture image) {
     textures_.push_back(std::move(image));return unsigned(textures_.size()-1);
 }
 void PicaShapes::submit(std::span<const PicaVertex> vertices,unsigned texture_index,
-    const PicaMatrix& model,bool dither) {
+    const PicaMatrix& model,bool dither,std::array<std::uint8_t,4> odd) {
     if(vertices.empty()) return;
     if(vertices.size()%3 || vertices.size()>pica_vertex_limit-vertices_.size())
         throw std::length_error("3DS source geometry limit exceeded");
     const bool merge=!draws_.empty() && draws_.back().texture==texture_index
-        && draws_.back().model==model && draws_.back().screen_dither==dither;
+        && draws_.back().model==model && draws_.back().screen_dither==dither
+        && (!dither || draws_.back().dither_odd==odd);
     if(!merge && draws_.size()>=pica_draw_limit) throw std::length_error("3DS source draw limit exceeded");
     const auto first=unsigned(vertices_.size()),count=unsigned(vertices.size());
     vertices_.insert(vertices_.end(),vertices.begin(),vertices.end());
     if(merge) draws_.back().count+=count;
     else {
         PicaDraw draw;draw.first=first;draw.count=count;draw.texture=texture_index;
-        draw.model=model;draw.screen_dither=dither;draws_.push_back(draw);
+        draw.model=model;draw.screen_dither=dither;draw.dither_odd=odd;draws_.push_back(draw);
     }
 }
 void PicaShapes::append(const render::PreparedShapePrimitives& source,
@@ -100,7 +101,7 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                 throw std::runtime_error("3DS native EX scanline-span conversion is not implemented yet");
             if(kind==render::ShapePrimitiveKind::sprite && !art)
                 throw std::invalid_argument("Missing 3DS source sprite texture");
-            unsigned texture_index=pica_no_texture;bool dither=false;
+            unsigned texture_index=pica_no_texture;bool dither=false;std::array<std::uint8_t,4> odd_colour{};
             auto colour=rgba(ink(primitive.material.colour.even));
             if(art) {
                 const unsigned width=unsigned(art->u_mask)+1,height=unsigned(art->v_mask)+1;
@@ -124,12 +125,14 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
             } else if(primitive.material.colour.dither
                 && primitive.material.colour.even!=primitive.material.colour.odd) {
                 Texture image;image.width=image.height=8;image.repeat=true;image.rgba.resize(8*8*4);
-                const auto even=ink(primitive.material.colour.even),odd=ink(primitive.material.colour.odd);
+                const auto odd=ink(primitive.material.colour.odd);odd_colour={odd.r,odd.g,odd.b,odd.a};
                 for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x) {
-                    const auto c=((x^y)&1)?odd:even;const unsigned i=(y*8+x)*4;
-                    image.rgba[i]=c.r;image.rgba[i+1]=c.g;image.rgba[i+2]=c.b;image.rgba[i+3]=c.a;
+                    const std::uint8_t mask=((x^y)&1)?255:0;const unsigned i=(y*8+x)*4;
+                    std::fill_n(image.rgba.begin()+i,4,mask);
                 }
-                texture_index=texture(std::move(image));colour={1,1,1,1};dither=true;
+                // One parity mask handles every source ink pair through TEV.
+                // COLOR WARP must not allocate hundreds of tiny textures.
+                texture_index=texture(std::move(image));dither=true;
             }
             std::vector<PicaVertex> boundary;
             if(kind==render::ShapePrimitiveKind::polygon) {
@@ -175,7 +178,7 @@ void PicaShapes::append(const render::PreparedShapePrimitives& source,
                 for(unsigned corner=1;corner+1<boundary.size();++corner)
                     for(unsigned index:{0U,corner,corner+1}) triangles.push_back(boundary[index]);
             }
-            submit(triangles,texture_index,model,dither);
+            submit(triangles,texture_index,model,dither,odd_colour);
         }
         views_.clear();
     } catch(...) {

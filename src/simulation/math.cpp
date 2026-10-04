@@ -154,7 +154,7 @@ MatrixQ15 multiply_presentation_matrix_q15(
                     std::int32_t(left[row * 3U + k]) * right[k * 3U + column], 15);
             }
             result[row * 3U + column] = static_cast<std::int16_t>(
-                std::clamp(value, -32'768, 32'767));
+                std::clamp<std::int32_t>(value, -32'768, 32'767));
         }
     }
     return result;

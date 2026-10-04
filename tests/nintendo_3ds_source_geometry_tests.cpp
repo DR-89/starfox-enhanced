@@ -91,7 +91,9 @@ void materials_and_sprites() {
     auto frame=output.frame(plan_frame(1,true,ScreenUse::world));
     require(frame.draws[0].screen_dither && frame.textures.size()==1,"Two source inks have native screen-projected texture");
     const auto pixels=frame.textures[0].pixels;
-    require(pixels[0]==colours[3].r && pixels[4]==colours[10].r && pixels[32]==colours[10].r,"No averaged/flattened source material");
+    require(pixels[0]==0 && pixels[4]==255 && pixels[32]==255
+        && frame.vertices[0].colour[0]==colours[3].r/255.F
+        && frame.draws[0].dither_odd[0]==colours[10].r,"No averaged/flattened source material");
     require(frame.textures[0].repeat && frame.textures[0].width==8,"Native dither samples an 8x8 repeat");
     output.append(prepared,colours);frame=output.frame(frame.plan);
     require(frame.draws.size()==1 && frame.vertices.size()==12 && frame.textures.size()==1,"Adjacent equal passes merge, source inks deduplicate");
@@ -148,6 +150,34 @@ void rollback_and_budget() {
     require(output.frame(plan).vertices.size()==pica_vertex_limit,"Budget failure retained complete previous frame");
     output.clear();require(output.frame(plan).vertices.empty(),"Explicit frame reset clears geometry");
 }
+void texture_resources() {
+    const auto colours=palette();render::SoftwareRenderer renderer;PicaShapes output;
+    auto prepared=renderer.prepare_primitives(quad(),pose());
+    const auto primitive=prepared.primitives.front();prepared.primitives.clear();
+    std::vector<assets::TextureImage> artwork(64);
+    for(unsigned i=0;i<artwork.size();++i) {
+        auto& art=artwork[i];art.u_mask=art.v_mask=7;art.texels.resize(64,std::uint8_t(i+1));
+        auto face=primitive;face.material.texture=&art;prepared.primitives.push_back(std::move(face));
+    }
+    output.append(prepared,colours);const auto plan=plan_frame(1,true,ScreenUse::world);
+    auto frame=output.frame(plan);
+    require(frame.textures.size()==64 && frame.draws.size()==64 && frame.vertices.size()==384,
+        "Source texture stress model retains every distinct texture and ordered draw");
+    std::vector<std::uint8_t> lower(bottom_width*screen_height*3);
+    validate_pica_frame(frame,{lower,bottom_width,screen_height,bottom_width*3});
+    unsigned bytes=512*256*4;
+    for(const auto image:frame.textures) bytes+=pica_texture_layout(image).bytes;
+    require(bytes<pica_texture_budget,"Texture count does not bypass actual resident-byte budget");
+    output.clear();prepared.primitives.clear();
+    for(unsigned i=1;i<255;++i) {
+        auto face=primitive;face.material.colour={std::uint8_t(i),std::uint8_t(i+1),true};
+        prepared.primitives.push_back(std::move(face));
+    }
+    output.append(prepared,colours);frame=output.frame(plan);
+    require(frame.textures.size()==1 && frame.draws.size()==254,
+        "Hundreds of animated source ink pairs use one parity mask, not hundreds of textures");
+    validate_pica_frame(frame,{lower,bottom_width,screen_height,bottom_width*3});
+}
 void projected_dither() {
     const auto plan=plan_frame(1,true,ScreenUse::world);
     const std::array<Point3,3> points{{{-96,42,220},{128,-54,750},{-8,72,1900}}};
@@ -168,6 +198,6 @@ void projected_dither() {
 }
 } // namespace
 int main() try {
-    native_vertices();source_geometry();materials_and_sprites();rollback_and_budget();projected_dither();
+    native_vertices();source_geometry();materials_and_sprites();rollback_and_budget();texture_resources();projected_dither();
     std::cout<<"3DS shared source geometry/material conversion: "<<checks<<" checks passed\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

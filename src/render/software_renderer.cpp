@@ -729,9 +729,9 @@ void fill_source_polygon(
     points.reserve(polygon.size());
     for (const auto& vertex : polygon) {
         points.push_back({
-            std::clamp(static_cast<std::int32_t>(std::lround(vertex.point.x)),
+            std::clamp<std::int32_t>(static_cast<std::int32_t>(std::lround(vertex.point.x)),
                 0, static_cast<std::int32_t>(target.width())),
-            std::clamp(static_cast<std::int32_t>(std::lround(vertex.point.y)),
+            std::clamp<std::int32_t>(static_cast<std::int32_t>(std::lround(vertex.point.y)),
                 0, static_cast<std::int32_t>(target.height())),
         });
     }
@@ -947,9 +947,9 @@ void fill_source_textured_polygon(
     points.reserve(polygon.size());
     for (const auto& vertex : polygon) {
         points.push_back({
-            std::clamp(static_cast<std::int32_t>(std::lround(vertex.point.x)),
+            std::clamp<std::int32_t>(static_cast<std::int32_t>(std::lround(vertex.point.x)),
                 0, static_cast<std::int32_t>(target.width())),
-            std::clamp(static_cast<std::int32_t>(std::lround(vertex.point.y)),
+            std::clamp<std::int32_t>(static_cast<std::int32_t>(std::lround(vertex.point.y)),
                 0, static_cast<std::int32_t>(target.height())),
             static_cast<std::int32_t>(std::lround(vertex.texture.u)),
             static_cast<std::int32_t>(std::lround(vertex.texture.v)),
@@ -1153,8 +1153,8 @@ void draw_line(
     const auto sx = x0 < x1 ? 1 : -1;
     const auto dy = std::abs(y1 - y0);
     const auto sy = y0 < y1 ? 1 : -1;
-    const auto dither_scale = static_cast<int>(std::clamp(render_scale, 1U, 10U));
-    const auto thickness = static_cast<int>(std::clamp(render_scale, 1U, 10U)
+    const auto dither_scale = static_cast<int>(std::clamp<std::uint32_t>(render_scale, 1, 10));
+    const auto thickness = static_cast<int>(std::clamp<std::uint32_t>(render_scale, 1, 10)
         * std::clamp<unsigned>(wireframe_thickness, 1U, 4U));
     const auto offset = (thickness - 1) / 2;
     const auto plot = [&] {
@@ -1233,10 +1233,10 @@ void draw_textured_sprite(
     const auto half_extent = source_width * 128 / increment;
     const auto unclipped_left = centre_x - half_extent;
     const auto unclipped_top = centre_y - half_extent;
-    const auto left = std::max(0, unclipped_left);
+    const auto left = std::max<std::int32_t>(0, unclipped_left);
     const auto right = std::min(static_cast<std::int32_t>(target.width()) - 1,
         centre_x + half_extent);
-    const auto top = std::max(0, unclipped_top);
+    const auto top = std::max<std::int32_t>(0, unclipped_top);
     const auto bottom = std::min(static_cast<std::int32_t>(target.height()) - 1,
         centre_y + half_extent);
     if (left > right || top > bottom) return;
@@ -1303,8 +1303,8 @@ void draw_simple_scaled_sprite(
     auto first_x = 0;
     auto last_x = dimension;
     if (pose.effect_clip_right > pose.effect_clip_left) {
-        first_x = std::max(first_x, pose.effect_clip_left - left);
-        last_x = std::min(last_x, pose.effect_clip_right - left);
+        first_x = std::max<int>(first_x, pose.effect_clip_left - left);
+        last_x = std::min<int>(last_x, pose.effect_clip_right - left);
     }
     if (first_x >= last_x) return;
     if(auto* commands=target.command_buffer()) {
@@ -1875,7 +1875,9 @@ void SoftwareRenderer::draw_impl(
                         const int increment=std::clamp((int(z)*(width==64?128:256))>>8,1,32767);
                         ShapePrimitive primitive;primitive.kind=ShapePrimitiveKind::sprite;
                         primitive.material=material;
-                        primitive.sprite_half_extent=double(width*128/increment)*centre.z/settings_.focal_length;
+                        // The source sprite's inclusive left..right span
+                        // still draws one texel when integer half_extent=0.
+                        primitive.sprite_half_extent=(double(width*128/increment)+.5)*centre.z/settings_.focal_length;
                         primitive.vertices.push_back({{centre.x,centre.y,centre.z},{}});
                         primitives->primitives.push_back(std::move(primitive));
                     }
