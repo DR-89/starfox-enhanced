@@ -19,6 +19,13 @@ struct GameSceneObject {
     render::RenderPose source_pose;
 };
 
+struct SourceCorridorBounds {
+    // Cartridge world axes (Y down). Authored tunnel constants, not the
+    // narrower player collision limits used by entrance/exit strategies.
+    std::int16_t left{},right{},top{},bottom{};
+    bool operator==(const SourceCorridorBounds&) const=default;
+};
+
 // Owned source-tick data, not references into the mutable object pool. Retain
 // one shared snapshot for both eyes and for asynchronous GPU fence retries.
 struct GameSceneSnapshot {
@@ -70,6 +77,7 @@ struct GameSceneSnapshot {
     bool background_landscape_unique_right_half{};
     uint16_t landscape_atlas_origin{232};
     bool background_water_surround{};
+    std::optional<SourceCorridorBounds> background_corridor;
     bool background_space_horizon{};
     bool background_unique_space{};
     std::array<unsigned,4> background_planet_rect{};
@@ -186,6 +194,8 @@ private:
     std::array<uint16_t,25> landscape_backgrounds_{};
     uint16_t water_background_{};
     uint16_t colony_background_{};
+    std::array<uint16_t,8> corridor_backgrounds_{};
+    std::array<std::optional<SourceCorridorBounds>,8> corridor_bounds_{};
     std::array<uint32_t,3> dust_addresses_{};
     std::shared_ptr<const GameSceneSnapshot> older_,previous_,current_;
     render::GridLineHistory grid_line_history_;

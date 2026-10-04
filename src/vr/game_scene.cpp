@@ -84,6 +84,26 @@ GameSceneHistory::GameSceneHistory(const simulation::GameSimulation& game,
     }
     constexpr std::array landscape_names{"BG_1_1C","BG_TRAINING","BG_2_3A","BG_1_6A","BG_3_7A","BG_3_3A","BG_3_5","BG_3_1C","BG_1_4","BG_7_1","BG_7_2","BG_7_3","BG_7_4","BG_5_4","BG_5_1","BG_6_1","BG_6_5","BG_6_2","BG_6_4","BG_5_5","BG_7_5","BG_6_6","BG_5_2","BG_1_14","BG_1_7B"};
     const auto& water=symbols.find("BG_2_3B");
+    constexpr std::array corridor_names{"BG_1_1I","BG_1_3B","BG_2_3C","BG_1_6B",
+        "BG_1_7A","BG_2_6B","BG_2_6C","BG_3_4C"};
+    for(size_t i=0;i<corridor_names.size();++i) {
+        const auto& value=symbols.find(corridor_names[i]);
+        if(value.empty() || background_lists.empty()
+            || (value.front()&0xff0000U)!=(background_lists.front()&0xff0000U)) continue;
+        const std::string prefix=i==1?"MTUNNEL_":i==2?"STUNNEL_":"LTUNNEL_";
+        std::array<int16_t,4> bounds{};bool complete=true;
+        constexpr std::array suffixes{"MINX","MAXX","MINY","MAXY"};
+        for(size_t axis=0;axis<bounds.size();++axis) {
+            const auto& constant=symbols.find(prefix+suffixes[axis]);
+            if(constant.empty()) {complete=false;break;}
+            bounds[axis]=starfox::bit_cast<int16_t>(uint16_t(constant.front()));
+        }
+        if(!complete) continue; // Do not invent dimensions for other source revisions.
+        if(bounds[0]>=bounds[1] || bounds[2]>=bounds[3])
+            throw std::runtime_error("Invalid authored corridor dimensions");
+        corridor_backgrounds_[i]=static_cast<uint16_t>(value.front()-background_lists.front());
+        corridor_bounds_[i]=SourceCorridorBounds{bounds[0],bounds[1],bounds[2],bounds[3]};
+    }
     const auto& colony=symbols.find("BG_2_6A");
     if(!colony.empty() && !background_lists.empty()
         && (colony.front()&0xff0000U)==(background_lists.front()&0xff0000U))
@@ -188,6 +208,9 @@ void GameSceneHistory::capture() {
         presentation_ppu->cgram[207]=pack_colour(tint[0],tint[1],tint[2]);
     next->ppu=std::move(presentation_ppu);
     next->background_id=game_.map().background();
+    if(next->ppu->tunnel_scene) for(size_t i=0;i<corridor_backgrounds_.size();++i)
+        if(corridor_backgrounds_[i] && next->background_id==corridor_backgrounds_[i])
+            next->background_corridor=corridor_bounds_[i];
     next->wipe=game_.window_wipe_state();
     if(next->ppu->background_mode==2) for(size_t i=0;i<unique_backgrounds_.size();++i)
         if(unique_backgrounds_[i]!=0 && game_.map().background()==unique_backgrounds_[i])

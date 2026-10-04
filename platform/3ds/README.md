@@ -9,6 +9,41 @@ compile/link with the actual ARM SDK at the accepted October 4 menu checkpoint
 on `codex/3ds-native-bringup`. Original-device acceptance is still pending.
 **There is no playable 3DS game package yet.**
 
+## Native finite corridor checkpoint
+
+Verified source tunnel IDs now carry dimensions from their own `STUNNEL_`,
+`MTUNNEL_` or `LTUNNEL_` symbols: small, medium and large walls are not one
+arbitrary screen-depth plane. The native adapter intersects camera rays with
+the four authored surfaces, partitions at their nearest intersections and
+clips near/far before projection. Camera position and rotation interpolate
+with the model source clock; scene/background/bounds discontinuities do not.
+Homogeneous source UVs preserve canonical artwork, both BG2 priorities, black
+ink and sprite painter order. Only the far-horizon region stays at infinity.
+
+The source decoder already clamps a tunnel's outer cross-section. Analytic
+edge strips reuse those pixels at large stereo separation without allocating
+thousands of identical columns, copying textures per eye or changing optics.
+Unchanged slider presentations reuse decoded artwork and palette conversion.
+Independent slab-intersection tests cover small/medium/large bounds, camera
+translation, rotated view matrices, near/far, source UVs and both LCD edges.
+Maximum strength tests cover eyes inside the physical medium/large tubes;
+eyes outside a small tube and exterior exit-camera surrounds remain separate
+unfinished policies, not silently clamped projection settings.
+
+All seventeen rebuilt root host suites pass. Source painter/raster checks
+total 43,013,740 / 10,848,904. Private unmodified-ROM Armada runs reach 240
+corridor frames from source video phases 4,377 (Original) and 5,017 (EX).
+Each compares 458,752 canonical colour/opacity/ownership samples at default
+and maximum optics while preparing models, dots, colour effects and wipes.
+Peak padded texture residency including the lower LCD is 3,150,080 /
+3,154,176 bytes. These runs use god/infinite lives/bombs, firing, bomb assistance
+and feedback steering toward the centre; they are host correctness tests,
+not native device, no-cheat gameplay or frame-time measurements. Initial
+straight-edge runs did not reach a corridor and are not acceptance evidence.
+This corridor source change still needs exact-export and ARM CI acceptance.
+EX-specific wider corridors, exterior transitions, full-flow HUD/effects,
+physical Original 3DS/XL validation and playable packaging remain unfinished.
+
 ## Native water receiver checkpoint
 
 Mode-1 `BG_2_3B` water now uses finite floor and overhead geometry at the
@@ -32,8 +67,9 @@ including the lower LCD. That probe uses god mode, infinite lives/bombs and
 bomb assistance; it is not a no-cheat gameplay, native-device or performance
 claim. Root and exact native-source host runs both pass seventeen suites and
 the same natural water probe, including 458,752 canonical pixel/ownership
-comparisons each. Current water changes still need ARM CI acceptance.
-Corridors, full-flow effects/HUD acceptance and playable packaging remain.
+comparisons each. Water checkpoint `070e93f98afde8b6483ca6e4ea01cf5b6156c24a`
+passed ARM CI 37203496561; downloaded ELF/extended-3DSX headers validate.
+Full-flow effects/HUD acceptance and playable packaging remain.
 
 ## Distant background depth and source priorities
 

@@ -287,6 +287,25 @@ void composition() {
     rejected([&]{compositor.prepare_layers(plan,oversized);},"Artwork-only composition forgot the reserved lower LCD texture");
     rejected([&]{validate_pica_group(models,pica_texture_budget+1);},"Group validator accepted overflowing reserved residency");
 }
+void corridor_batch_contract() {
+    auto ppu=source();ppu->background_mode=1;ppu->tunnel_scene=true;
+    PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};batch.corridor_receiver=true;
+    PicaRaster owner;const auto plan=plan_frame(0,true,ScreenUse::world);
+    const auto prepared=owner.prepare(ppu,batch,plan);
+    const auto work=owner.work();const std::vector<PicaVertex> saved(prepared.vertices.begin(),prepared.vertices.end());
+    for(unsigned failure=0;failure<6;++failure) {
+        auto bad=batch;auto invalid=std::make_shared<simulation::SnesPpuState>(*ppu);
+        if(failure==0) bad.water_receiver=true;
+        if(failure==1) invalid->tunnel_scene=false;
+        if(failure==2) invalid->background_mode=3;
+        if(failure==3) bad.passes[0].layer=PpuLayer::bg3;
+        if(failure==4) bad.space=PicaSpace::screen;
+        if(failure==5) bad.passes.clear();
+        rejected([&]{owner.prepare(invalid,bad,plan);},"Invalid corridor painter batch was accepted");
+        require(owner.work().decodes==work.decodes && owner.work().colour_updates==work.colour_updates
+            && std::equal(saved.begin(),saved.end(),prepared.vertices.begin()),"Invalid corridor batch published partial cache/geometry state");
+    }
+}
 void compact_strip_contract() {
     auto ppu=source();ppu->background_mode=1;
     ppu->cgram[17]=0;ppu->cgram[18]=31<<5;tile(*ppu,0x4000,1,2);
@@ -530,5 +549,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();optical_coverage();transparent_priority_crop();unique_sky_halves();composition();corridor_batch_contract();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

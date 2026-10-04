@@ -31,6 +31,7 @@ struct PpuBatch {
     unsigned first_row{},last_row{224};
     bool water_receiver{}; // Isolated BG2; GameLayers supplies finite surface geometry.
     bool compact_strips{}; // Preserve pixels while reducing power-of-two GPU padding.
+    bool corridor_receiver{}; // Isolated BG2, not every source INATUNNEL scene.
     bool operator==(const PpuBatch&) const=default;
 };
 struct PpuRasterWork {std::uint64_t decodes{},colour_updates{};};

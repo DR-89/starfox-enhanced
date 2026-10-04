@@ -135,16 +135,18 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
     if(!world_hud) front.push_back(pass(PpuLayer::objects,3,extend));
     if(ppu.background_mode==1 && ppu.bg3_high_priority) front.push_back(pass(PpuLayer::bg3,1,extend));
     if(native_landscape_scene(frame)) result.before_models.space=PicaSpace::scenery;
-    else if(native_panorama_scene(frame) || native_water_scene(frame)) {
-        const bool water=native_water_scene(frame);
+    else if(native_panorama_scene(frame) || native_water_scene(frame) || native_corridor_scene(frame)) {
+        const bool water=native_water_scene(frame),corridor=native_corridor_scene(frame);
         const auto split=[&](const auto& passes,auto& groups) {
             for(const auto& source_pass:passes) {
                 const bool receiver=water && source_pass.layer==PpuLayer::bg2;
                 const auto space=(source_pass.layer==PpuLayer::bg2 || (water && source_pass.layer==PpuLayer::bg3))
                     ?PicaSpace::scenery:PicaSpace::screen;
-                if(groups.empty() || groups.back().space!=space || groups.back().water_receiver!=receiver) {
+                const bool tunnel=corridor && source_pass.layer==PpuLayer::bg2;
+                if(groups.empty() || groups.back().space!=space || groups.back().water_receiver!=receiver
+                    || groups.back().corridor_receiver!=tunnel) {
                     PpuBatch group;group.space=space;group.expand_horizontal=true;group.water_receiver=receiver;
-                    group.compact_strips=water && space==PicaSpace::scenery;
+                    group.corridor_receiver=tunnel;group.compact_strips=(water || corridor) && space==PicaSpace::scenery;
                     groups.push_back(std::move(group));
                 }
                 groups.back().passes.push_back(source_pass);
@@ -153,7 +155,7 @@ GameLayerPlan game_layer_plan(const GamePresentation& frame) {
         split(back,result.before_model_groups);
         // A Mode-1 high-priority BG3 sky can be after models. Its infinity
         // projection must not move the adjacent OBJ/bitmap passes or their order.
-        if(water) split(front,result.after_model_groups);
+        if(water || corridor) split(front,result.after_model_groups);
     }
     return result;
 }
@@ -177,10 +179,11 @@ PicaFrame GameLayers::prepare_groups(const GamePresentation& frame,std::span<con
     working.clear();working.reserve(owners.size());
     for(unsigned i=0;i<owners.size();++i) {
         auto& owner=*owners[i];const auto& batch=batches[i];
-        const auto guard=batch.water_receiver?source_water_guard(frame):pica_raster_base_guard;
+        const auto guard=batch.water_receiver?source_water_guard(frame):batch.corridor_receiver?source_corridor_guard(frame):pica_raster_base_guard;
         auto prepared=owner.raster.prepare(frame.raster->ppu,batch,frame.plan,frame.raster->brightness,
             frame.current->background_colour_subtract,guard,true);
         if(batch.water_receiver) prepared=owner.receiver.prepare_water(frame,prepared,owner.raster.coverage_guard());
+        else if(batch.corridor_receiver) prepared=owner.receiver.prepare_corridor(frame,prepared,owner.raster.coverage_guard());
         else if(batch.space==PicaSpace::scenery) {
             auto& images=owner.isolated_images;images.assign(prepared.textures.begin(),prepared.textures.end());
             for(auto& image:images) {image.source_layers={};image.layer_pitch=0;}

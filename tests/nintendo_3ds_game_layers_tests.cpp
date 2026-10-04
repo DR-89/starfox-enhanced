@@ -459,6 +459,155 @@ void water_eye_coverage() {
             "Reducing water slider reran cartridge decoding or palette colour conversion");
     }
 }
+void corridor_depth() {
+    using enum simulation::GameFlowState;
+    for(unsigned mode:{1U,2U}) for(int half_width:{60,90,120}) {
+        auto frame=source(gameplay,mode);auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->camera.y=-60;scene->camera.x=10;scene->source_vanishing_point={112,96};
+        scene->view_matrix={32767,0,0,0,32767,0,0,0,32767};
+        scene->background_corridor=vr::SourceCorridorBounds{std::int16_t(-half_width),std::int16_t(half_width),-120,0};
+        frame.current=frame.previous=scene;
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);ppu->tunnel_scene=true;
+        ppu->bg2_scanline_scroll_enabled=true;
+        for(unsigned y=0;y<224;++y) ppu->bg2_scanline_scroll_y[y]=std::int16_t(y<112?0:128);
+        for(unsigned i=0;i<1024;++i) {
+            const unsigned tile=1|((i%3+1)<<10)|(i%2?0x2000:0),at=0x6400+i*2;
+            ppu->vram[at]=std::uint8_t(tile);ppu->vram[at+1]=std::uint8_t(tile>>8);
+        }
+        ppu->cgram[17]=0;
+        for(unsigned i=0;i<4;++i) {
+            ppu->oam[i*4]=std::uint8_t(56+i*24);ppu->oam[i*4+1]=80;
+            ppu->oam[i*4+2]=1;ppu->oam[i*4+3]=std::uint8_t(i<<4);
+        }
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+        const auto unchanged=*ppu;StereoSettings settings;settings.separation=64;settings.convergence=16;
+        frame.plan=plan_frame(1,true,ScreenUse::world,settings);
+        const auto policy=game_layer_plan(frame);
+        require(native_corridor_scene(frame) && !policy.before_model_groups.empty(),"Authored enclosed corridor remained at screen depth");
+        std::vector<PpuPass> flattened;
+        for(const auto& batch:policy.before_model_groups) for(const auto& pass:batch.passes) {
+            require(batch.corridor_receiver==(pass.layer==PpuLayer::bg2),"Corridor receiver contains OBJ/BG3 or missed a BG2 priority");
+            flattened.push_back(pass);
+        }
+        require(flattened==policy.before_models.passes,"Corridor splitting changed source painter order");
+        GameLayers layers;PicaRaster oracle;PicaComposite composite;Canvas lower;
+        auto prepared=layers.prepare(frame);
+        auto raw_policy=policy.before_models;raw_policy.passes.insert(raw_policy.passes.end(),policy.after_models.passes.begin(),policy.after_models.passes.end());
+        const auto raw=oracle.prepare(ppu,raw_policy,frame.plan,15);
+        const auto native=composite.prepare(frame.plan,std::array{prepared.before_models,prepared.after_models},lower.view());
+        unsigned finite{};
+        for(const auto& draw:prepared.before_models.draws) if(draw.space==PicaSpace::world) {
+            ++finite;require(draw.projected_uv && draw.depth_test && draw.depth_write && draw.source_layer==2,
+                "Corridor surface lost source projector, physical depth or CGADSUB ownership");
+            require(prepared.before_models.textures[draw.texture].source_layers.empty(),"Isolated corridor retains redundant A8 residency");
+        }
+        require(finite>=4,"Corridor has no finite side walls, floor and ceiling");
+        for(unsigned y=0;y<224;++y) for(unsigned x=0;x<256;++x)
+            require(mono_receiver_pixel(native,x,y)==pixel(raw,x,y),"Corridor geometry changed canonical pixels, opaque black or source priority");
+        const auto work=layers.work();
+        for(float slider:{.5F,0.F,1.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world,settings);prepared=layers.prepare(frame);
+            const auto current=layers.work();
+            require(current[0].decodes==work[0].decodes && current[1].decodes==work[1].decodes
+                && current[0].colour_updates==work[0].colour_updates && current[1].colour_updates==work[1].colour_updates,
+                "Corridor slider redecoded or recoloured source artwork");
+            validate_pica_frame(composite.prepare(frame.plan,std::array{prepared.before_models,prepared.after_models},lower.view()),lower.view());
+        }
+        auto previous=std::make_shared<vr::GameSceneSnapshot>(*scene);previous->camera.x=-10;frame.previous=previous;frame.interpolation_alpha=.5;
+        const auto interpolated=source_corridor_planes(frame);
+        require(std::abs(interpolated[0][0]+32768./32767/(half_width*256.))<1.e-9,
+            "Corridor receiver did not interpolate the same source camera as models");
+        previous->scene_epoch=1;
+        require(std::abs(source_corridor_planes(frame)[0][0]+32768./32767/((half_width+10)*256.))<1.e-9,
+            "Corridor blended a source epoch discontinuity");
+        frame.interpolation_alpha=std::numeric_limits<double>::quiet_NaN();bool rejected=false;
+        try {static_cast<void>(source_corridor_planes(frame));} catch(const std::invalid_argument&) {rejected=true;}
+        require(rejected,"Corridor accepted a non-finite source interpolation");frame.interpolation_alpha=1;
+        for(auto flow:{title,ex_pregame_menu,controls_type,controls_choice,planet_select,continue_choice}) {
+            scene->flow=flow;require(!native_corridor_scene(frame),"Native menu/map was incorrectly put inside finite corridor geometry");
+        }
+        scene->flow=gameplay;scene->camera.x=half_width;
+        require(!native_corridor_scene(frame),"Outside-tube exit used a zero/negative-height receiver");
+        scene->camera.x=10;scene->background_corridor.reset();
+        require(!native_corridor_scene(frame),"Generic source tunnel flag fabricated physical boss-room dimensions");
+        require(ppu->vram==unchanged.vram && ppu->oam==unchanged.oam && ppu->cgram==unchanged.cgram,"Corridor presentation mutated cartridge artwork");
+    }
+}
+void corridor_eye_coverage() {
+    // Independent slab intersections in world axes; never call the production
+    // plane/guard helper for expected depth or source texture coordinates.
+    for(int half_width:{60,90,120}) for(int camera_x:{-10,0,10}) for(float convergence:{16.F,1024.F})
+        for(float strength:{1.F,2.F}) for(int yaw:{-1,0,1}) {
+        // At strength 2 / 64 separation, an eye is physically outside the
+        // small authored tube. Exterior transition policy is still separate.
+        if(half_width==60 && strength==2) continue;
+        auto frame=source(simulation::GameFlowState::gameplay,2);
+        auto scene=std::make_shared<vr::GameSceneSnapshot>(*frame.current);
+        scene->camera.x=camera_x;scene->camera.y=-60;
+        const std::int16_t sine=std::int16_t(yaw*12539),cosine=yaw?30273:32767;
+        scene->view_matrix={cosine,0,sine,0,32767,0,std::int16_t(-sine),0,cosine};
+        scene->background_corridor=vr::SourceCorridorBounds{std::int16_t(-half_width),std::int16_t(half_width),-120,0};
+        frame.current=frame.previous=scene;
+        auto ppu=std::make_shared<simulation::SnesPpuState>(*frame.raster->ppu);ppu->tunnel_scene=true;
+        for(unsigned i=0;i<1024;++i) {ppu->vram[0x6400+i*2]=1;ppu->vram[0x6401+i*2]=8;}
+        auto raster=std::make_shared<GameRasterSnapshot>(*frame.raster);raster->ppu=ppu;frame.raster=raster;
+        StereoSettings settings;settings.separation=64;settings.convergence=convergence;settings.strength=strength;
+        PicaRaster artwork;GameScenery receiver;Canvas lower;
+        PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};batch.corridor_receiver=true;
+        for(float slider:{1.F,.5F,0.F}) {
+            frame.plan=plan_frame(slider,true,ScreenUse::world,settings);
+            const auto decoded=artwork.prepare(ppu,batch,frame.plan,15,0,source_corridor_guard(frame),true);
+            const auto group=receiver.prepare_corridor(frame,decoded,artwork.coverage_guard());validate_pica_frame(group,lower.view());
+            struct Triangle {std::array<std::array<double,2>,3> p,uv;std::array<double,3> q;double area;};
+            const auto cross=[](auto a,auto b,auto p){return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0]);};
+            for(unsigned eye=0;eye<frame.plan.eye_count;++eye) {
+                std::vector<Triangle> triangles;
+                for(const auto& draw:group.draws) if(draw.space==PicaSpace::world) {
+                    const auto matrix=pica_draw_matrix(frame.plan,eye,draw);const auto& image=group.textures[draw.texture];
+                    const auto& origin=decoded.vertices[draw.texture*6].position;
+                    for(unsigned i=draw.first;i<draw.first+draw.count;i+=3) {
+                        Triangle triangle{};
+                        for(unsigned k=0;k<3;++k) {
+                            const auto& v=group.vertices[i+k];std::array<double,4> clip{};
+                            for(unsigned row=0;row<4;++row) {
+                                clip[row]=matrix[row][3];for(unsigned axis=0;axis<3;++axis) clip[row]+=double(matrix[row][axis])*v.position[axis];
+                            }
+                            triangle.p[k]={(1-clip[1]/clip[3])*200,(1-clip[0]/clip[3])*120};triangle.q[k]=1./v.position[2];
+                            triangle.uv[k]={origin[0]+v.uv[0]*image.width,origin[1]+v.uv[1]*image.height};
+                        }
+                        triangle.area=cross(triangle.p[0],triangle.p[1],triangle.p[2]);
+                        if(std::abs(triangle.area)>1.e-8) triangles.push_back(triangle);
+                    }
+                }
+                for(unsigned y=0;y<240;++y) for(unsigned x=0;x<400;x+=3) {
+                    const std::array<double,2> sample{x+.5,y+.5};
+                    const double scale=32767./32768.,c=cosine/32768.,s=sine/32768.,norm=c*c+s*s;
+                    const double ex=camera_x+frame.plan.eyes[eye].x*c/norm;
+                    const double rx=(c*(sample[0]-200-frame.plan.eyes[eye].projection_offset)/256+s)/norm,ry=(sample[1]-120)/(256*scale);
+                    double z=std::numeric_limits<double>::infinity();
+                    if(rx!=0) z=std::min(z,((rx>0?half_width:-half_width)-ex)/rx);
+                    if(ry!=0) z=std::min(z,((ry>0?0:-120)+60)/ry);
+                    if(z<frame.plan.near_plane || z>frame.plan.far_plane) continue;
+                    const double expected_x=std::clamp(sample[0]-frame.plan.eyes[eye].projection_offset
+                        +256.*frame.plan.eyes[eye].x/z,-double(artwork.coverage_guard()),400.+artwork.coverage_guard());
+                    bool covered=false;
+                    for(const auto& triangle:triangles) {
+                        const std::array weights{cross(triangle.p[1],triangle.p[2],sample)/triangle.area,
+                            cross(triangle.p[2],triangle.p[0],sample)/triangle.area,cross(triangle.p[0],triangle.p[1],sample)/triangle.area};
+                        if(std::any_of(weights.begin(),weights.end(),[](double w){return w< -1.e-6;})) continue;
+                        double q=0,sx=0,sy=0;
+                        for(unsigned k=0;k<3;++k) {q+=weights[k]*triangle.q[k];sx+=weights[k]*triangle.uv[k][0];sy+=weights[k]*triangle.uv[k][1];}
+                        require(std::abs(q-1./z)<1.e-5 && std::abs(sx-expected_x)<.05 && std::abs(sy-sample[1])<.05,
+                            "Corridor eye sees wrong physical wall depth or source UV registration");
+                        covered=true;
+                    }
+                    require(covered,"Finite corridor left an uncovered active-eye edge/corner");
+                }
+            }
+        }
+        require(artwork.work().decodes==1 && artwork.work().colour_updates==1,"Corridor slider redecoded edge-clamped artwork");
+    }
+}
 void panorama_depth() {
     using enum simulation::GameFlowState;
     Canvas lower;
@@ -603,6 +752,6 @@ void receiver_eye_coverage() {
 }
 }
 int main() try {
-    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();panorama_depth();receiver_eye_coverage();
+    priority_pixels();policy_contracts();margins_and_cache();landscape_depth();unique_landscape_policy();water_depth();water_priority_pixels();water_eye_coverage();corridor_depth();corridor_eye_coverage();panorama_depth();receiver_eye_coverage();
     std::cout<<checks<<" 3DS actual source painter-policy checks passed; not full terrain/menu/hardware acceptance\n";
 } catch(const std::exception& error) {std::cerr<<scenario<<error.what()<<'\n';return 1;}

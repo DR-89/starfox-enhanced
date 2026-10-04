@@ -52,6 +52,9 @@ void validate(const simulation::SnesPpuState& ppu,const PpuBatch& batch,const Fr
         || (batch.water_receiver && (ppu.background_mode!=1 || batch.space!=PicaSpace::scenery
             || batch.passes.empty() || std::any_of(batch.passes.begin(),batch.passes.end(),
                 [](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
+        || (batch.corridor_receiver && (batch.water_receiver || ppu.background_mode>2 || !ppu.tunnel_scene
+            || batch.space!=PicaSpace::scenery || batch.passes.empty()
+            || std::any_of(batch.passes.begin(),batch.passes.end(),[](const auto& pass){return pass.layer!=PpuLayer::bg2;})))
         || (batch.space!=PicaSpace::screen && batch.space!=PicaSpace::scenery)
         || (batch.space==PicaSpace::scenery && !batch.expand_horizontal))
         throw std::invalid_argument("Unsupported/incomplete 3DS PPU painter group");
@@ -96,7 +99,7 @@ PicaFrame PicaRaster::prepare(std::shared_ptr<const simulation::SnesPpuState> so
         // Water receivers may just cross a power-of-two padding boundary.
         // Borrow another native-width strip instead of doubling its allocation;
         // the last of at most four strips can keep a non-power-of-two width.
-        const auto span=(batch.water_receiver || batch.compact_strips) && remaining<=pica_raster_strip_width && pages+1<pica_raster_max_strips
+        const auto span=(batch.water_receiver || batch.corridor_receiver || batch.compact_strips) && remaining<=pica_raster_strip_width && pages+1<pica_raster_max_strips
             ?std::bit_floor(remaining):std::min(pica_raster_strip_width,remaining);
         boundaries[pages+1]=boundaries[pages]+span;++pages;
     }
