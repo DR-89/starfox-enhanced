@@ -8,12 +8,17 @@ source_root="${1:-$(pwd)}"
 build_root="${2:-${source_root}/build/3ds-frontend}"
 test_player="${STARFOX_3DS_TEST_PLAYER:-OFF}"
 profile_frames="${STARFOX_3DS_PROFILE_FRAMES:-OFF}"
+enable_ipo="${STARFOX_3DS_ENABLE_IPO:-OFF}"
 if [[ "$test_player" != ON && "$test_player" != OFF ]]; then
     printf '%s\n' 'STARFOX_3DS_TEST_PLAYER must be ON or OFF.' >&2
     exit 1
 fi
 if [[ "$profile_frames" != ON && "$profile_frames" != OFF ]]; then
     printf '%s\n' 'STARFOX_3DS_PROFILE_FRAMES must be ON or OFF.' >&2
+    exit 1
+fi
+if [[ "$enable_ipo" != ON && "$enable_ipo" != OFF ]]; then
+    printf '%s\n' 'STARFOX_3DS_ENABLE_IPO must be ON or OFF.' >&2
     exit 1
 fi
 toolchain="${DEVKITPRO}/cmake/3DS.cmake"
@@ -25,9 +30,11 @@ fi
 cmake -S "${source_root}/platform/3ds" -B "${build_root}" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="${toolchain}" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DSTARFOX_3DS_BUILD_NATIVE=ON \
     -DSTARFOX_3DS_BUILD_TEST_PLAYER="$test_player" \
     -DSTARFOX_3DS_PROFILE_FRAMES="$profile_frames" \
+    -DSTARFOX_3DS_ENABLE_IPO="$enable_ipo" \
     -DSTARFOX_3DS_BUILD_HOST_TESTS=OFF
 # Report all independent native compilation failures in one pass. Ninja still
 # returns failure; this never turns a partial build into an accepted package.

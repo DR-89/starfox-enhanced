@@ -6,9 +6,24 @@ option(STARFOX_3DS_BUILD_HOST_TESTS "Build platform-independent projection/LCD t
 option(STARFOX_3DS_BUILD_GAME_CORE "Link the actual cartridge VM/SPC/game session bring-up target" ${STARFOX_3DS_BUILD_NATIVE})
 option(STARFOX_3DS_BUILD_TEST_PLAYER "Build an experimental full-menu player for Original 3DS hardware testing" OFF)
 option(STARFOX_3DS_PROFILE_FRAMES "Write bounded native phase timings to a separate diagnostic CSV" OFF)
+option(STARFOX_3DS_ENABLE_IPO "Optimize the real native/core graph across translation units" OFF)
+if(STARFOX_3DS_ENABLE_IPO)
+    # Test the caller's actual compiler/target flags, including the native ABI.
+    # An explicitly requested optimization must not silently become a baseline.
+    if(POLICY CMP0138)
+        cmake_policy(SET CMP0138 NEW)
+    endif()
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT starfox_3ds_ipo_supported
+        OUTPUT starfox_3ds_ipo_error LANGUAGES CXX)
+    if(NOT starfox_3ds_ipo_supported)
+        message(FATAL_ERROR "Requested 3DS IPO is unsupported: ${starfox_3ds_ipo_error}")
+    endif()
+endif()
 if(STARFOX_3DS_PROFILE_FRAMES AND NOT STARFOX_3DS_BUILD_GAME_CORE)
     message(FATAL_ERROR "Native frame profiling requires the actual cartridge core.")
 endif()
+
 if(STARFOX_3DS_BUILD_TEST_PLAYER AND (NOT STARFOX_3DS_BUILD_NATIVE OR NOT STARFOX_3DS_BUILD_GAME_CORE OR NOT STARFOX_3DS_BUILD_GPU_CHECK))
     message(FATAL_ERROR "The 3DS test player requires the native SDK, cartridge core and PICA renderer; no desktop/mono substitute.")
 endif()
@@ -238,4 +253,17 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
             COMMAND "${CMAKE_COMMAND}" "-DCHECKER=$<TARGET_FILE:starfox_3ds_game_models_check>"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/nintendo_3ds_game_models_cli.cmake")
     endif()
+endif()
+
+if(STARFOX_3DS_ENABLE_IPO)
+    # Include SPC, CPU, shared PPU and the actual scene owner, not just a small
+    # diagnostic executable. External SDK libraries keep their original ABI.
+    get_property(starfox_3ds_build_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(target IN LISTS starfox_3ds_build_targets)
+        get_target_property(target_type ${target} TYPE)
+        if(target_type MATCHES "^(STATIC_LIBRARY|OBJECT_LIBRARY|EXECUTABLE)$")
+            set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+            message(STATUS "3DS IPO enabled: ${target}")
+        endif()
+    endforeach()
 endif()
