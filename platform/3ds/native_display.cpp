@@ -1,6 +1,14 @@
 #include "native_display.hpp"
 #include <3ds.h>
 
+extern "C" {
+// libctru's 32 KiB default is smaller than the shared SPC bank snapshot alone.
+// The actual ARM player overflowed below 0x08000000 during load_driver, before
+// reaching its menu. Reserve a bounded native main stack, within the existing
+// process heap allocation; this does not request New 3DS memory or clocks.
+unsigned int __stacksize__ = 256U * 1024U;
+}
+
 namespace starfox::platform::nintendo_3ds {
 NativeDisplay::NativeDisplay() {
     // Keep the baseline honest on New hardware too; the primary target is

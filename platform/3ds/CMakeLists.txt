@@ -124,6 +124,17 @@ if(STARFOX_3DS_BUILD_NATIVE)
             AUTHOR "kandowontu")
         ctr_create_3dsx(starfox_3ds_gpu_check SMDH "${CMAKE_CURRENT_BINARY_DIR}/gpu-check.smdh")
     endif()
+    # Keep compiler frame evidence alongside the real ARM binaries. The package
+    # gate checks the linked libctru stack reservation, not just host builds.
+    foreach(target starfox_3ds_frontend starfox_3ds_source_geometry starfox_3ds_raster
+            starfox_3ds_native_audio starfox_3ds_frontend_check
+            starfox_3ds_cartridge_core starfox_3ds_spc starfox_3ds_cpu
+            starfox_3ds_native_gpu starfox_3ds_gpu_check
+            starfox_3ds_game_core_check starfox_3ds_test_player)
+        if(TARGET ${target})
+            target_compile_options(${target} PRIVATE -fstack-usage)
+        endif()
+    endforeach()
 elseif(STARFOX_3DS_BUILD_HOST_TESTS)
     enable_testing()
     # Compile the diagnostic owner without linking it to a fake display. This

@@ -30,7 +30,25 @@ a former 4.5 MiB intermediate spike. The shared presenter sequence stays within
 an injected allocation failure and repeated layout changes pass. All eighteen
 rebuilt host suites and strict native-source compilation against the saved
 official SDK headers pass. This is not a new ARM build, physical allocation,
-total-process peak RAM or performance result; R6 predates the change.
+total-process peak RAM or performance result; R6 predates the change. The R7
+ARM package does contain the residency change, but a later isolated emulator
+run found its 32 KiB default main stack overflowing during SPC bank loading.
+Do not treat R7's build/package checks as successful game boot.
+
+## Native main-stack follow-up
+
+Source builds after R7 reserve a 256 KiB main stack inside the existing process
+heap allocation. The shared SPC snapshot alone exceeds libctru's default
+32 KiB stack; the R7 ARM failure starts at `Spc700Audio::Impl::load_driver`,
+with writes below the mapped heap/stack base. The native override applies to
+all four diagnostics/player executables, without changing SPC data/timing,
+Original 3DS memory mode or clocks.
+
+CI validates the initialized strong `__stacksize__` symbol in each linked ARM
+ELF and reports compiler stack-usage records. This catches a missing/weak
+override and an individual frame exhausting the reservation. It does not prove
+whole-call-chain stack depth, total peak RAM or physical hardware performance.
+The follow-up still needs a new ARM build and emulator/device acceptance.
 
 ## Signed tunnel entrance/exit faces
 

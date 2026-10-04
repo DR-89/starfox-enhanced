@@ -20,6 +20,11 @@ must not be relabeled as containing it.
 
 ## Install
 
+Use a candidate after R7: the first isolated native emulator boot uncovered a
+32 KiB main-stack overflow during cartridge audio loading in R7. Its earlier
+host/link/package checks did not establish successful boot. The source follow-up
+reserves a bounded native stack; it still requires fresh ARM/runtime validation.
+
 1. Use a 3DS/3DS XL with an existing homebrew setup and Homebrew Launcher.
    This package does not modify firmware or install a CIA.
 2. Extract the ZIP to the SD card root. The program is
