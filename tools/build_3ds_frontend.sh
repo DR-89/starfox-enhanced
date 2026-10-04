@@ -7,8 +7,13 @@ set -euo pipefail
 source_root="${1:-$(pwd)}"
 build_root="${2:-${source_root}/build/3ds-frontend}"
 test_player="${STARFOX_3DS_TEST_PLAYER:-OFF}"
+profile_frames="${STARFOX_3DS_PROFILE_FRAMES:-OFF}"
 if [[ "$test_player" != ON && "$test_player" != OFF ]]; then
     printf '%s\n' 'STARFOX_3DS_TEST_PLAYER must be ON or OFF.' >&2
+    exit 1
+fi
+if [[ "$profile_frames" != ON && "$profile_frames" != OFF ]]; then
+    printf '%s\n' 'STARFOX_3DS_PROFILE_FRAMES must be ON or OFF.' >&2
     exit 1
 fi
 toolchain="${DEVKITPRO}/cmake/3DS.cmake"
@@ -22,6 +27,7 @@ cmake -S "${source_root}/platform/3ds" -B "${build_root}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DSTARFOX_3DS_BUILD_NATIVE=ON \
     -DSTARFOX_3DS_BUILD_TEST_PLAYER="$test_player" \
+    -DSTARFOX_3DS_PROFILE_FRAMES="$profile_frames" \
     -DSTARFOX_3DS_BUILD_HOST_TESTS=OFF
 # Report all independent native compilation failures in one pass. Ninja still
 # returns failure; this never turns a partial build into an accepted package.

@@ -3,6 +3,7 @@
 #include "starfox/platform/nintendo_3ds/audio_pcm.hpp"
 #include "starfox/platform/nintendo_3ds/game_menu.hpp"
 #include "starfox/platform/nintendo_3ds/game_layers.hpp"
+#include "starfox/platform/nintendo_3ds/frame_profile.hpp"
 #include <cctype>
 
 namespace starfox::platform::nintendo_3ds {
@@ -118,6 +119,7 @@ void GameSession::prepare_pace_shapes() {
     }
 }
 void GameSession::publish_raster() {
+    STARFOX_3DS_FRAME_PHASE(raster);
     auto next=std::make_shared<GameRasterSnapshot>();
     const auto& ppu=game_.map().ppu_state();
     // At most one immutable PPU copy per host advance, never per eye. Reuse
@@ -160,6 +162,7 @@ void GameSession::finish_hud_customization(std::optional<CockpitLayout> applied)
 }
 GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool focused,
     std::optional<input::ButtonMask> mapped_gameplay) {
+    STARFOX_3DS_FRAME_PHASE(advance);
     if(failed_) throw std::runtime_error("Reconstruct 3DS game after a failed source/audio tick");
     if(time<0) throw std::invalid_argument("Invalid 3DS monotonic frame time");
     GameAdvance result;result.requested_experience=requested_experience_;
@@ -212,7 +215,10 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
     fraction_=result.raster_fraction=batch.interpolation_alpha;
     try {
         for(unsigned phase=0;phase<batch.simulation_steps;++phase) {
-            prepare_pace_shapes();game_.present_frame();++result.video_phases;
+            {
+                STARFOX_3DS_FRAME_PHASE(video);
+                prepare_pace_shapes();game_.present_frame();++result.video_phases;
+            }
             if(game_.logic_tick_ready()) {
                 const bool runtime=game_.runtime_options_open(),paused=game_.paused();
                 auto controls=GameMenu::filter(game_,input_.consume());
@@ -244,7 +250,10 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                     // a held Start that could pause the newly launched stage.
                     controls.held|=input::start;controls.pressed|=input::start;start_after_preview_=false;
                 }
-                const auto tick=game_.tick(controls);++result.logic_ticks;
+                const auto tick=[&] {
+                    STARFOX_3DS_FRAME_PHASE(logic);
+                    return game_.tick(controls);
+                }();++result.logic_ticks;
                 // Keep the source menu action and its click/audio writes. The
                 // host only replaces its desktop-only output-rate result.
                 if(native_rate && game_.in_setup_menu() && game_.pregame_page()==simulation::PregamePage::main
@@ -263,7 +272,7 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                 // rather than allowing an unbounded vector on original hardware.
                 static_cast<void>(game_.map().take_msu_register_writes());
                 if(runtime && !game_.runtime_options_open()) input_.reset();
-                history_.capture();
+                { STARFOX_3DS_FRAME_PHASE(capture);history_.capture(); }
                 if(paused || game_.paused()) history_.reset_interpolation();
                 if(game_.experience()!=cartridge_experience_) {
                     requested_experience_=game_.experience();
@@ -280,6 +289,7 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
                 }
             }
             if(!game_.runtime_options_open() && ++audio_phase_==3) {
+                STARFOX_3DS_FRAME_PHASE(audio);
                 static_cast<void>(audio_.render_logic_tick(pending_audio_));
                 audio::mix_stems(audio_.last_music_samples(),audio_.last_effect_samples(),
                     game_.music_volume(),game_.sfx_volume(),mixed_);

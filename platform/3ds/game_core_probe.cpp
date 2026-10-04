@@ -11,6 +11,7 @@
 #include "starfox/platform/nintendo_3ds/game_hud_editor.hpp"
 #include "starfox/platform/nintendo_3ds/game_quick_menu.hpp"
 #include "starfox/platform/nintendo_3ds/presentation_clock.hpp"
+#include "starfox/platform/nintendo_3ds/frame_profile.hpp"
 #include "starfox/assets/bps.hpp"
 #if defined(STARFOX_3DS_CORE_PICA)
 #include "native_gpu.hpp"
@@ -59,6 +60,27 @@ private:
     std::function<bool()> paused_;
     aptHookCookie cookie_{};std::string error_;
 };
+#if defined(STARFOX_3DS_PROFILE_FRAMES)
+class NativeProfileFrame {
+public:
+    NativeProfileFrame(ctr::FrameProfile& profile,std::ostream& stream,
+        const std::unique_ptr<ctr::GameSession>& session,const unsigned& background,
+        const unsigned& rasters,const unsigned& logic,const unsigned& blocks) noexcept
+        :profile_(profile),stream_(stream),session_(session),background_(background),
+         rasters_(rasters),logic_(logic),blocks_(blocks),begin_(profile.now()) {}
+    ~NativeProfileFrame() noexcept {
+        const auto end=profile_.now();
+        profile_.record(ctr::FramePhase::frame,begin_,end);
+        profile_.write_window(stream_,end,session_?int(session_->game().flow_state()):-1,
+            background_,rasters_,logic_,blocks_);
+    }
+private:
+    ctr::FrameProfile& profile_;std::ostream& stream_;
+    const std::unique_ptr<ctr::GameSession>& session_;
+    const unsigned& background_;const unsigned& rasters_;const unsigned& logic_;const unsigned& blocks_;
+    std::uint64_t begin_{};
+};
+#endif
 }
 
 int main() {
@@ -92,6 +114,15 @@ int main() {
     auto experience=simulation::Experience::original;
     bool running=false;input::ButtonMask previous{};
     unsigned rasters{},logic{},blocks{};
+#if defined(STARFOX_3DS_PROFILE_FRAMES)
+    // Separate opt-in diagnostic file: never replace settings, saves or assets.
+    // Window count is bounded; unavailable/full SD output disables logging.
+    ctr::FrameProfile frame_profile([]() noexcept -> std::uint64_t {return svcGetSystemTick();},SYSCLOCK_ARM11);
+    ctr::ScopedFrameProfileActivation profile_activation(frame_profile);
+    std::ofstream profile_stream(std::string("sdmc:/3ds/starfox-enhanced/native-frame-profile-")
+        +std::to_string(svcGetSystemTick())+".csv");
+    unsigned profile_background{};
+#endif
     ctr::PresentationClock render_clock;
     ctr::PresentationRate rendered_rate;
     bool first_load=true;
@@ -124,6 +155,7 @@ int main() {
         // checkpoint immediately before the source/SD owners are retired.
         if(!force && now-last_save_check<1'000'000'000LL) return;
         last_save_check=now;
+        STARFOX_3DS_FRAME_PHASE(checkpoint);
         try {
             auto next=saved;next.experience=session->game().experience();
             next.preferences=session->preferences();
@@ -187,6 +219,9 @@ int main() {
         gpu=std::make_unique<ctr::NativeGpu>(ctr::pica_scene_shader);
 #endif
         running=true;rasters=logic=blocks=0;error.clear();
+#if defined(STARFOX_3DS_PROFILE_FRAMES)
+        profile_background=0;
+#endif
         // The initiating physical A/Start belongs to loading, not the new menu.
         session->advance(monotonic_time(),0,false);
     };
@@ -198,6 +233,9 @@ int main() {
 #endif
     };
     while(true) {
+#if defined(STARFOX_3DS_PROFILE_FRAMES)
+        NativeProfileFrame profile_frame(frame_profile,profile_stream,session,profile_background,rasters,logic,blocks);
+#endif
         const auto controls=display.poll();if(!controls.running) break;
         if(!hud_editor && (controls.held&(input::select|input::start))==(input::select|input::start)) break;
         const auto pressed=static_cast<input::ButtonMask>(controls.held&~previous);previous=controls.held;
@@ -372,14 +410,19 @@ int main() {
                     continue;
                 }
                 checkpoint(false);
-                if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu())
+                if(advanced.logic_ticks || menu->state().visible!=session->game().in_setup_menu()) {
+                    STARFOX_3DS_FRAME_PHASE(menu);
                     menu->update(ctr::GameMenu::capture(session->game()));
+                }
                 // Keep input, source raster and NDSP service at 60 Hz. Only
                 // skip scene preparation/submission; never spin on a 30 Hz gap.
                 if(!render_clock.due(monotonic_time(),session->game().presentation_fps())) {
                     gspWaitForVBlank();continue;
                 }
                 const auto source=session->presentation(controls.slider,controls.stereoscopic_hardware,session->stereo_settings());
+#if defined(STARFOX_3DS_PROFILE_FRAMES)
+                profile_background=source.current->background_id;
+#endif
                 auto dashboard=source.dashboard;
                 if(!save_warning.empty() && session->game().in_setup_menu()) {
                     lower.clear({0,0,0});lower.image(0,0,dashboard);
@@ -410,12 +453,12 @@ int main() {
                 if(plain) {
                     // Preview OFF does not prepare models, decode BG layers,
                     // allocate scene textures, or submit either world eye.
-                    gpu->present(menu->frame(source.plan),dashboard);
+                    { STARFOX_3DS_FRAME_PHASE(present);gpu->present(menu->frame(source.plan),dashboard); }
                     rendered_rate.completed(monotonic_time());continue;
                 }
-                const auto model_frame=models->prepare(source);
-                const auto artwork=layers->prepare(source);
-                const auto dot_frame=dots->prepare(source);
+                const auto model_frame=[&] { STARFOX_3DS_FRAME_PHASE(models);return models->prepare(source); }();
+                const auto artwork=[&] { STARFOX_3DS_FRAME_PHASE(layers);return layers->prepare(source); }();
+                const auto dot_frame=[&] { STARFOX_3DS_FRAME_PHASE(dots);return dots->prepare(source); }();
                 const auto math=colour.prepare(source.raster->circle,source.raster->colour_math,
                     source.raster->brightness,source.plan);
                 const bool world=source.current->flow==simulation::GameFlowState::gameplay
@@ -429,9 +472,12 @@ int main() {
 #else
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
 #endif
-                const auto frame=composite.prepare(source.plan,
-                    std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
-                gpu->present(frame,dashboard);
+                const auto frame=[&] {
+                    STARFOX_3DS_FRAME_PHASE(composite);
+                    return composite.prepare(source.plan,
+                        std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
+                }();
+                { STARFOX_3DS_FRAME_PHASE(present);gpu->present(frame,dashboard); }
                 rendered_rate.completed(monotonic_time());
                 continue; // Sole GPU owner: never also swap through NativeDisplay.
 #else

@@ -90,7 +90,8 @@ jobs:
         shell: bash
         run: |
           cmake -S platform/3ds -B "$RUNNER_TEMP/starfox-3ds-core-host" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DSTARFOX_3DS_BUILD_GAME_CORE=ON
+            -DCMAKE_BUILD_TYPE=Release -DSTARFOX_3DS_BUILD_GAME_CORE=ON \
+            -DSTARFOX_3DS_PROFILE_FRAMES=ON
           cmake --build "$RUNNER_TEMP/starfox-3ds-core-host" --parallel 2
           ctest --test-dir "$RUNNER_TEMP/starfox-3ds-core-host" --output-on-failure
           python3 tests/test_3ds_stack.py
@@ -100,6 +101,7 @@ jobs:
           docker pull "$CTR_IMAGE"
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -e STARFOX_3DS_TEST_PLAYER=ON \
+            -e STARFOX_3DS_PROFILE_FRAMES=ON \
             -v "$GITHUB_WORKSPACE:/src" -w /src "$CTR_IMAGE" \
             bash tools/build_3ds_frontend.sh . build/3ds-native
           for target in starfox_3ds_frontend_check starfox_3ds_gpu_check starfox_3ds_game_core_check starfox_3ds_test_player; do
