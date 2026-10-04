@@ -51,10 +51,12 @@ public:
           pixels_(static_cast<std::size_t>(stored_width_) * stored_height_) {}
 
     [[nodiscard]] std::uint32_t width() const noexcept {
-        return stored_width_ / draw_scale_;
+        // Native raster passes use 1x. ARM11 has no integer divide, and these
+        // bounds are consulted by every ordinary pixel write.
+        return draw_scale_ == 1U ? stored_width_ : stored_width_ / draw_scale_;
     }
     [[nodiscard]] std::uint32_t height() const noexcept {
-        return stored_height_ / draw_scale_;
+        return draw_scale_ == 1U ? stored_height_ : stored_height_ / draw_scale_;
     }
     [[nodiscard]] std::uint32_t stored_width() const noexcept {
         return stored_width_;
