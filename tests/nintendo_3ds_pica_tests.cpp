@@ -1,4 +1,5 @@
 #include "starfox/platform/nintendo_3ds/pica_frame.hpp"
+#include "starfox/platform/nintendo_3ds/pica_residency.hpp"
 #include <iostream>
 
 namespace {
@@ -55,6 +56,120 @@ void texture_upload() {
     image={std::span(storage).first(255),8,8,32,4};
     rejects([&]{pica_texture_layout(image);},"Short logical rows rejected");
     image={storage,8,8,32,2};rejects([&]{pica_texture_layout(image);},"Unsupported pixel format rejected");
+}
+void texture_residency() {
+    struct Ledger {
+        std::size_t live{},peak{};unsigned allocations{},releases{},prepares{},updates{},fail_at{};
+        void allocate(unsigned bytes) {
+            if(++allocations==fail_at) throw std::runtime_error("Injected texture allocation failure");
+            live+=bytes;peak=std::max(peak,live);
+        }
+        void release(unsigned bytes) {require(bytes<=live,"Resident ledger underflow");live-=bytes;++releases;}
+    } ledger;
+    struct Resident {
+        Ledger* ledger{};unsigned w{},h{},lw{},lh{};
+        std::vector<std::uint8_t> colour_cache,layer_cache;
+        void release_colour() {
+            if(w) ledger->release(w*h*4);
+            w=h=0;release_pica_texture_cache(colour_cache);
+        }
+        void release_layers() {
+            if(lw) ledger->release(lw*lh);
+            lw=lh=0;release_pica_texture_cache(layer_cache);
+        }
+        void release() {release_colour();release_layers();}
+        void prepare_layout(PicaImage image) {
+            ++ledger->prepares;
+            const auto keep=pica_texture_retention(image,w,h,lw,lh);
+            if(!keep.colour) release_colour();
+            if(!keep.layers) release_layers();
+        }
+        void update(PicaImage image) {
+            ++ledger->updates;const auto layout=pica_texture_layout(image);
+            if(w!=layout.width || h!=layout.height) {
+                release_colour();ledger->allocate(layout.bytes);w=layout.width;h=layout.height;
+            }
+            if(!image.source_layers.empty() && (lw!=layout.width || lh!=layout.height)) {
+                release_layers();ledger->allocate(layout.width*layout.height);lw=layout.width;lh=layout.height;
+            } else if(image.source_layers.empty()) release_layers();
+            colour_cache.assign(image.width*image.height*image.channels,19);
+            if(!image.source_layers.empty()) layer_cache.assign(image.width*image.height,2);
+        }
+    };
+    std::array<Resident,6> resident{};Resident dashboard;
+    for(auto& texture:resident) texture.ledger=&ledger;
+    dashboard.ledger=&ledger;
+    const auto cleanup=[&]{for(auto& texture:resident) texture.release();dashboard.release();};
+    std::vector<std::uint8_t> pixels(1024*1024*4,255),layers(1024*1024,2);
+    const auto image=[&](unsigned w,unsigned h,bool masked=false,unsigned channels=4) {
+        return PicaImage{pixels,w,h,w*channels,channels,false,masked?std::span<const std::uint8_t>(layers):std::span<const std::uint8_t>{},masked?w:0};
+    };
+    const auto lower=image(bottom_width,screen_height,false,3);
+    const auto update=[&](std::span<const PicaImage> source){update_pica_texture_residency(source,lower,std::span(resident),dashboard);};
+    // Independent rounded-size reference: logical dimensions/stride may change
+    // without replacing the same power-of-two allocation.
+    for(unsigned w:{1U,8U,9U,255U,256U,257U,1024U}) for(unsigned h:{1U,7U,16U,129U,511U}) {
+        unsigned aw=8,ah=8;while(aw<w) aw*=2;while(ah<h) ah*=2;
+        const auto source=image(w,h,true);
+        for(unsigned cw:{0U,aw,aw/2}) for(unsigned ch:{0U,ah,ah/2})
+            for(unsigned lw:{0U,aw}) for(unsigned lh:{0U,ah}) {
+                const auto keep=pica_texture_retention(source,cw,ch,lw,lh);
+                require(keep.colour==(cw==aw && ch==ah) && keep.layers==(lw==aw && lh==ah),
+                    "Residency confused logical/padded colour or ownership dimensions");
+            }
+        require(!pica_texture_retention(image(w,h),aw,ah,aw,ah).layers,"Removed ownership remained resident");
+    }
+    std::array old{image(128,512),image(512,512),image(512,512),image(512,512)};
+    std::array next{image(512,512),image(512,512),image(512,512),image(128,512)};
+    // Both frames are valid 3.75 MiB. The former slot-at-a-time sequence has
+    // a 4.5 MiB intermediate allocation, even deleting each changed slot first.
+    const unsigned old_bytes=(128*512+3*512*512+512*256)*4;
+    require(old_bytes==3'932'160 && old_bytes+(512*512-128*512)*4>pica_texture_budget,
+        "Transition fixture no longer reproduces old over-budget allocation");
+    update(old);require(ledger.live==old_bytes,"Initial resident allocation sum differs from independent sizes");
+    ledger.peak=ledger.live;const auto allocated=ledger.allocations;
+    update(next);require(ledger.live==old_bytes && ledger.peak<=pica_texture_budget && ledger.allocations==allocated+2,
+        "Replacement allocated before all obsolete slots were released");
+    const auto unchanged=ledger.allocations;update(next);
+    require(ledger.allocations==unchanged,"Unchanged palette/layout reallocated GPU textures");
+    std::array masked{image(512,256,true),image(512,256,true),image(256,256,true)};
+    update(masked);require(resident[0].lw==512 && resident[0].lh==256,"Source ownership was not allocated");
+    auto unmasked=masked;for(auto& source:unmasked) {source.source_layers={};source.layer_pitch=0;}
+    const auto colour_allocations=ledger.allocations;update(unmasked);
+    require(ledger.allocations==colour_allocations && resident[0].lw==0 && resident[0].layer_cache.capacity()==0,
+        "Removing A8 ownership replaced colour or retained its CPU cache");
+    require(resident[3].colour_cache.capacity()==0 && resident[3].layer_cache.capacity()==0,
+        "Inactive texture slots retained peak CPU allocations");
+    const auto live=ledger.live;
+    const auto prepares=ledger.prepares,updates=ledger.updates;
+    auto malformed=next;malformed[3].pixels={};
+    rejects([&]{update(malformed);},"Malformed tail was accepted during resident preflight");
+    std::array oversized{image(1024,1024)};
+    rejects([&]{update(oversized);},"Resident preflight omitted padded dashboard bytes");
+    rejects([&]{update_pica_texture_residency(next,lower,std::span(resident).first(2),dashboard);},
+        "Resident preflight accepted insufficient slots");
+    auto bad_lower=lower;bad_lower.pitch=1;
+    rejects([&]{update_pica_texture_residency(next,bad_lower,std::span(resident),dashboard);},
+        "Invalid dashboard was accepted");
+    require(ledger.live==live && ledger.prepares==prepares && ledger.updates==updates,
+        "Failed preflight mutated live resident allocations");
+    // Failure after the release phase must not leak, exceed the texture budget,
+    // or prevent a clean retry with the same immutable source.
+    ledger.fail_at=ledger.allocations+2;bool failed=false;
+    try {update(next);} catch(const std::runtime_error&) {failed=true;}
+    require(failed && ledger.live<=pica_texture_budget,"Allocation failure exceeded residency budget");
+    ledger.fail_at=0;update(next);require(ledger.live==old_bytes,"Failed replacement could not recover");
+    // Repeated shape/ownership/front-end switches, including all inactive slots.
+    for(unsigned step=0;step<180;++step) {
+        std::array<PicaImage,6> batch;
+        for(unsigned slot=0;slot<6;++slot) batch[slot]=image(32U<<((step+slot)%5),32U<<((step*3+slot)%4),(step+slot)%3==0);
+        ledger.peak=ledger.live;update(std::span(batch).first(step%7));
+        require(ledger.peak<=pica_texture_budget,"Repeated transitions exceeded live resident budget");
+    }
+    update({});require(ledger.live==512*256*4,"Empty frontend retained upper-scene GPU textures");
+    for(const auto& texture:resident) require(texture.colour_cache.capacity()==0 && texture.layer_cache.capacity()==0,
+        "Empty frontend retained upper-scene CPU texture caches");
+    cleanup();require(ledger.live==0 && dashboard.colour_cache.capacity()==0,"Resident shutdown leaked allocations");
 }
 void projection_and_draws() {
     std::vector<std::uint8_t> lower(bottom_width*screen_height*3);
@@ -178,7 +293,7 @@ void layer_upload() {
 }
 }
 int main() try {
-    texture_upload();projection_and_draws();layer_upload();
+    texture_upload();texture_residency();projection_and_draws();layer_upload();
     require(pica_uv_mode(false,false)==std::array<float,4>{1,0,0,0},"Ordinary texture projection changed");
     require(pica_uv_mode(true,false)==std::array<float,4>{0,1,0,0},"LCD parity texture lost its homogeneous Q");
     require(pica_uv_mode(false,true)==std::array<float,4>{0,0,1,0},"Source terrain mode zeroed ordinary UVs before projection");

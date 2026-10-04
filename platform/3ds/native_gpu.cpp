@@ -1,4 +1,5 @@
 #include "native_gpu.hpp"
+#include "starfox/platform/nintendo_3ds/pica_residency.hpp"
 #include <atomic>
 #include <cstring>
 extern "C" {
@@ -48,12 +49,21 @@ struct ResidentTexture {
     bool layers_ready{},layer_repeat{};
     void release_layers() noexcept {
         if(layers_ready) C3D_TexDelete(&layers);
-        layers={};layers_ready=false;layer_repeat=false;source_layers.clear();layer_width=layer_height=layer_classes=0;
+        layers={};layers_ready=false;layer_repeat=false;release_pica_texture_cache(source_layers);layer_width=layer_height=layer_classes=0;
+    }
+    void release_colour() noexcept {
+        if(ready) C3D_TexDelete(&texture);
+        texture={};ready=false;release_pica_texture_cache(pixels);width=height=channels=0;repeat=false;
     }
     void release() noexcept {
-        if(ready) C3D_TexDelete(&texture);
-        texture={};ready=false;pixels.clear();width=height=channels=0;
+        release_colour();
         release_layers();
+    }
+    void prepare_layout(PicaImage image) {
+        const auto keep=pica_texture_retention(image,ready?texture.width:0,ready?texture.height:0,
+            layers_ready?layers.width:0,layers_ready?layers.height:0);
+        if(!keep.colour) release_colour();
+        if(!keep.layers) release_layers();
     }
     bool matches(PicaImage image) const noexcept {
         if(!ready || image.width!=width || image.height!=height || image.channels!=channels || image.repeat!=repeat) return false;
@@ -254,9 +264,8 @@ void NativeGpu::present(const PicaFrame& frame,ImageView lower) {
     validate_pica_frame(frame,lower);
     if(!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) throw std::runtime_error("3DS GPU frame unavailable");
     FrameEnd end; // Includes failure exits; uploads complete before targets are marked used.
-    for(unsigned i=frame.textures.size();i<impl_->textures.size();++i) impl_->textures[i].release();
-    for(unsigned i=0;i<frame.textures.size();++i) impl_->textures[i].update(frame.textures[i]);
-    impl_->dashboard.update({lower.pixels,lower.width,lower.height,lower.pitch,3});
+    update_pica_texture_residency(frame.textures,{lower.pixels,lower.width,lower.height,lower.pitch,3},
+        std::span(impl_->textures),impl_->dashboard);
     if(impl_->cached_vertices.size()!=frame.vertices.size()
         || !std::equal(frame.vertices.begin(),frame.vertices.end(),impl_->cached_vertices.begin())) {
         std::vector<PicaVertex> next(frame.vertices.begin(),frame.vertices.end());

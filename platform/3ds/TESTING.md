@@ -73,6 +73,10 @@ stage/scene, render FPS setting and stereo separation/convergence.
   explosions/death, stage results, map, Controls, game over and end/credits.
 - Check audio, remapping, HUD editing, save/load, clean exit, SD persistence,
   Home and sleep. Note sustained FPS, slowdowns, crashes or memory errors.
+- In builds after R6, repeatedly switch preview, game scenes and the quick menu.
+  Texture replacement now frees all obsolete colour/ownership allocations before
+  creating new ones; inactive pixel caches are also freed. Host tests prove the
+  bounded replacement sequence, not total device RAM or sustained performance.
 
 Some EX-specific/orbital/exterior scenery-depth policies and full-flow resource
 limits are still under validation. Advanced desktop effects and MSU-1 are not

@@ -15,6 +15,23 @@ ELF/3DSX/SMDH validation, source commit and checksums. No ROM/BIN is embedded
 or included. [Installation and hardware checks](TESTING.md) describe the SD
 layout and controls. This is a test candidate, not full-port acceptance.
 
+## Bounded texture replacements
+
+The source follow-up after R6 releases every obsolete padded colour/A8
+allocation after the previous GPU work completes, before creating any new
+texture. Two individually valid frames could previously exceed the 4 MiB
+texture budget while replacing slots in sequence. Same-size storage remains
+resident for palette/scroll changes; removed ownership and inactive-slot CPU
+caches are freed rather than retaining their old vector capacity.
+
+Host allocation-ledger tests reproduce a 3.75 MiB -> 3.75 MiB transition with
+a former 4.5 MiB intermediate spike. The shared presenter sequence stays within
+4 MiB, including the dashboard. Malformed preflight, mask removal, retry after
+an injected allocation failure and repeated layout changes pass. All eighteen
+rebuilt host suites and strict native-source compilation against the saved
+official SDK headers pass. This is not a new ARM build, physical allocation,
+total-process peak RAM or performance result; R6 predates the change.
+
 ## Signed tunnel entrance/exit faces
 
 The native receiver now retains authored physical faces when the source camera
