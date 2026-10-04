@@ -7,7 +7,7 @@
 #include "starfox/state/archive.hpp"
 #include "starfox/state/container.hpp"
 
-#include "cpu/65816/cpu_65c816.h"
+#include "owned_65816_step.hpp"
 
 #include <algorithm>
 #include <array>
@@ -3084,7 +3084,7 @@ std::size_t Wdc65816::call(
         }
         recent_program_counters[instructions % recent_program_counters.size()]
             = pc;
-        cpu.SingleStep();
+        detail::step_owned_65816(cpu);
         ++instructions;
     }
 
@@ -3226,7 +3226,7 @@ Wdc65816TaskResult Wdc65816::run_task(
         }
         recent_program_counters[
             result.instructions % recent_program_counters.size()] = pc;
-        cpu.SingleStep();
+        detail::step_owned_65816(cpu);
         ++result.instructions;
         executed_instruction = true;
     }
