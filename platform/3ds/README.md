@@ -42,6 +42,19 @@ The asset-free native GPU diagnostic now exposes these eight span modes via
 L/R on a sloping face, alongside unchanged textured cubes. Its small separate
 CI artifact allows native effect checks without downloading debug ELFs.
 
+Whole-scene follow-up found two budget failures missed by individual-model
+checks: repeated wobble-1 chords and broad near-Z guards emitted off-eye ink.
+Equal-plane/displacement runs now union in a bounded seven-row neighbourhood;
+exact affine footprint bounds retain only ink that can touch either eye.
+Visible source ink/depth is unchanged in regression checks. Seven sampled EX
+Corneria snapshots, each with all 48 synthetic presentation modes, pass actual
+host layer/model/dot/tint/wipe composition: peak 17,784 vertices / 91 draws /
+5 textures / 1,708,288 padded GPU bytes, including the lower LCD. The cartridge
+and audio state remain unchanged by these presentation-only stress fixtures.
+This does not establish every scene, physical FPS or total-process peak RAM.
+The first EX ARM checkpoint `2cb9e0d21c2c211be29071a5162c453d2346a2ab`
+predates this resource correction, despite passing build/package gates.
+
 ## Bounded texture replacements
 
 The source follow-up after R6 releases every obsolete padded colour/A8

@@ -143,7 +143,7 @@ std::vector<PicaVertex> pica_source_span_geometry(
     std::vector<Rectangle> rectangles;
     using Key=std::tuple<int,int,int,unsigned>;
     std::map<Key,unsigned> active;
-    const auto record=[&](int left,int right,int y,int delta,unsigned plane) {
+    const auto commit=[&](int left,int right,int y,int delta,unsigned plane) {
         if(plane==~0U) return; // Ink outside all finite near/far-clipped source surfaces.
         const Key key{left,right,delta,plane};const auto old=active.find(key);
         if(old!=active.end()) {
@@ -153,9 +153,84 @@ std::vector<PicaVertex> pica_source_span_geometry(
         if(rectangles.size()>=budget/6) throw std::length_error("3DS source span geometry budget exceeded");
         active[key]=unsigned(rectangles.size());rectangles.push_back({left,right,y,y,delta,plane});
     };
+    // Wobble-1 intentionally walks a complete trapezoid on one source row.
+    // Many authored chords overlap there; emitting a quad per visit can
+    // exhaust geometry even though the final ink is just one short run.
+    // Union only equal-plane/equal-displacement ink. At most the wave's
+    // seven-row neighbourhood remains pending, never a framebuffer/mask.
+    using Row=std::tuple<int,int,unsigned>; // Plotted Y, displacement, fan plane.
+    std::map<Row,std::map<int,int>> pending;
+    unsigned pending_runs=0;
+    const auto flush=[&](int before) {
+        while(!pending.empty() && std::get<0>(pending.begin()->first)<before) {
+            const auto& [key,runs]=*pending.begin();
+            const auto [y,delta,plane]=key;
+            for(const auto& [left,right]:runs) commit(left,right,y,delta,plane);
+            pending_runs-=unsigned(runs.size());pending.erase(pending.begin());
+        }
+    };
+    const auto record_run=[&](int left,int right,int y,int delta,unsigned plane) {
+        if(plane==~0U) return;
+        auto& runs=pending[Row{y,delta,plane}];auto next=runs.lower_bound(left);
+        if(next!=runs.begin()) {
+            const auto previous=std::prev(next);
+            if(previous->second+1>=left) next=previous;
+        }
+        while(next!=runs.end() && next->first<=right+1) {
+            left=std::min(left,next->first);right=std::max(right,next->second);
+            next=runs.erase(next);--pending_runs;
+        }
+        if(pending_runs>=pica_vertex_limit) throw std::length_error("3DS source span run workspace budget exceeded");
+        runs.emplace(left,right);++pending_runs;
+    };
+    const auto record=[&](int left,int right,int y,int delta,unsigned plane_index) {
+        if(plane_index==~0U) return;
+        // The broad boundary guard is conservative at a face's nearest Z.
+        // A near-plane crossing can therefore make it thousands of source
+        // pixels wide. Keep only pixel footprints that can touch an active
+        // eye, using the authored plane's exact affine projected coordinates.
+        // Half-pixel radii retain crossing footprints; final GPU clipping
+        // still chooses actual fragments, rather than cropping a mono image.
+        const auto& plane=planes[plane_index];
+        const double sy=screen_height*.5+plan.focal_y/focal*(y+.5-origin[1]);
+        if(sy+plan.focal_y/focal*.5<0 || sy-plan.focal_y/focal*.5>screen_height) return;
+        const auto a=plane.normal[0]/focal;
+        const auto b=plane.normal[0]*(.5-pose.vanish_x)/focal
+            +plane.normal[1]*(y+.5-delta-pose.vanish_y)/focal+plane.normal[2];
+        const auto radius=.5*(std::abs(a)+std::abs(plane.normal[1]/focal));
+        std::array<std::array<int,2>,2> ranges{};unsigned count=0;
+        for(unsigned eye=0;eye<plan.eye_count;++eye) {
+            double low=left,high=right;
+            const auto constrain=[&](double coefficient,double constant) {
+                if(std::abs(coefficient)<1.e-20) {if(constant<0) low=high+1;return;}
+                const auto edge=-constant/coefficient;
+                if(coefficient>0) low=std::max(low,edge);else high=std::min(high,edge);
+            };
+            constrain(a,b+radius-plane.distance/plan.far_plane);
+            constrain(-a,plane.distance/plan.near_plane-b+radius);
+            const auto eye_x=plan.eyes[eye].x;
+            const auto horizontal=plan.focal_x/focal-plan.focal_x*eye_x*a/plane.distance;
+            const auto offset=top_width*.5+plan.focal_x/focal*(.5-origin[0])
+                -plan.focal_x*eye_x*b/plane.distance+plan.eyes[eye].projection_offset;
+            const auto footprint=.5*(std::abs(horizontal)
+                +std::abs(plan.focal_x*eye_x*plane.normal[1]/focal/plane.distance))+1;
+            constrain(horizontal,offset+footprint);
+            constrain(-horizontal,top_width-offset+footprint);
+            if(low>high) continue;
+            const int first=std::max(left,int(std::ceil(low-1.e-6)));
+            const int last=std::min(right,int(std::floor(high+1.e-6)));
+            if(first<=last) ranges[count++]={first,last};
+        }
+        if(count==2 && ranges[1][0]<ranges[0][0]) std::swap(ranges[0],ranges[1]);
+        if(count==2 && ranges[1][0]<=ranges[0][1]+1) {
+            ranges[0][1]=std::max(ranges[0][1],ranges[1][1]);count=1;
+        }
+        for(unsigned i=0;i<count;++i) record_run(ranges[i][0],ranges[i][1],y,delta,plane_index);
+    };
     unsigned work=0;
     render::source_polygon_spans(points,unsigned(std::max(225.,bounds[1]-bounds[0])),modes,
         [&](render::SourcePolygonSpan span) {
+            flush(span.source_y-3);
             if(span.left>span.right) throw std::logic_error("Invalid 3DS source span");
             const auto count=unsigned(span.right-span.left+1);
             if(count>4U*1024*1024-work) throw std::length_error("3DS source span preparation work budget exceeded");
@@ -170,6 +245,7 @@ std::vector<PicaVertex> pica_source_span_geometry(
             }
             record(first,span.right,span.y,delta,previous);
         });
+    flush(std::numeric_limits<int>::max());
     std::vector<PicaVertex> result;result.reserve(std::min(budget,unsigned(rectangles.size()*6)));
     for(const auto& rectangle:rectangles) {
         const auto& plane=planes[rectangle.plane];

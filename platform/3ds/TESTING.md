@@ -18,6 +18,9 @@ palette changes and effect-window boundaries while the slider changes actual
 object depth. Text and particles must not inherit polygon-only effects.
 R11 predates this implementation. Host ink/depth and cartridge-catalogue
 checks are not proof of native pixels, complete-scene budgets or device FPS.
+Use the follow-up after EX checkpoint `2cb9e0d2` for effect testing: that first
+build predates the repeated-chord/off-eye geometry resource correction found
+by whole-scene host stress checks. Its green ARM build is not gameplay acceptance.
 
 The source follow-up also fixes final-room panorama depth when the cartridge
 retains its tunnel flag. Check final-tunnel exits and near-wall stereo at slider

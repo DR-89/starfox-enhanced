@@ -180,6 +180,23 @@ void stereo_and_clip() {
             "Completely near/far hidden EX face emitted geometry");
     }
 }
+void bounded_collapsed_rows() {
+    context="Near-camera EX collapsed-row union remains bounded without losing ink";
+    auto view=pose();view.wireframe_mode=1;view.wobble_mode=1;
+    const std::array<Screen,4> boundary{{{-4000,20},{4000,20},{3800,200},{-3800,200}}};
+    const Surface surface{{0,0,1},8};
+    const auto plan=plan_frame(1,true,ScreenUse::world);
+    const auto geometry=pica_source_span_geometry(face(boundary,surface,view),view,focal,{128,112},plan,ink,60);
+    require(!geometry.empty() && geometry.size()<=60,"Collapsed chords were emitted once per source visit instead of unioned ink");
+    // The wide polygon covers every canonical source X on its deliberately
+    // collapsed rows. Independent source conversion above is frozen against
+    // the old raster; verify the optimisation did not turn holes into fills.
+    compare(raster(geometry,view),expected(boundary,view,surface));
+    view.wave_mode=true;view.wireframe_mode=0;
+    const auto waved=pica_source_span_geometry(face(boundary,surface,view),view,focal,{128,112},plan,ink);
+    compare(raster(waved,view),expected(boundary,view,surface));
+    require(waved.size()<4096,"Near-camera collapsed waves retained off-eye/repeated-visit geometry");
+}
 render::Palette256 palette() {
     render::Palette256 result;
     for(unsigned i=0;i<result.size();++i) result[i]={std::uint8_t(i),std::uint8_t(255-i),std::uint8_t(i^85),255};
@@ -227,6 +244,6 @@ void materials_and_failure() {
 }
 } // namespace
 int main() try {
-    authored_modes();nonplanar_depth();stereo_and_clip();materials_and_failure();
+    authored_modes();nonplanar_depth();stereo_and_clip();bounded_collapsed_rows();materials_and_failure();
     std::cout<<"3DS native EX spans: "<<checks<<" checks, "<<frames<<" ink/depth fixtures passed\n";
 } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
