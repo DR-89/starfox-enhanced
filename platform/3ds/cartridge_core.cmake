@@ -19,6 +19,10 @@ add_library(starfox_3ds_spc STATIC
 target_include_directories(starfox_3ds_spc SYSTEM PUBLIC "${STARFOX_SPC_SOURCE}")
 add_library(starfox_3ds_cpu STATIC "${retro_cpu_SOURCE_DIR}/cpu.cc"
     "${retro_cpu_SOURCE_DIR}/cpu/65816/cpu_65c816.cc")
+# Compile the pinned CPU and its paged memory bus together so operand accesses
+# can inline without whole-program LTO. No opcode, IO ordering or cycle changes;
+# the independent pre-unity state/bus trace guards the resulting code.
+set_target_properties(starfox_3ds_cpu PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 2)
 target_include_directories(starfox_3ds_cpu SYSTEM PUBLIC "${retro_cpu_SOURCE_DIR}")
 target_compile_features(starfox_3ds_cpu PUBLIC cxx_std_17)
 if(MINGW)

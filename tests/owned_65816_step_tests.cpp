@@ -32,6 +32,7 @@ struct Machine {
     std::vector<Access> accesses;
     std::vector<std::uint32_t> interrupts;
     unsigned breakpoint_calls{};
+    bool record_accesses{true};
 
     explicit Machine(bool trace_bus = true) {
         for (std::size_t index = 0; index < pages.size(); ++index) {
@@ -50,14 +51,14 @@ struct Machine {
         auto& self = *static_cast<Machine*>(context);
         require(size == 1U, "unexpected bus read size");
         *value = self.memory[address & 0xffffU];
-        self.accesses.push_back({address, *value, false});
+        if (self.record_accesses) self.accesses.push_back({address, *value, false});
     }
     static void write(void* context, cpuaddr_t address,
         const std::uint8_t* value, std::uint32_t size) {
         auto& self = *static_cast<Machine*>(context);
         require(size == 1U, "unexpected bus write size");
         self.memory[address & 0xffffU] = *value;
-        self.accesses.push_back({address, *value, true});
+        if (self.record_accesses) self.accesses.push_back({address, *value, true});
     }
     static void irq(void* context, std::uint32_t type) {
         auto& self = *static_cast<Machine*>(context);
@@ -122,6 +123,24 @@ auto state(const Machine& machine) {
         machine.breakpoint_calls};
 }
 
+void number(std::uint64_t& hash, std::uint64_t value) {
+    for (unsigned byte = 0; byte < 8; ++byte) {
+        hash ^= std::uint8_t(value >> (byte * 8U)); hash *= 1099511628211ULL;
+    }
+}
+void snapshot(std::uint64_t& hash, const Machine& machine) {
+    std::apply([&](const auto&... value) { (number(hash, std::uint64_t(value)), ...); }, state(machine));
+    for (const auto byte : machine.memory) { hash ^= byte; hash *= 1099511628211ULL; }
+    number(hash, machine.accesses.size());
+    for (const auto& access : machine.accesses) {
+        number(hash, access.address); number(hash, access.value); number(hash, access.write);
+    }
+    number(hash, machine.interrupts.size());
+    for (const auto interrupt : machine.interrupts) number(hash, interrupt);
+    number(hash, machine.cpu.tracing.addrs.size());
+    for (const auto address : machine.cpu.tracing.addrs) number(hash, address);
+}
+
 void equal(const Machine& generic, const Machine& owned) {
     require(state(generic) == state(owned), "CPU state/cycles differ");
     require(generic.memory == owned.memory, "memory differs");
@@ -132,13 +151,14 @@ void equal(const Machine& generic, const Machine& owned) {
         "instruction mode differs");
 }
 
-void step(Machine& generic, Machine& owned) {
+void step(Machine& generic, Machine& owned, std::uint64_t* trace = nullptr) {
     generic.cpu.SingleStep();
     starfox::simulation::detail::step_owned_65816(owned.cpu);
     equal(generic, owned);
+    if (trace) snapshot(*trace, generic);
 }
 
-std::size_t opcode_cases(Machine& generic, Machine& owned) {
+std::size_t opcode_cases(Machine& generic, Machine& owned, std::uint64_t* trace = nullptr) {
     std::size_t count{};
     for (unsigned mode = 0; mode < 5U; ++mode) {
         // The pinned core does not implement BCD ADC/SBC. Exercise C/Z/V/N/I
@@ -152,7 +172,7 @@ std::size_t opcode_cases(Machine& generic, Machine& owned) {
                             machine->cpu.fast_block_moves = fast_blocks;
                             machine->instruction(static_cast<std::uint8_t>(opcode));
                         }
-                        step(generic, owned);
+                        step(generic, owned, trace);
                         ++count;
                     }
                 }
@@ -162,7 +182,7 @@ std::size_t opcode_cases(Machine& generic, Machine& owned) {
     return count;
 }
 
-std::size_t interrupt_cases(Machine& generic, Machine& owned) {
+std::size_t interrupt_cases(Machine& generic, Machine& owned, std::uint64_t* trace = nullptr) {
     std::size_t count{};
     for (unsigned mode = 0; mode < 5U; ++mode) {
         for (unsigned pending = 0; pending < 8U; ++pending) {
@@ -174,7 +194,7 @@ std::size_t interrupt_cases(Machine& generic, Machine& owned) {
                         machine->instruction(0xeaU);
                         machine->cpu.cpu_state.pending_interrupts.store(pending);
                     }
-                    step(generic, owned);
+                    step(generic, owned, trace);
                     ++count;
                 }
             }
@@ -183,7 +203,7 @@ std::size_t interrupt_cases(Machine& generic, Machine& owned) {
     return count;
 }
 
-void breakpoint_cases(Machine& generic, Machine& owned) {
+void breakpoint_cases(Machine& generic, Machine& owned, std::uint64_t* trace = nullptr) {
     for (const bool inconsistent_flag : {false, true}) {
         for (const bool pending_nmi : {false, true}) {
             for (auto* machine : {&generic, &owned}) {
@@ -200,19 +220,19 @@ void breakpoint_cases(Machine& generic, Machine& owned) {
                 if (inconsistent_flag) machine->cpu.has_breakpoints = false;
                 machine->cpu.cpu_state.pending_interrupts.store(pending_nmi ? 4U : 0U);
             }
-            step(generic, owned);
+            step(generic, owned, trace);
             require(generic.breakpoint_calls == (pending_nmi ? 0U : 1U),
                 "interrupt must precede breakpoint");
             for (auto* machine : {&generic, &owned}) {
                 machine->cpu.RemoveBreakpoint(0x27000U);
                 machine->instruction(0xeaU);
             }
-            step(generic, owned);
+            step(generic, owned, trace);
         }
     }
 }
 
-void sequence(Machine& generic, Machine& owned) {
+void sequence(Machine& generic, Machine& owned, std::uint64_t* trace = nullptr) {
     constexpr std::array<std::uint8_t, 18> program{
         0x18U, 0xfbU, 0xc2U, 0x30U, 0xa9U, 0x34U, 0x12U, 0xe2U, 0x30U,
         0xa9U, 0x56U, 0x48U, 0x68U, 0xcbU, 0xdbU, 0xeaU, 0x80U, 0xeeU};
@@ -220,7 +240,41 @@ void sequence(Machine& generic, Machine& owned) {
         machine->reset(4U, 0U, 0x7000U);
         std::copy(program.begin(), program.end(), machine->memory.begin() + 0x7000U);
     }
-    for (unsigned index = 0; index < 256U; ++index) step(generic, owned);
+    for (unsigned index = 0; index < 256U; ++index) step(generic, owned, trace);
+}
+
+void cpu_workloads() {
+    // Indexed 16-bit RAM reads, arithmetic, RAM writes, flag/loop updates and
+    // branches. Not the previous NOP-only dispatch microbenchmark.
+    constexpr std::array<std::uint8_t, 27> program{
+        0xc2,0x30,0xa2,0x00,0x00,0xbd,0x00,0x20,0x18,0x69,0x37,0x01,
+        0x9d,0x00,0x30,0xe8,0xe8,0xe0,0x00,0x08,0xd0,0xef,
+        0xa2,0x00,0x00,0x80,0xea};
+    constexpr unsigned instructions = 4000000;
+    std::cout << "workload,instructions,milliseconds,complete_state_digest\n";
+    for (unsigned workload = 0; workload < 3; ++workload) {
+        auto machine = std::make_unique<Machine>(false);
+        machine->reset(3, 0, 0x7000); machine->cpu.tracing.addrs.clear();
+        machine->record_accesses = false;
+        std::copy(program.begin(), program.end(), machine->memory.begin() + 0x7000);
+        for (unsigned i = 0; i < 2048; ++i) machine->memory[0x2000 + i] = std::uint8_t(i * 37U);
+        for (unsigned bank = 0; bank < 256; ++bank) {
+            if (workload == 1) {
+                for (unsigned page : {2U, 3U}) {
+                    machine->pages[bank * 16 + page].io_mask = 0;
+                    machine->pages[bank * 16 + page].io_eq = 0;
+                }
+            } else if (workload == 2) machine->pages[bank * 16 + 3].flags = Page::kReadOnly;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (unsigned i = 0; i < instructions; ++i)
+            starfox::simulation::detail::step_owned_65816(machine->cpu);
+        const auto milliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::uint64_t hash = 14695981039346656037ULL; snapshot(hash, *machine);
+        std::cout << workload << ',' << instructions << ',' << milliseconds
+            << ',' << std::hex << hash << std::dec << '\n';
+    }
 }
 
 void benchmark() {
@@ -259,12 +313,24 @@ void benchmark() {
 
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string{argv[1]} == "--cpu-workload-benchmark") {
+            cpu_workloads(); return EXIT_SUCCESS;
+        }
         auto generic = std::make_unique<Machine>();
         auto owned = std::make_unique<Machine>();
-        const auto opcodes = opcode_cases(*generic, *owned);
-        const auto interrupts = interrupt_cases(*generic, *owned);
-        breakpoint_cases(*generic, *owned);
-        sequence(*generic, *owned);
+        std::uint64_t trace = 14695981039346656037ULL;
+        const auto opcodes = opcode_cases(*generic, *owned, &trace);
+        const auto interrupts = interrupt_cases(*generic, *owned, &trace);
+        breakpoint_cases(*generic, *owned, &trace);
+        sequence(*generic, *owned, &trace);
+        // Filled from the separate pre-unity library/executable. It covers
+        // complete registers/flags/cycles/RAM, ordered IO/IRQs and debug trace,
+        // not two wrappers compiled against the same optimized bus routines.
+#ifndef STARFOX_CPU_LEGACY_ORACLE
+        constexpr std::uint64_t expected = 0xc0500dd32658dff0ULL;
+        require(trace == expected, "CPU compilation changed independent state/bus trace");
+#endif
+        std::cout << "Independent CPU state/bus trace digest " << std::hex << trace << std::dec << '\n';
         std::cout << "Owned 65C816 step: " << opcodes << " opcode fixtures, "
             << interrupts << " interrupt fixtures, breakpoint fallback and mode sequence PASS\n";
         if (argc == 2 && std::string{argv[1]} == "--benchmark") benchmark();

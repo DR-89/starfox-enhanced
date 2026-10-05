@@ -14,6 +14,7 @@ on:
       - 'tests/nintendo_3ds_source_geometry_tests.cpp'
       - 'tests/nintendo_3ds_raster_tests.cpp'
       - 'tests/tilemap_coordinates_tests.cpp'
+      - 'tests/owned_65816_step_tests.cpp'
       - 'tests/background_scanline_tests.cpp'
       - 'tests/framebuffer_extents_tests.cpp'
       - 'include/starfox/render/framebuffer.hpp'
