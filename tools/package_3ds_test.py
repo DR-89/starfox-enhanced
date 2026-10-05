@@ -57,10 +57,11 @@ def package(elf: Path, three_dsx: Path, smdh: Path, source_commit: str, output: 
                 target="Original Nintendo 3DS / 3DS XL; slider-off 2DS fallback",
                 private_assets_included=False)
     instructions = Path(__file__).resolve().parents[1] / "platform/3ds/TESTING.md"
+    attribution = instructions.with_name("UPSTREAM-STARWING.md")
     payload = {
         APP_DIR + "starfox-enhanced.3dsx": three_dsx.read_bytes(),
         APP_DIR + "starfox-enhanced.smdh": smdh.read_bytes(),
-        "README.txt": instructions.read_bytes(),
+        "README.txt": instructions.read_bytes() + b"\n\n" + attribution.read_bytes(),
         "BUILD-INFO.json": (json.dumps(info, indent=2, sort_keys=True) + "\n").encode(),
     }
     payload["SHA256SUMS.txt"] = "".join(f"{digest(value)}  {name}\n" for name, value in sorted(payload.items())).encode()

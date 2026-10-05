@@ -457,7 +457,6 @@ int main() {
                     rendered_rate.completed(monotonic_time());continue;
                 }
                 const auto model_frame=[&] { STARFOX_3DS_FRAME_PHASE(models);return models->prepare(source); }();
-                const auto artwork=[&] { STARFOX_3DS_FRAME_PHASE(layers);return layers->prepare(source); }();
                 const auto dot_frame=[&] { STARFOX_3DS_FRAME_PHASE(dots);return dots->prepare(source); }();
                 const auto math=colour.prepare(source.raster->circle,source.raster->colour_math,
                     source.raster->brightness,source.plan);
@@ -472,10 +471,15 @@ int main() {
 #else
                 const ctr::PicaFrame label{source.plan,label_vertices,std::span(&label_draw,1),std::span(&label_image,1)};
 #endif
+                const auto menu_frame=menu->frame(source.plan);
+                const std::size_t occupied=model_frame.vertices.size()+dot_frame.vertices.size()+math.vertices.size()
+                    +mask.vertices.size()+label.vertices.size()+menu_frame.vertices.size();
+                const unsigned tile_budget=occupied<ctr::pica_vertex_limit?ctr::pica_vertex_limit-unsigned(occupied):0;
+                const auto artwork=[&] { STARFOX_3DS_FRAME_PHASE(layers);return layers->prepare(source,tile_budget); }();
                 const auto frame=[&] {
                     STARFOX_3DS_FRAME_PHASE(composite);
                     return composite.prepare(source.plan,
-                        std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu->frame(source.plan)},dashboard,artwork.clear);
+                        std::array{artwork.before_models,dot_frame,model_frame,artwork.after_models,math,mask,label,menu_frame},dashboard,artwork.clear);
                 }();
                 { STARFOX_3DS_FRAME_PHASE(present);gpu->present(frame,dashboard); }
                 rendered_rate.completed(monotonic_time());

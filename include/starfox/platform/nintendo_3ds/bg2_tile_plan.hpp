@@ -1,0 +1,21 @@
+#pragma once
+#include "starfox/simulation/snes_ppu.hpp"
+#include <cstdint>
+#include <vector>
+
+namespace starfox::platform::nintendo_3ds {
+// Adapted from Esteban PDN's starwing-3ds bg2_plan.cpp, revision 753952be.
+// See platform/3ds/UPSTREAM-STARWING.md for provenance and permission.
+struct Bg2TileRect {
+    unsigned x{},y{},width{},height{};
+    std::uint16_t character{};
+    std::uint8_t bank{},source_x{},source_y{};
+    bool reverse_x{},reverse_y{};
+};
+// The first integration deliberately accepts only ordinary Mode-2 artwork.
+// Rolled ground/corridors/mosaic need our finite-depth/unique-region semantics,
+// not the upstream flat-screen approximation. Failure publishes no rectangles.
+bool plan_bg2_tiles(const simulation::SnesPpuState&,int scroll_x,int scroll_y,
+    unsigned width,int origin,int priority,std::vector<Bg2TileRect>&,
+    unsigned capacity);
+} // namespace starfox::platform::nintendo_3ds

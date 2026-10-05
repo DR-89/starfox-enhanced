@@ -35,7 +35,7 @@ add_library(starfox_3ds_source_geometry STATIC pica_shapes.cpp pica_source_spans
     ../../src/simulation/math.cpp ../../src/assets/rom.cpp)
 target_include_directories(starfox_3ds_source_geometry PUBLIC ../../include)
 target_compile_features(starfox_3ds_source_geometry PUBLIC cxx_std_20)
-add_library(starfox_3ds_raster STATIC pica_raster.cpp
+add_library(starfox_3ds_raster STATIC pica_raster.cpp bg2_tile_plan.cpp pica_bg2_tiles.cpp
     ../../src/render/background_renderer.cpp ../../src/render/sprite_renderer.cpp)
 target_include_directories(starfox_3ds_raster PUBLIC ../../include)
 target_compile_features(starfox_3ds_raster PUBLIC cxx_std_20)
@@ -242,6 +242,9 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
         add_executable(starfox_3ds_game_layers_tests ../../tests/nintendo_3ds_game_layers_tests.cpp)
         target_link_libraries(starfox_3ds_game_layers_tests PRIVATE starfox_3ds_cartridge_core)
         add_test(NAME starfox_3ds_game_layers_tests COMMAND starfox_3ds_game_layers_tests)
+        add_executable(starfox_3ds_bg2_tile_tests ../../tests/nintendo_3ds_bg2_tile_tests.cpp)
+        target_link_libraries(starfox_3ds_bg2_tile_tests PRIVATE starfox_3ds_cartridge_core)
+        add_test(NAME starfox_3ds_bg2_tile_tests COMMAND starfox_3ds_bg2_tile_tests)
         add_executable(starfox_3ds_game_dots_tests ../../tests/nintendo_3ds_game_dots_tests.cpp)
         target_link_libraries(starfox_3ds_game_dots_tests PRIVATE starfox_3ds_cartridge_core)
         add_test(NAME starfox_3ds_game_dots_tests COMMAND starfox_3ds_game_dots_tests)

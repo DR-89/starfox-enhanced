@@ -52,6 +52,8 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(json.loads(archive.read("BUILD-INFO.json")), info)
             self.assertEqual(archive.read(MODULE.APP_DIR + "starfox-enhanced.3dsx"), self.dsx.read_bytes())
             self.assertIsNone(archive.testzip())
+            self.assertIn(b"Esteban PDN", archive.read("README.txt"))
+            self.assertIn(b"753952be5b170059d95068350d37759a966a3bd5", archive.read("README.txt"))
             for line in archive.read("SHA256SUMS.txt").decode().splitlines():
                 digest, name = line.split("  ", 1)
                 self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), digest)
