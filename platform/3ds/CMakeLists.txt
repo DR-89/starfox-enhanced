@@ -161,7 +161,7 @@ if(STARFOX_3DS_BUILD_NATIVE)
                     # LTO emits machine-code frames at link time, not when
                     # compiling GIMPLE objects. Retain those actual reports
                     # beside the ELF so the unchanged stack gate can read them.
-                    target_link_options(${target} PRIVATE -fstack-usage -save-temps=obj)
+                    target_link_options(${target} PRIVATE -fstack-usage)
                 endif()
             endif()
         endif()
