@@ -253,6 +253,150 @@ void raster() {
         "Opaque black and uncovered vertical guard ownership confused");
     require(validate_pica_layers(texture)==19,"Mixed PPU group did not retain precisely its occupied source classes");
 }
+void same_raster(const PicaFrame& cached,const PicaFrame& fresh) {
+    require(cached.vertices.size()==fresh.vertices.size()
+        && std::equal(cached.vertices.begin(),cached.vertices.end(),fresh.vertices.begin()),
+        "Cached source update changed its geometry against a fresh decode");
+    require(cached.draws.size()==fresh.draws.size() && cached.textures.size()==fresh.textures.size(),
+        "Cached source update changed its painter/texture count");
+    for(unsigned i=0;i<cached.draws.size();++i) {
+        const auto& a=cached.draws[i];const auto& b=fresh.draws[i];
+        require(a.first==b.first && a.count==b.count && a.texture==b.texture && a.model==b.model
+            && a.space==b.space && a.depth_test==b.depth_test && a.depth_write==b.depth_write
+            && a.alpha_blend==b.alpha_blend && a.source_layer==b.source_layer,
+            "Cached source update changed painter depth/order/ownership");
+    }
+    for(unsigned i=0;i<cached.textures.size();++i) {
+        const auto& a=cached.textures[i];const auto& b=fresh.textures[i];
+        require(a.width==b.width && a.height==b.height && a.pitch==b.pitch
+            && a.channels==b.channels && a.repeat==b.repeat && a.layer_pitch==b.layer_pitch,
+            "Cached source update changed texture descriptors");
+        require(a.pixels.size()==b.pixels.size()
+            && std::equal(a.pixels.begin(),a.pixels.end(),b.pixels.begin()),
+            "Cache retained stale RGBA against a fresh source decode");
+        require(a.source_layers.size()==b.source_layers.size()
+            && std::equal(a.source_layers.begin(),a.source_layers.end(),b.source_layers.begin()),
+            "Cache retained stale source coverage/ownership against a fresh decode");
+    }
+}
+void pass_memory_dependencies() {
+    const auto plan=plan_frame(1,true,ScreenUse::world);
+    const auto make_source=[] {
+        auto ppu=std::make_shared<simulation::SnesPpuState>();
+        std::uint32_t random=0x385ad7;
+        for(auto& byte:ppu->vram) {random=random*1664525U+1013904223U;byte=std::uint8_t(random>>24);}
+        for(unsigned i=0;i<256;++i) ppu->cgram[i]=std::uint16_t((i*131U)&32767U);
+        return ppu;
+    };
+    const auto check=[&](PicaRaster& owner,const auto& ppu,const PpuBatch& batch,
+        unsigned brightness=15,unsigned subtract=0) {
+        const auto unchanged=*ppu;
+        const auto cached=owner.prepare(ppu,batch,plan,brightness,subtract);
+        PicaRaster oracle;
+        same_raster(cached,oracle.prepare(ppu,batch,plan,brightness,subtract));
+        require(*ppu==unchanged,"Pass-dependent cache modified its cartridge snapshot");
+    };
+    for(const auto layer:{PpuLayer::bg1,PpuLayer::bg2,PpuLayer::bg3})
+        for(unsigned mode=1;mode<=3;++mode) for(unsigned size=0;size<4;++size)
+        for(bool big:{false,true}) for(bool wrapped:{false,true}) {
+        auto ppu=make_source();ppu->background_mode=std::uint8_t(mode);
+        const unsigned characters=wrapped?0x7ff0U:0x4000U,map=wrapped?0x7ffcU:0x2000U;
+        const unsigned bit=layer==PpuLayer::bg1?1U:layer==PpuLayer::bg2?2U:4U;
+        ppu->main_screen=std::uint8_t(bit);
+        if(layer==PpuLayer::bg1) {
+            ppu->bg1_character_base=std::uint16_t(characters);ppu->bg1_screen_base=std::uint16_t(map);
+            ppu->bg1_screen_size=std::uint8_t(size);ppu->bg1_tile_size_16=big;
+            ppu->bg1_scroll_x=-17;ppu->bg1_scroll_y=31;
+        } else if(layer==PpuLayer::bg2) {
+            ppu->bg2_character_base=std::uint16_t(characters);ppu->bg2_screen_base=std::uint16_t(map);
+            ppu->bg2_screen_size=std::uint8_t(size);ppu->bg2_tile_size_16=big;
+            ppu->bg2_scroll_x=-17;ppu->bg2_scroll_y=31;
+        } else {
+            ppu->bg3_character_base=std::uint16_t(characters);ppu->bg3_screen_base=std::uint16_t(map);
+            ppu->bg3_screen_size=std::uint8_t(size);ppu->bg3_tile_size_16=big;
+            ppu->bg3_scroll_x=-17;ppu->bg3_scroll_y=31;
+        }
+        const unsigned depth=layer==PpuLayer::bg3?2U:layer==PpuLayer::bg1 && mode==3?8U:4U;
+        const unsigned character_bytes=1024U*depth*8U;
+        const unsigned map_bytes=2048U*((size&1U)?2U:1U)*((size&2U)?2U:1U);
+        const auto contains=[](unsigned address,unsigned first,unsigned count) {
+            return ((address-first)&65535U)<count;
+        };
+        PpuBatch batch{{{layer}},PicaSpace::screen,true};PicaRaster owner;
+        check(owner,ppu,batch);
+        const auto work=owner.work();
+        unsigned unrelated=0;
+        while(unrelated<65536 && (contains(unrelated,characters*2,character_bytes)
+            || contains(unrelated,map*2,map_bytes))) ++unrelated;
+        if(unrelated<65536) {
+            auto changed=std::make_shared<simulation::SnesPpuState>(*ppu);changed->vram[unrelated]^=255;
+            check(owner,changed,batch);
+            require(owner.work().decodes==work.decodes && owner.work().colour_updates==work.colour_updates,
+                "Unrelated VRAM still decoded/recoloured an unchanged background");
+            ppu=changed;
+        }
+        // Test both ends of character and map storage, including ranges that
+        // cross address 65535 and 16x16 character carry/wrap.
+        for(unsigned address:{(characters*2)&65535U,(characters*2+character_bytes-1)&65535U,
+            (map*2)&65535U,(map*2+map_bytes-1)&65535U}) {
+            const auto before=owner.work();
+            auto changed=std::make_shared<simulation::SnesPpuState>(*ppu);changed->vram[address]^=0x5a;
+            check(owner,changed,batch);
+            require(owner.work().decodes==before.decodes+1,"Relevant character/map bytes failed to invalidate cache");
+            ppu=changed;
+        }
+        auto faded=std::make_shared<simulation::SnesPpuState>(*ppu);faded->cgram[33]^=0x20;
+        check(owner,faded,batch,7,3);
+        auto disabled=std::make_shared<simulation::SnesPpuState>(*faded);disabled->main_screen=0;
+        check(owner,disabled,batch);const auto blank=owner.work();
+        auto unrelated_disabled=std::make_shared<simulation::SnesPpuState>(*disabled);
+        unrelated_disabled->vram[0]^=255;unrelated_disabled->mosaic^=0xff;
+        check(owner,unrelated_disabled,batch);
+        require(owner.work().decodes==blank.decodes,"Disabled background traversed unused source memory");
+        auto enabled=std::make_shared<simulation::SnesPpuState>(*unrelated_disabled);enabled->main_screen=std::uint8_t(bit);
+        check(owner,enabled,batch);
+        require(owner.work().decodes==blank.decodes+1,"Re-enabled background reused a blank cache");
+    }
+    // OBJ uses two name banks; its shared 64x64 sampler carries past tile 255.
+    for(unsigned base=0;base<8;++base) for(unsigned gap=0;gap<4;++gap) for(unsigned bank=0;bank<2;++bank) {
+        auto ppu=make_source();ppu->main_screen=16;
+        ppu->object_select=std::uint8_t((5U<<5)|base|(gap<<3));
+        std::fill(ppu->oam.begin()+512,ppu->oam.end(),0x55); // All unused sprites outside the native LCD.
+        ppu->oam[0]=24;ppu->oam[1]=20;ppu->oam[2]=255;ppu->oam[3]=std::uint8_t(0x20|bank);
+        ppu->oam[512]=0x56; // First sprite at positive X, large 64x64 selection.
+        const unsigned first=base*0x4000U,second=first+(gap+1U)*0x2000U;
+        PpuBatch batch{{{PpuLayer::objects}}};PicaRaster owner;check(owner,ppu,batch);
+        const auto work=owner.work();unsigned unrelated=0;
+        while(unrelated<65536 && (((unrelated-first)&65535U)<384U*32U
+            || ((unrelated-second)&65535U)<384U*32U)) ++unrelated;
+        require(unrelated<65536,"OBJ dependency fixture has no unrelated byte");
+        auto changed=std::make_shared<simulation::SnesPpuState>(*ppu);changed->vram[unrelated]^=255;
+        check(owner,changed,batch);
+        require(owner.work().decodes==work.decodes,"Unrelated BG memory traversed sprite characters");
+        const auto before=owner.work();
+        changed=std::make_shared<simulation::SnesPpuState>(*changed);
+        changed->vram[((bank?second:first)+374U*32U+31U)&65535U]^=255;
+        check(owner,changed,batch);
+        require(owner.work().decodes==before.decodes+1,"Large OBJ tile carry escaped name-bank dependencies");
+        changed=std::make_shared<simulation::SnesPpuState>(*changed);changed->oam[0]+=1;check(owner,changed,batch);
+        changed=std::make_shared<simulation::SnesPpuState>(*changed);changed->object_select^=8;check(owner,changed,batch);
+    }
+    auto ppu=source();ppu->background_mode=2;ppu->main_screen=2;
+    ppu->bg2_vertical_offsets_enabled=true;
+    PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};PicaRaster owner;check(owner,ppu,batch);
+    for(unsigned address:{0x5f40U,0x5f7fU}) {
+        const auto before=owner.work();auto changed=std::make_shared<simulation::SnesPpuState>(*ppu);
+        changed->vram[address]^=255;check(owner,changed,batch);
+        require(owner.work().decodes==before.decodes+1,"Mode-2 vertical offset VRAM left stale ground/sky");ppu=changed;
+    }
+    auto changed=std::make_shared<simulation::SnesPpuState>(*ppu);
+    changed->bg2_horizontal_offsets_enabled=true;changed->bg2_horizontal_offsets.fill(-13);check(owner,changed,batch);
+    changed=std::make_shared<simulation::SnesPpuState>(*changed);
+    changed->bg2_scanline_scroll_enabled=true;changed->bg2_scanline_scroll_y.fill(256);check(owner,changed,batch);
+    changed=std::make_shared<simulation::SnesPpuState>(*changed);changed->tunnel_scene=true;check(owner,changed,batch);
+    changed=std::make_shared<simulation::SnesPpuState>(*changed);changed->mosaic=0x32;check(owner,changed,batch);
+    changed=std::make_shared<simulation::SnesPpuState>(*changed);changed->bg2_scroll_x=-511;check(owner,changed,batch);
+}
 void optical_coverage() {
     auto ppu=source();const auto untouched=*ppu;Canvas lower;PicaRaster renderer;
     PpuBatch batch{{{PpuLayer::bg2}},PicaSpace::scenery,true};
@@ -623,5 +767,5 @@ void window_masks() {
     rejected([&]{pica_screen_scissor({0,0,0,240});},"Empty effect scissor accepted");
 }
 }
-int main() try {raster();optical_coverage();disjoint_scenery_coverage();transparent_priority_crop();unique_sky_halves();composition();corridor_batch_contract();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
+int main() try {raster();pass_memory_dependencies();optical_coverage();disjoint_scenery_coverage();transparent_priority_crop();unique_sky_halves();composition();corridor_batch_contract();compact_strip_contract();screen_sprite_crop();window_masks();colour_effects();std::cout<<checks<<" 3DS native PPU/cache/composition checks passed; NOT full game/hardware acceptance\n";}
 catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

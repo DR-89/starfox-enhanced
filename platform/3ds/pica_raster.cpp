@@ -1,4 +1,5 @@
 #include "starfox/platform/nintendo_3ds/pica_raster.hpp"
+#include <cstring>
 
 namespace starfox::platform::nintendo_3ds {
 namespace {
@@ -11,18 +12,49 @@ unsigned darkest(const std::array<std::uint16_t,256>& palette) {
     }
     return selected;
 }
+bool same_vram_range(const simulation::SnesPpuState& a,const simulation::SnesPpuState& b,
+    unsigned first,unsigned count) noexcept {
+    // Word-addressed maps/characters wrap independently at 64 KiB. Compare
+    // actual bytes, not a hash or an assumed non-wrapping allocation.
+    first&=65535U;
+    const auto head=std::min(count,65536U-first);
+    return std::memcmp(a.vram.data()+first,b.vram.data()+first,head)==0
+        && std::memcmp(a.vram.data(),b.vram.data(),count-head)==0;
+}
+bool same_background_vram(const simulation::SnesPpuState& a,const simulation::SnesPpuState& b,
+    unsigned characters,unsigned map,unsigned size,unsigned depth) noexcept {
+    const unsigned pages=((size&1U)?2U:1U)*((size&2U)?2U:1U);
+    // All 1024 characters, including 16x16 sub-character wrap, and every
+    // configured map page remain dependencies. Mode-3 BG1 covers all VRAM.
+    return same_vram_range(a,b,characters*2U,1024U*depth*8U)
+        && same_vram_range(a,b,map*2U,pages*2048U);
+}
 bool same_source(const simulation::SnesPpuState& a,const simulation::SnesPpuState& b,const PpuPass& pass) {
     // Palette-only fades recolour cached indices. OAM activity must not force
     // another background tile traversal, nor scrolling a sky another OBJ pass.
-    if(a.vram!=b.vram || (pass.transparent_black && a.cgram!=b.cgram)) return false;
-    if(pass.layer==PpuLayer::objects)
-        return a.oam==b.oam && a.object_select==b.object_select && (a.main_screen&16)==(b.main_screen&16);
+    const unsigned enabled=pass.layer==PpuLayer::bg1?1U:pass.layer==PpuLayer::bg2?2U:
+        pass.layer==PpuLayer::bg3?4U:16U;
+    if((a.main_screen&enabled)!=(b.main_screen&enabled)) return false;
+    if(!(a.main_screen&enabled)) return true;
+    if(pass.transparent_black && a.cgram!=b.cgram) return false;
+    if(pass.layer==PpuLayer::objects) {
+        if(a.oam!=b.oam || a.object_select!=b.object_select) return false;
+        const unsigned base=(a.object_select&7U)*0x4000U;
+        const unsigned gap=(((a.object_select>>3U)&3U)+1U)*0x2000U;
+        // Shared OBJ sampling adds up to seven rows/columns to tile 255 for
+        // a 64x64 sprite. Retain that carry, plus both name banks and wrap.
+        return same_vram_range(a,b,base,384U*32U)
+            && same_vram_range(a,b,base+gap,384U*32U);
+    }
     if(a.background_mode!=b.background_mode || a.mosaic!=b.mosaic) return false;
     switch(pass.layer) {
     case PpuLayer::bg1:
         return (a.main_screen&1)==(b.main_screen&1) && a.bg1_character_base==b.bg1_character_base
             && a.bg1_screen_base==b.bg1_screen_base && a.bg1_screen_size==b.bg1_screen_size
-            && a.bg1_tile_size_16==b.bg1_tile_size_16 && a.bg1_scroll_x==b.bg1_scroll_x && a.bg1_scroll_y==b.bg1_scroll_y;
+            && a.bg1_tile_size_16==b.bg1_tile_size_16 && a.bg1_scroll_x==b.bg1_scroll_x && a.bg1_scroll_y==b.bg1_scroll_y
+            && a.tunnel_scene==b.tunnel_scene
+            && same_background_vram(a,b,a.bg1_character_base,a.bg1_screen_base,a.bg1_screen_size,
+                a.background_mode==3?8U:4U);
     case PpuLayer::bg2:
         return (a.main_screen&2)==(b.main_screen&2) && a.bg2_character_base==b.bg2_character_base
             && a.bg2_screen_base==b.bg2_screen_base && a.bg2_screen_size==b.bg2_screen_size
@@ -30,11 +62,15 @@ bool same_source(const simulation::SnesPpuState& a,const simulation::SnesPpuStat
             && a.bg2_horizontal_offsets_enabled==b.bg2_horizontal_offsets_enabled && a.bg2_horizontal_offsets==b.bg2_horizontal_offsets
             && a.bg2_vertical_offsets_enabled==b.bg2_vertical_offsets_enabled && a.bg2_scanline_scroll_enabled==b.bg2_scanline_scroll_enabled
             && a.bg2_scanline_scroll_y==b.bg2_scanline_scroll_y && a.tunnel_scene==b.tunnel_scene
-            && (a.cgram==b.cgram || darkest(a.cgram)==darkest(b.cgram));
+            && (a.cgram==b.cgram || darkest(a.cgram)==darkest(b.cgram))
+            && same_background_vram(a,b,a.bg2_character_base,a.bg2_screen_base,a.bg2_screen_size,4U)
+            && (a.background_mode!=2 || !a.bg2_vertical_offsets_enabled
+                || same_vram_range(a,b,0x5f40U,64U));
     case PpuLayer::bg3:
         return (a.main_screen&4)==(b.main_screen&4) && a.bg3_character_base==b.bg3_character_base
             && a.bg3_screen_base==b.bg3_screen_base && a.bg3_screen_size==b.bg3_screen_size
-            && a.bg3_tile_size_16==b.bg3_tile_size_16 && a.bg3_scroll_x==b.bg3_scroll_x && a.bg3_scroll_y==b.bg3_scroll_y;
+            && a.bg3_tile_size_16==b.bg3_tile_size_16 && a.bg3_scroll_x==b.bg3_scroll_x && a.bg3_scroll_y==b.bg3_scroll_y
+            && same_background_vram(a,b,a.bg3_character_base,a.bg3_screen_base,a.bg3_screen_size,2U);
     default: return false;
     }
 }
