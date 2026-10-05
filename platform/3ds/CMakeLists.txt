@@ -155,6 +155,15 @@ if(STARFOX_3DS_BUILD_NATIVE)
             starfox_3ds_game_core_check starfox_3ds_test_player)
         if(TARGET ${target})
             target_compile_options(${target} PRIVATE -fstack-usage)
+            if(STARFOX_3DS_ENABLE_IPO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                get_target_property(target_type ${target} TYPE)
+                if(target_type STREQUAL "EXECUTABLE")
+                    # LTO emits machine-code frames at link time, not when
+                    # compiling GIMPLE objects. Retain those actual reports
+                    # beside the ELF so the unchanged stack gate can read them.
+                    target_link_options(${target} PRIVATE -fstack-usage -save-temps=obj)
+                endif()
+            endif()
         endif()
     endforeach()
 elseif(STARFOX_3DS_BUILD_HOST_TESTS)
