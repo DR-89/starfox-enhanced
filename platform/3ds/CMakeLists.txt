@@ -231,6 +231,8 @@ elseif(STARFOX_3DS_BUILD_HOST_TESTS)
         target_link_libraries(starfox_owned_65816_step_tests PRIVATE starfox_3ds_cpu)
         target_compile_features(starfox_owned_65816_step_tests PRIVATE cxx_std_20)
         add_test(NAME starfox_owned_65816_step_tests COMMAND starfox_owned_65816_step_tests)
+        add_test(NAME starfox_owned_65816_memory_tests
+            COMMAND starfox_owned_65816_step_tests --cpu-workload-benchmark)
         add_test(NAME starfox_3ds_test_package_contract
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/test_3ds_package.py")
         add_executable(starfox_3ds_game_assets_tests ../../tests/nintendo_3ds_game_assets_tests.cpp "${companion_header}")

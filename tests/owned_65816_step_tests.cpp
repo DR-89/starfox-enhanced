@@ -272,6 +272,14 @@ void cpu_workloads() {
         const auto milliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count();
         std::uint64_t hash = 14695981039346656037ULL; snapshot(hash, *machine);
+#ifndef STARFOX_CPU_LEGACY_ORACLE
+        // Pinned BEFORE the CPU/bus unity edit, using the separate old library.
+        // The opcode oracle records IO callbacks; additionally guard direct
+        // paged RAM and ignored read-only writes, where inlining matters most.
+        constexpr std::array<std::uint64_t, 3> expected{
+            0xb7691115198386cdULL, 0xb7691115198386cdULL, 0x191d33089eb792cdULL};
+        require(hash == expected[workload], "CPU compilation changed mixed RAM/IO/read-only state");
+#endif
         std::cout << workload << ',' << instructions << ',' << milliseconds
             << ',' << std::hex << hash << std::dec << '\n';
     }
