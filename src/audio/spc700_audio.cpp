@@ -258,13 +258,14 @@ struct Spc700Audio::Impl {
         }
     }
 
-    std::vector<std::int16_t> render(
+    void render(
+        std::vector<std::int16_t>& output,
         std::span<const simulation::ApuPortWrite> writes,
         bool split_upload_restarts = false,
         std::size_t* rendered_frames = nullptr,
         CommandStream command_stream = CommandStream::music) {
-        std::vector<std::int16_t> output(
-            Spc700Audio::stereo_frames_per_logic_tick * 2U, 0);
+        output.resize(Spc700Audio::stereo_frames_per_logic_tick * 2U);
+        std::fill(output.begin(), output.end(), 0);
         if (loaded) {
             spc_set_output(spc, output.data(), static_cast<int>(output.size()));
         }
@@ -325,7 +326,7 @@ struct Spc700Audio::Impl {
             }
         }
 
-        if (!loaded) return output;
+        if (!loaded) return;
         spc_end_frame(spc, kClocksPerLogicTick);
         if (rendered_frames != nullptr) ++*rendered_frames;
         const auto generated = std::clamp(spc_sample_count(spc), 0,
@@ -334,7 +335,6 @@ struct Spc700Audio::Impl {
             std::fill(output.begin() + generated, output.end(), 0);
         }
         spc_filter_run(filter, output.data(), static_cast<int>(output.size()));
-        return output;
     }
 };
 
@@ -379,15 +379,20 @@ void Spc700Audio::load_state(std::span<const std::uint8_t> bytes) {
     *this = std::move(restored);
 }
 
-std::vector<std::int16_t> Spc700Audio::render_logic_tick(
+void Spc700Audio::render_stems_logic_tick(
     std::span<const simulation::ApuPortWrite> writes) {
-    last_music_samples_ = music_impl_->render(
+    music_impl_->render(last_music_samples_,
         writes, false, nullptr, Impl::CommandStream::music);
-    last_effect_samples_ = effects_impl_->render(
+    effects_impl_->render(last_effect_samples_,
         writes, false, nullptr, Impl::CommandStream::effects);
     if (last_music_samples_.size() != last_effect_samples_.size()) {
         throw std::runtime_error{"SPC music/effect stem size mismatch"};
     }
+}
+
+std::vector<std::int16_t> Spc700Audio::render_logic_tick(
+    std::span<const simulation::ApuPortWrite> writes) {
+    render_stems_logic_tick(writes);
     auto mixed = last_music_samples_;
     for (std::size_t index = 0; index < mixed.size(); ++index) {
         const auto sample = static_cast<std::int32_t>(last_music_samples_[index])
@@ -404,10 +409,10 @@ std::size_t Spc700Audio::prime_upload_sequence(
     std::span<const simulation::ApuPortWrite> writes) {
     std::size_t music_frames{};
     std::size_t effect_frames{};
-    static_cast<void>(music_impl_->render(
-        writes, true, &music_frames, Impl::CommandStream::music));
-    static_cast<void>(effects_impl_->render(
-        writes, true, &effect_frames, Impl::CommandStream::effects));
+    music_impl_->render(last_music_samples_,
+        writes, true, &music_frames, Impl::CommandStream::music);
+    effects_impl_->render(last_effect_samples_,
+        writes, true, &effect_frames, Impl::CommandStream::effects);
     if (music_frames != effect_frames) {
         throw std::runtime_error{"SPC music/effect upload cadence mismatch"};
     }

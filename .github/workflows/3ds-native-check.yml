@@ -40,6 +40,9 @@ on:
       - 'tests/nintendo_3ds_game_assets_tests.cpp'
       - 'src/simulation/**'
       - 'src/audio/spc700_audio.cpp'
+      - 'include/starfox/audio/spc700_audio.hpp'
+      - 'include/starfox/audio/stem_mixer.hpp'
+      - 'tests/spc_stems_tests.cpp'
       - 'cmake/SpcState.cmake'
 permissions:
   contents: read

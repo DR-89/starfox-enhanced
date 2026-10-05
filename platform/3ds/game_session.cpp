@@ -42,7 +42,7 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
         // Match the ordinary runtime's base-driver initialization before a
         // direct stage-bank overlay. Do not queue inaudible startup preroll.
         if(initial_map!="BOOT") for(unsigned tick=0;tick<30;++tick)
-            static_cast<void>(audio_.render_logic_tick({}));
+            audio_.render_stems_logic_tick({});
         game_.synchronize_apu_output_ports(audio_.output_ports());
     }
     if(options.preferences) {
@@ -73,7 +73,7 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
             if(tick%16==0 && options.preview_progress && !options.preview_progress(tick))
                 throw std::runtime_error("3DS preview loading cancelled");
             const auto advance=game_.tick({});
-            static_cast<void>(audio_.render_logic_tick(advance.audio_port_writes));
+            audio_.render_stems_logic_tick(advance.audio_port_writes);
             game_.synchronize_apu_output_ports(audio_.output_ports());
             static_cast<void>(game_.map().take_msu_register_writes());
             const auto meters=game_.peek_meter_state();const auto dialogue=game_.dialogue_state();
@@ -83,7 +83,7 @@ GameSession::GameSession(assets::RomImage rom,assets::SymbolMap symbols,PcmSink 
                 if(++dialogues>=4) {
                     for(unsigned settle=0;settle<12;++settle) {
                         const auto next=game_.tick({});
-                        static_cast<void>(audio_.render_logic_tick(next.audio_port_writes));
+                        audio_.render_stems_logic_tick(next.audio_port_writes);
                         game_.synchronize_apu_output_ports(audio_.output_ports());
                         static_cast<void>(game_.map().take_msu_register_writes());
                     }
@@ -290,7 +290,7 @@ GameAdvance GameSession::advance(std::int64_t time,input::ButtonMask held,bool f
             }
             if(!game_.runtime_options_open() && ++audio_phase_==3) {
                 STARFOX_3DS_FRAME_PHASE(audio);
-                static_cast<void>(audio_.render_logic_tick(pending_audio_));
+                audio_.render_stems_logic_tick(pending_audio_);
                 audio::mix_stems(audio_.last_music_samples(),audio_.last_effect_samples(),
                     game_.music_volume(),game_.sfx_volume(),mixed_);
                 sink_(mixed_);game_.synchronize_apu_output_ports(audio_.output_ports());
