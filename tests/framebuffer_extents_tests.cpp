@@ -19,9 +19,58 @@ void inspect(const starfox::render::Framebuffer& framebuffer) {
             != std::size_t(framebuffer.stored_width()) * framebuffer.stored_height())
         throw std::runtime_error{"framebuffer logical extents changed"};
 }
+void indexed_rows() {
+    using namespace starfox::render;
+    constexpr std::array<std::uint8_t, 17> row{0, 37, 13, 255, 0, 1, 2, 3, 4, 5, 0, 0, 98, 7, 6, 0, 8};
+    constexpr std::array coordinates{std::numeric_limits<std::int32_t>::min(), -32, -17, -1,
+        0, 1, 7, 17, 40, std::numeric_limits<std::int32_t>::max()};
+    for (unsigned scale = 1; scale <= 4; ++scale) for (unsigned width : {0U, 1U, 7U, 17U, 33U})
+        for (unsigned flags = 0; flags < 16; ++flags) for (int x : coordinates) for (int y : {-1, 0, 2, 3}) {
+            Framebuffer actual(width, 3, scale), expected(width, 3, scale);
+            RasterCommands actual_commands, expected_commands;
+            for (auto* frame : {&actual, &expected}) {
+                frame->enable_layer_tags((flags & 1U) != 0);
+                frame->enable_dither_pairs((flags & 2U) != 0);
+                frame->clear(37);
+                if (flags & 4U) frame->begin_write_coverage();
+                if (flags % 3U == 0) frame->set_layer_override(PixelLayer::background);
+                for (unsigned i = 0; i < frame->pixels().size(); ++i)
+                    frame->set_dither_alternate(i, std::uint8_t(i % 251U));
+            }
+            if (flags & 8U) {
+                actual_commands.reset(actual.stored_width(), actual.stored_height());
+                expected_commands.reset(expected.stored_width(), expected.stored_height());
+                actual.record_to(&actual_commands); expected.record_to(&expected_commands);
+            }
+            actual.set_indexed_row(x, y, row);
+            // The unchanged point writer is the reference, including its
+            // optional metadata, scaling, clipping and point-command contract.
+            for (unsigned i = 0; i < row.size(); ++i) {
+                const auto column = std::int64_t(x) + i;
+                if (row[i] && column >= std::numeric_limits<std::int32_t>::min()
+                    && column <= std::numeric_limits<std::int32_t>::max())
+                    expected.set(std::int32_t(column), y, row[i]);
+            }
+            ++checks;
+            if (actual.pixels() != expected.pixels() || actual.layer_tags() != expected.layer_tags()
+                || !std::equal(actual.write_coverage().begin(), actual.write_coverage().end(), expected.write_coverage().begin())
+                || !std::equal(actual.dither_pairs().begin(), actual.dither_pairs().end(), expected.dither_pairs().begin())
+                || actual_commands.commands.size() != expected_commands.commands.size())
+                throw std::runtime_error("indexed tile row changed pixels/coverage/tags/dither/command count");
+            for (unsigned i = 0; i < actual_commands.commands.size(); ++i) {
+                const auto& a = actual_commands.commands[i]; const auto& b = expected_commands.commands[i];
+                if (a.left != b.left || a.right != b.right || a.top != b.top || a.bottom != b.bottom
+                    || a.even != b.even || a.odd != b.odd || a.tag != b.tag)
+                    throw std::runtime_error("indexed tile row changed an ordered point command");
+            }
+            actual.set_indexed_row(x, y, {});
+            if (actual.pixels() != expected.pixels()) throw std::runtime_error("empty indexed row wrote pixels");
+        }
+}
 } // namespace
 
 int main() try {
+    indexed_rows();
     constexpr std::array<std::uint32_t, 8> sizes{0, 1, 2, 7, 8, 17, 63, 129};
     constexpr std::array<std::uint32_t, 10> partitions{
         0, 1, 2, 3, 4, 5, 6, 16, 65536,
@@ -54,7 +103,7 @@ int main() try {
             }
         }
     std::cout << "Framebuffer extents: " << checks
-        << " native/scaled/repartitioned/copy/resize comparisons PASS\n";
+        << " native/scaled/repartitioned/copy/resize/indexed-row comparisons PASS\n";
     return 0;
 } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

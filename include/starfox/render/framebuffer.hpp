@@ -247,6 +247,35 @@ public:
         }
     }
 
+    // An already decoded cartridge tile row: ink zero is transparent, but a
+    // nonzero index whose CGRAM colour is black remains an ordinary write.
+    // Clip once and retain the same ordered point commands/scaled writes as
+    // set(). Native PPU rasters have coverage + tags and no dither metadata.
+    void set_indexed_row(std::int32_t x, std::int32_t y,
+        std::span<const std::uint8_t> colours) noexcept {
+        if (y < 0 || std::uint32_t(y) >= height() || colours.empty()) return;
+        const auto first = std::max<std::int64_t>(0, -std::int64_t(x));
+        const auto last = std::min<std::int64_t>(colours.size(), std::int64_t(width()) - x);
+        if (first >= last) return;
+        const auto begin_x = std::int32_t(std::int64_t(x) + first);
+        const auto count = std::size_t(last - first);
+        const auto* source = colours.data() + first;
+        if (!commands_ && draw_scale_ == 1U && track_coverage_
+            && layer_tags_enabled_ && dither_pairs_.empty()) {
+            const auto offset = std::size_t(y) * stored_width_ + unsigned(begin_x);
+            auto* destination = pixels_.data() + offset;
+            auto* coverage = coverage_.data() + offset;
+            auto* tags = tags_.data() + offset;
+            const auto tag = write_tag(PixelLayer::two_d);
+            for (std::size_t i = 0; i < count; ++i) if (source[i] != 0U) {
+                destination[i] = source[i]; coverage[i] = 1; tags[i] = tag;
+            }
+            return;
+        }
+        for (std::size_t i = 0; i < count; ++i) if (source[i] != 0U)
+            set(begin_x + std::int32_t(i), y, source[i]);
+    }
+
     [[nodiscard]] std::uint8_t get(std::uint32_t x, std::uint32_t y) const noexcept {
         return pixels_[
             static_cast<std::size_t>(y * draw_scale_) * stored_width_

@@ -129,6 +129,66 @@ std::int32_t mosaic_coordinate(
     return coordinate - remainder;
 }
 
+template<unsigned bits>
+std::array<std::uint8_t, 16> decoded_tile_row(
+    const simulation::SnesPpuState& ppu, std::uint16_t character_base,
+    std::uint16_t tile, std::int32_t source_y, bool large) noexcept {
+    std::array<std::uint8_t, 16> result{};
+    const unsigned edge = large ? 16U : 8U;
+    const unsigned palette = bits == 8U ? 0U : ((tile >> 10U) & 7U) * (1U << bits);
+    for (unsigned column = 0; column < edge; column += 8U) {
+        const auto sample = tile_sample(tile, int(column), source_y, large);
+        const unsigned y = sample.tile & 0x8000U ? 7U - sample.y : sample.y;
+        const unsigned base = (unsigned(character_base) * 2U
+            + unsigned(sample.tile & 1023U) * bits * 8U + y * 2U) & 65535U;
+        std::array<std::uint8_t, bits> planes{};
+        for (unsigned plane = 0; plane < bits; ++plane)
+            planes[plane] = ppu.vram[(base + (plane / 2U) * 16U + (plane & 1U)) & 65535U];
+        for (unsigned x = 0; x < 8; ++x) {
+            const unsigned mask = tile & 0x4000U ? 1U << x : 128U >> x;
+            unsigned ink = unsigned((planes[0] & mask) != 0U)
+                | (unsigned((planes[1] & mask) != 0U) << 1U);
+            if constexpr (bits >= 4U) ink |= (unsigned((planes[2] & mask) != 0U) << 2U)
+                | (unsigned((planes[3] & mask) != 0U) << 3U);
+            if constexpr (bits == 8U) ink |= (unsigned((planes[4] & mask) != 0U) << 4U)
+                | (unsigned((planes[5] & mask) != 0U) << 5U)
+                | (unsigned((planes[6] & mask) != 0U) << 6U)
+                | (unsigned((planes[7] & mask) != 0U) << 7U);
+            result[column + x] = ink ? std::uint8_t(palette + ink) : 0;
+        }
+    }
+    return result;
+}
+
+// Ordinary rows keep one tilemap word, priority, palette and set of bitplanes
+// for all 8/16 texels. Mosaic, unique artwork, rolled offsets and tunnel edge
+// clamping retain their existing coordinate-aware path below.
+template<unsigned bits>
+void draw_tile_scanline(const simulation::SnesPpuState& ppu, Framebuffer& target,
+    TilePriorityPass priority, std::uint16_t screen_base, std::uint16_t character_base,
+    unsigned pages_wide, bool large, int width_pixels, int source_y, int scroll_x,
+    int origin, unsigned first_x, unsigned final_x, unsigned screen_y,
+    bool transparent_black = false) noexcept {
+    const unsigned shift = large ? 4U : 3U, edge = 1U << shift;
+    const unsigned tile_y = unsigned(source_y) >> shift;
+    for (unsigned x = first_x; x < final_x;) {
+        const auto source_x = wrap_tilemap_coordinate(int(x) - origin + scroll_x, width_pixels);
+        const unsigned tile_x = unsigned(source_x) >> shift;
+        const unsigned entry = ((tile_x >> 5U) + (tile_y >> 5U) * pages_wide) * 1024U
+            + (tile_y & 31U) * 32U + (tile_x & 31U);
+        const unsigned inset = unsigned(source_x) & (edge - 1U);
+        const unsigned count = std::min(edge - inset, final_x - x);
+        const auto tile = vram_word(ppu, unsigned(screen_base) + entry);
+        if (selected_priority(tile, priority)) {
+            auto row = decoded_tile_row<bits>(ppu, character_base, tile, source_y, large);
+            if (transparent_black) for (auto& ink : row)
+                if ((ppu.cgram[ink] & 32767U) == 0U) ink = 0;
+            target.set_indexed_row(int(x), int(screen_y), std::span(row).subspan(inset, count));
+        }
+        x += count;
+    }
+}
+
 } // namespace
 
 std::uint8_t tunnel_border_index(const simulation::SnesPpuState& ppu,
@@ -220,6 +280,21 @@ void BackgroundRenderer::draw_bg1(
         const auto final_x = extend_horizontal ? target.width()
             : std::min(target.width(), static_cast<std::uint32_t>(
                 std::max<std::int32_t>(horizontal_origin + right_limit, 0)));
+        if (!text_outline && (ppu.mosaic & 1U) == 0U) {
+            auto first = first_x, final = final_x;
+            if (ppu.tunnel_scene && extend_horizontal && priority == TilePriorityPass::high) {
+                first = std::max(first, unsigned(std::max(horizontal_origin, 0)));
+                final = std::min(final, unsigned(std::max(horizontal_origin + 256, 0)));
+            }
+            if (ppu.background_mode == 3U)
+                draw_tile_scanline<8>(ppu, target, priority, ppu.bg1_screen_base, ppu.bg1_character_base,
+                    pages_wide, ppu.bg1_tile_size_16, width_pixels, source_y, ppu.bg1_scroll_x,
+                    horizontal_origin, first, final, screen_y, transparent_cgram_black);
+            else draw_tile_scanline<4>(ppu, target, priority, ppu.bg1_screen_base, ppu.bg1_character_base,
+                pages_wide, ppu.bg1_tile_size_16, width_pixels, source_y, ppu.bg1_scroll_x,
+                horizontal_origin, first, final, screen_y, transparent_cgram_black);
+            continue;
+        }
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
@@ -435,6 +510,30 @@ void BackgroundRenderer::draw_bg2(
     const auto final_x = extend_horizontal ? target.width()
         : std::min(target.width(), static_cast<std::uint32_t>(
             std::max<std::int32_t>(horizontal_origin + 256, 0)));
+    if (first_x >= final_x) return;
+    if ((ppu.mosaic & 2U) == 0U && !expanded_mode2
+        && !(ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled)
+        && !(ppu.tunnel_scene && extend_horizontal)
+        && !(ppu.background_mode == 1U && ppu.bg2_scanline_scroll_enabled && extend_horizontal)
+        && unique_regions.empty() && !single_occurrence_top_rows
+        && !ending_star_extension && !game_over_star_extension) {
+        for (unsigned y = 0; y < target.height(); ++y) {
+            const int row_x = ppu.bg2_horizontal_offsets_enabled && y < ppu.bg2_horizontal_offsets.size()
+                ? ppu.bg2_horizontal_offsets[y] : scroll_x;
+            const int row_y = ppu.bg2_scanline_scroll_enabled
+                ? ppu.bg2_scanline_scroll_y[std::min(y, 223U)] : scroll_y;
+            auto first = first_x, final = final_x;
+            if (!wrap_horizontal) {
+                first = unsigned(std::clamp<std::int64_t>(std::int64_t(horizontal_origin) - row_x, first, final));
+                final = unsigned(std::clamp<std::int64_t>(std::int64_t(horizontal_origin) - row_x + width_pixels, first, final));
+            }
+            draw_tile_scanline<4>(ppu, target, priority, ppu.bg2_screen_base, ppu.bg2_character_base,
+                pages_wide, ppu.bg2_tile_size_16, width_pixels,
+                wrap_tilemap_coordinate(int(y) + row_y, height_pixels), row_x,
+                horizontal_origin, first, final, y, transparent_cgram_black);
+        }
+        return;
+    }
     std::vector<std::int32_t> column_scroll_y;
     constexpr auto no_column_scroll = std::numeric_limits<std::int32_t>::min();
     if (ppu.background_mode == 2U && ppu.bg2_vertical_offsets_enabled) {
@@ -765,6 +864,12 @@ void BackgroundRenderer::draw_bg3(
         const auto final_x = extend_horizontal ? target.width()
             : std::min(target.width(), static_cast<std::uint32_t>(
                 std::max<std::int32_t>(horizontal_origin + 256, 0)));
+        if ((ppu.mosaic & 4U) == 0U) {
+            draw_tile_scanline<2>(ppu, target, priority, ppu.bg3_screen_base, ppu.bg3_character_base,
+                pages_wide, ppu.bg3_tile_size_16, width_pixels, source_y, ppu.bg3_scroll_x,
+                horizontal_origin, first_x, final_x, screen_y);
+            continue;
+        }
         for (auto screen_x = first_x; screen_x < final_x; ++screen_x) {
             const auto logical_x = static_cast<std::int32_t>(screen_x)
                 - horizontal_origin;
