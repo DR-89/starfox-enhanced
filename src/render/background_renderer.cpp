@@ -283,8 +283,10 @@ void BackgroundRenderer::draw_bg1(
         if (!text_outline && (ppu.mosaic & 1U) == 0U) {
             auto first = first_x, final = final_x;
             if (ppu.tunnel_scene && extend_horizontal && priority == TilePriorityPass::high) {
-                first = std::max(first, unsigned(std::max(horizontal_origin, 0)));
-                final = std::min(final, unsigned(std::max(horizontal_origin + 256, 0)));
+                first = std::max(first, static_cast<std::uint32_t>(
+                    std::max<std::int32_t>(horizontal_origin, 0)));
+                final = std::min(final, static_cast<std::uint32_t>(
+                    std::max<std::int32_t>(horizontal_origin + 256, 0)));
             }
             if (ppu.background_mode == 3U)
                 draw_tile_scanline<8>(ppu, target, priority, ppu.bg1_screen_base, ppu.bg1_character_base,
